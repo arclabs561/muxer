@@ -14,7 +14,7 @@
 
 #![forbid(unsafe_code)]
 
-use pare::{Direction, ParetoFrontier};
+use pare::ParetoFrontier;
 use std::collections::{BTreeMap, VecDeque};
 
 /// A single observed outcome for an arm.
@@ -380,20 +380,14 @@ pub fn select_mab(
         .sum::<f64>()
         .max(1.0);
 
-    let mut frontier: ParetoFrontier<String> = ParetoFrontier::new(vec![
-        Direction::Maximize,
-        Direction::Minimize,
-        Direction::Minimize,
-        Direction::Minimize,
-        Direction::Minimize,
-    ])
-    .with_labels(vec![
-        "objective_success".to_string(),
-        "mean_cost_units".to_string(),
-        "mean_elapsed_ms".to_string(),
-        "hard_junk_rate".to_string(),
-        "soft_junk_rate".to_string(),
-    ]);
+    // Pareto frontier (maximize space):
+    // - objective_success: maximize
+    // - costs/latency/junk: minimize => negate
+    //
+    // We keep the frontier computation separate from scalarization so callers can
+    // inspect "who is on the frontier" deterministically.
+    let mut frontier_points: Vec<Vec<f32>> = Vec::new();
+    let mut frontier_names_in_order: Vec<String> = Vec::new();
 
     let mut candidates = Vec::new();
     for a in arms_in_order {
@@ -432,19 +426,24 @@ pub fn select_mab(
             objective_success,
         });
 
-        let _ = frontier.push(
-            vec![
-                objective_success,
-                mean_cost,
-                mean_lat,
-                hard_junk_rate,
-                soft_junk_rate,
-            ],
-            a.clone(),
-        );
+        frontier_points.push(vec![
+            objective_success as f32,
+            (-mean_cost) as f32,
+            (-mean_lat) as f32,
+            (-hard_junk_rate) as f32,
+            (-soft_junk_rate) as f32,
+        ]);
+        frontier_names_in_order.push(a.clone());
     }
 
-    let frontier_names: Vec<String> = frontier.points().iter().map(|p| p.data.clone()).collect();
+    let frontier_indices = ParetoFrontier::try_new(&frontier_points)
+        .map(|f| f.indices())
+        .unwrap_or_else(|_| (0..frontier_points.len()).collect());
+
+    let frontier_names: Vec<String> = frontier_indices
+        .iter()
+        .filter_map(|&i| frontier_names_in_order.get(i).cloned())
+        .collect();
 
     // Deterministic scalarization among frontier points.
     let weights: [f64; 5] = [
@@ -454,17 +453,31 @@ pub fn select_mab(
         cfg.hard_junk_weight.max(0.0),
         cfg.junk_weight.max(0.0),
     ];
-    let mut best_name = frontier
-        .points()
+    let mut best_name = frontier_names
         .first()
-        .map(|p| p.data.clone())
+        .cloned()
         .unwrap_or_else(|| arms_in_order.first().cloned().unwrap_or_default());
     let mut best_score = f64::NEG_INFINITY;
-    for (idx, p) in frontier.points().iter().enumerate() {
-        let s = frontier.scalar_score(idx, &weights);
-        if s > best_score || ((s - best_score).abs() <= 1e-12 && p.data < best_name) {
+    for &idx in &frontier_indices {
+        let Some(name) = frontier_names_in_order.get(idx) else {
+            continue;
+        };
+        let s = candidates
+            .iter()
+            .find(|c| &c.name == name)
+            .map(|c| {
+                // Maximize:
+                //   objective_success - w_cost * cost - w_lat * latency - w_hard * hard_junk - w_soft * soft_junk
+                (c.objective_success as f64)
+                    - weights[1] * (c.mean_cost_units as f64)
+                    - weights[2] * (c.mean_elapsed_ms as f64)
+                    - weights[3] * (c.hard_junk_rate as f64)
+                    - weights[4] * (c.soft_junk_rate as f64)
+            })
+            .unwrap_or(f64::NEG_INFINITY);
+        if s > best_score || ((s - best_score).abs() <= 1e-12 && name < &best_name) {
             best_score = s;
-            best_name = p.data.clone();
+            best_name = name.clone();
         }
     }
 
