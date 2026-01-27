@@ -1,0 +1,22 @@
+[package]
+name = "muxer"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = true
+description = "Deterministic, multi-objective bandit-style routing primitives (windowed stats + Pareto selection)."
+
+[dependencies]
+pare = { path = "../pare" }
+serde = { workspace = true, optional = true, features = ["derive"] }
+
+[dev-dependencies]
+proptest = "1.9"
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[lints]
+workspace = true
+
