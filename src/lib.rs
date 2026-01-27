@@ -14,7 +14,7 @@
 
 #![forbid(unsafe_code)]
 
-use pare::ParetoFrontier;
+use pare::{Direction, ParetoFrontier};
 use std::collections::{BTreeMap, VecDeque};
 
 /// A single observed outcome for an arm.
@@ -436,9 +436,15 @@ pub fn select_mab(
         frontier_names_in_order.push(a.clone());
     }
 
-    let frontier_indices = ParetoFrontier::try_new(&frontier_points)
-        .map(|f| f.indices())
-        .unwrap_or_else(|_| (0..frontier_points.len()).collect());
+    let mut frontier = ParetoFrontier::new(vec![Direction::Maximize; 5]);
+    for (i, vals) in frontier_points.iter().enumerate() {
+        frontier.push(vals.iter().map(|&x| x as f64).collect::<Vec<_>>(), i);
+    }
+    let frontier_indices: Vec<usize> = if frontier.is_empty() {
+        (0..frontier_points.len()).collect()
+    } else {
+        frontier.points().iter().map(|p| p.data).collect()
+    };
 
     let frontier_names: Vec<String> = frontier_indices
         .iter()
@@ -468,11 +474,11 @@ pub fn select_mab(
             .map(|c| {
                 // Maximize:
                 //   objective_success - w_cost * cost - w_lat * latency - w_hard * hard_junk - w_soft * soft_junk
-                (c.objective_success as f64)
-                    - weights[1] * (c.mean_cost_units as f64)
-                    - weights[2] * (c.mean_elapsed_ms as f64)
-                    - weights[3] * (c.hard_junk_rate as f64)
-                    - weights[4] * (c.soft_junk_rate as f64)
+                c.objective_success
+                    - weights[1] * c.mean_cost_units
+                    - weights[2] * c.mean_elapsed_ms
+                    - weights[3] * c.hard_junk_rate
+                    - weights[4] * c.soft_junk_rate
             })
             .unwrap_or(f64::NEG_INFINITY);
         if s > best_score || ((s - best_score).abs() <= 1e-12 && name < &best_name) {

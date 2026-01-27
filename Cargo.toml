@@ -5,9 +5,12 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 publish = true
 description = "Deterministic, multi-objective bandit-style routing primitives (windowed stats + Pareto selection)."
+repository = "https://github.com/arclabs561/muxer"
+homepage = "https://github.com/arclabs561/muxer"
+documentation = "https://docs.rs/muxer"
 
 [dependencies]
-pare = { git = "https://github.com/arclabs561/pare" }
+pare = "0.1.0"
 serde = { version = "1.0", optional = true, features = ["derive"] }
 
 [dev-dependencies]
