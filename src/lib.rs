@@ -17,6 +17,12 @@
 use pare::{Direction, ParetoFrontier};
 use std::collections::{BTreeMap, VecDeque};
 
+mod alloc;
+pub use alloc::*;
+
+mod exp3ix;
+pub use exp3ix::*;
+
 mod thompson;
 pub use thompson::*;
 

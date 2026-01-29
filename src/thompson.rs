@@ -12,6 +12,8 @@ use rand::SeedableRng;
 use rand_distr::{Beta, Distribution};
 use std::collections::BTreeMap;
 
+use crate::alloc::softmax_map;
+
 /// Configuration for Thompson sampling.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -82,6 +84,30 @@ impl ThompsonSampling {
         &self.stats
     }
 
+    /// Deterministic allocation over arms based on posterior means (softmax).
+    ///
+    /// This is often useful for traffic-splitting systems that want probabilities
+    /// rather than an argmax choice.
+    pub fn allocation_mean_softmax(
+        &mut self,
+        arms_in_order: &[String],
+        temperature: f64,
+    ) -> BTreeMap<String, f64> {
+        for a in arms_in_order {
+            self.get_or_create_stats(a);
+        }
+        let mut scores: BTreeMap<String, f64> = BTreeMap::new();
+        for a in arms_in_order {
+            let s = self.stats.get(a).copied().unwrap_or(BetaStats {
+                alpha: self.cfg.alpha0,
+                beta: self.cfg.beta0,
+                uses: 0,
+            });
+            scores.insert(a.clone(), s.expected_value());
+        }
+        softmax_map(&scores, temperature)
+    }
+
     /// Reset all learned state.
     pub fn reset(&mut self) {
         self.stats.clear();
@@ -98,11 +124,13 @@ impl ThompsonSampling {
     fn get_or_create_stats(&mut self, arm: &str) -> &mut BetaStats {
         // Avoid borrowing `self` inside the `entry` closure (borrowck footgun).
         let (a, b) = self.prior_for(arm);
-        self.stats.entry(arm.to_string()).or_insert_with(|| BetaStats {
-            alpha: if a.is_finite() && a > 0.0 { a } else { 1.0 },
-            beta: if b.is_finite() && b > 0.0 { b } else { 1.0 },
-            uses: 0,
-        })
+        self.stats
+            .entry(arm.to_string())
+            .or_insert_with(|| BetaStats {
+                alpha: if a.is_finite() && a > 0.0 { a } else { 1.0 },
+                beta: if b.is_finite() && b > 0.0 { b } else { 1.0 },
+                uses: 0,
+            })
     }
 
     fn sample_beta(&mut self, alpha: f64, beta: f64) -> f64 {
