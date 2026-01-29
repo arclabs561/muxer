@@ -111,5 +111,48 @@ mod tests {
                 }
             }
         }
+
+        #[test]
+        fn softmax_map_handles_extreme_scores(
+            kvs in proptest::collection::vec(
+                (
+                    "[a-z]{1,8}",
+                    prop_oneof![
+                        Just(f64::NEG_INFINITY),
+                        Just(f64::INFINITY),
+                        Just(-1.0e308f64),
+                        Just(1.0e308f64),
+                        -1.0e6f64..1.0e6f64,
+                    ]
+                ),
+                0..20
+            ),
+            temperature in prop_oneof![
+                Just(f64::NAN),
+                Just(f64::NEG_INFINITY),
+                Just(f64::INFINITY),
+                Just(0.0),
+                Just(-1.0),
+                1.0e-12f64..1.0e12f64
+            ],
+        ) {
+            let mut m: BTreeMap<String, f64> = BTreeMap::new();
+            for (k, v) in kvs {
+                m.insert(k, v);
+            }
+            let p = softmax_map(&m, temperature);
+
+            if m.is_empty() {
+                prop_assert!(p.is_empty());
+            } else {
+                let sum: f64 = p.values().sum();
+                prop_assert!((sum - 1.0).abs() < 1e-9, "sum={}", sum);
+                for &v in p.values() {
+                    prop_assert!(v.is_finite());
+                    prop_assert!(v >= 0.0);
+                    prop_assert!(v <= 1.0);
+                }
+            }
+        }
     }
 }

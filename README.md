@@ -2,6 +2,14 @@
 
 Deterministic, multi-objective routing primitives for “provider selection” problems.
 
+## What problem this solves
+
+You have a small set of arms (providers/models/backends) and repeated calls that produce outcomes (success/429/junk), plus cost + latency. You want an **online policy** that:
+
+- **explores** new or recently-changed arms
+- **avoids regressions** (junk/429 spikes)
+- is **deterministic by default** (same stats/config → same choice), so it’s easy to debug
+
 ## What it is
 
 The core idea is:
@@ -14,6 +22,12 @@ This crate also includes:
 
 - a **seedable Thompson-sampling** policy (`ThompsonSampling`) for cases where you can provide a scalar reward in `[0, 1]` per call
 - a **seedable EXP3-IX** policy (`Exp3Ix`) for more adversarial / fast-shifting reward settings
+
+## Which policy should I use?
+
+- **`select_mab` (Window + Pareto + scalarization)**: when you care about **multiple objectives** at once (success, 429, junk, cost, latency) and you want deterministic selection with hard constraints.
+- **`ThompsonSampling`**: when you can provide a **single reward** per call (in `[0, 1]`) and want a classic explore/exploit policy (seedable, optionally decayed).
+- **`Exp3Ix`**: when reward is **non-stationary / adversarial-ish** and you still want a probabilistic policy (seedable, optionally decayed).
 
 ## Quick examples
 
@@ -32,6 +46,14 @@ let sel = select_mab(&arms, &summaries, MabConfig::default());
 assert_eq!(sel.chosen, "a"); // lower junk when all else is equal
 ```
 
+### Realistic “online routing loop” (Window ingestion)
+
+This is closer to production usage: you maintain a `Window` per arm, push `Outcome`s as requests finish, and call `select_mab` each decision.
+
+```bash
+cargo run --example deterministic_router
+```
+
 ### EXP3-IX (adversarial bandit) with probabilities
 
 ```rust
@@ -46,6 +68,12 @@ ex.update_reward(chosen, 0.7); // reward in [0, 1]
 
 let s: f64 = probs.values().sum();
 assert!((s - 1.0).abs() < 1e-9);
+```
+
+Runnable:
+
+```bash
+cargo run --example exp3ix_router
 ```
 
 ### Thompson “traffic splitting” selector (mean-softmax allocation)
@@ -66,6 +94,12 @@ ts.update_reward(chosen, 1.0);
 
 let s: f64 = alloc.values().sum();
 assert!((s - 1.0).abs() < 1e-9);
+```
+
+Runnable:
+
+```bash
+cargo run --example thompson_router
 ```
 
 ## Usage
