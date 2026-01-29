@@ -251,6 +251,21 @@ impl LinUcb {
     /// This is useful for:
     /// - traffic-splitting (probabilistic routing)
     /// - logging an approximate propensity distribution for offline evaluation
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # #[cfg(feature = "contextual")]
+    /// # {
+    /// use muxer::{LinUcb, LinUcbConfig};
+    ///
+    /// let arms = vec!["a".to_string(), "b".to_string()];
+    /// let mut p = LinUcb::new(LinUcbConfig { dim: 2, ..LinUcbConfig::default() });
+    /// let probs = p.probabilities(&arms, &[0.2, 0.8], 0.3);
+    /// let s: f64 = probs.values().sum();
+    /// assert!((s - 1.0).abs() < 1e-9);
+    /// # }
+    /// ```
     pub fn probabilities(
         &mut self,
         arms_in_order: &[String],
@@ -273,6 +288,22 @@ impl LinUcb {
     /// Policy:
     /// - Explore each arm once in stable order (still returns a full `probs` map).
     /// - Otherwise sample from a softmax over UCB scores (seeded RNG).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # #[cfg(feature = "contextual")]
+    /// # {
+    /// use muxer::{LinUcb, LinUcbConfig};
+    ///
+    /// let arms = vec!["a".to_string(), "b".to_string()];
+    /// let mut p = LinUcb::new(LinUcbConfig { dim: 2, seed: 0, ..LinUcbConfig::default() });
+    /// let (chosen, probs) = p.select_softmax_ucb_with_probs(&arms, &[0.2, 0.8], 0.3).unwrap();
+    /// p.update_reward(chosen, &[0.2, 0.8], 1.0);
+    /// let s: f64 = probs.values().sum();
+    /// assert!((s - 1.0).abs() < 1e-9);
+    /// # }
+    /// ```
     pub fn select_softmax_ucb_with_probs<'a>(
         &mut self,
         arms_in_order: &'a [String],

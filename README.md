@@ -112,6 +112,11 @@ Runnable:
 cargo run --example contextual_router --features contextual
 ```
 
+Notes:
+
+- If you want a probability distribution over arms for this context (e.g. for traffic-splitting or logging approximate propensities), use `LinUcb::probabilities(...)` or `LinUcb::select_softmax_ucb_with_probs(...)`.
+- Algorithm reference: LinUCB (Chu et al., “Contextual bandits with linear payoff functions”).
+
 ### Stickiness / switching-cost control
 
 If you want to reduce “flapping” between arms, wrap deterministic selection with `StickyMab`:
