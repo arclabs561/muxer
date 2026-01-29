@@ -9,6 +9,12 @@
 //! - **Non-stationarity friendly**: prefer **sliding-window** summaries over lifetime averages.
 //! - **Multi-objective**: choose on a Pareto frontier, then deterministic scalarization.
 //!
+//! Included policies:
+//! - `select_mab`: deterministic Pareto + scalarization selection from windowed summaries.
+//! - `ThompsonSampling`: seedable Thompson sampling for scalar rewards in `[0, 1]` (with optional decay).
+//! - `Exp3Ix`: seedable EXP3-IX for adversarial / fast-shifting scalar rewards in `[0, 1]` (with optional decay).
+//! - `softmax_map`: stable score→probability helper for traffic splitting.
+//!
 //! Non-goals:
 //! - This is not a full contextual-bandit library.
 
@@ -650,6 +656,73 @@ mod tests {
             // Determinism: same input -> same output.
             let sel2 = select_mab(&arms, &m, cfg);
             prop_assert_eq!(sel.chosen, sel2.chosen);
+        }
+
+        #[test]
+        fn select_mab_ignores_summaries_for_unknown_arms(
+            calls_a in 1u64..50,
+            calls_b in 1u64..50,
+            ok_a in 0u64..50,
+            ok_b in 0u64..50,
+            http_a in 0u64..50,
+            http_b in 0u64..50,
+            junk_a in 0u64..50,
+            junk_b in 0u64..50,
+            hard_a in 0u64..50,
+            hard_b in 0u64..50,
+            cost_a in 0u64..500,
+            cost_b in 0u64..500,
+            lat_a in 0u64..50_000,
+            lat_b in 0u64..50_000,
+            extra_calls in 0u64..50,
+            extra_ok in 0u64..50,
+            extra_http in 0u64..50,
+            extra_junk in 0u64..50,
+            extra_hard in 0u64..50,
+            extra_cost in 0u64..500,
+            extra_lat in 0u64..50_000,
+        ) {
+            let arms = vec!["a".to_string(), "b".to_string()];
+            let mut m = BTreeMap::new();
+
+            let sa = s(
+                calls_a,
+                ok_a.min(calls_a),
+                http_a.min(calls_a),
+                junk_a.min(calls_a),
+                hard_a.min(junk_a.min(calls_a)),
+                cost_a,
+                lat_a,
+            );
+            let sb = s(
+                calls_b,
+                ok_b.min(calls_b),
+                http_b.min(calls_b),
+                junk_b.min(calls_b),
+                hard_b.min(junk_b.min(calls_b)),
+                cost_b,
+                lat_b,
+            );
+            m.insert("a".to_string(), sa);
+            m.insert("b".to_string(), sb);
+
+            let cfg = MabConfig::default();
+            let sel1 = select_mab(&arms, &m, cfg);
+
+            // Add an irrelevant arm to the summaries map.
+            let sx = s(
+                extra_calls,
+                extra_ok.min(extra_calls),
+                extra_http.min(extra_calls),
+                extra_junk.min(extra_calls),
+                extra_hard.min(extra_junk.min(extra_calls)),
+                extra_cost,
+                extra_lat,
+            );
+            m.insert("zzz-extra".to_string(), sx);
+
+            let sel2 = select_mab(&arms, &m, cfg);
+            prop_assert_eq!(sel1.chosen, sel2.chosen);
         }
     }
 }

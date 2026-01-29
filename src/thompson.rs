@@ -8,6 +8,7 @@
 //! - Default construction uses a fixed seed (deterministic by default).
 
 use rand::rngs::StdRng;
+use rand::Rng;
 use rand::SeedableRng;
 use rand_distr::{Beta, Distribution};
 use std::collections::BTreeMap;
@@ -22,6 +23,11 @@ pub struct ThompsonConfig {
     pub alpha0: f64,
     /// Prior beta (must be > 0).
     pub beta0: f64,
+    /// Exponential decay factor in `(0, 1]` applied on each update.
+    ///
+    /// - `1.0` means no decay (no forgetting).
+    /// - Smaller values forget older observations faster (useful for non-stationarity).
+    pub decay: f64,
     /// Optional per-arm priors (alpha, beta). If present, overrides (alpha0, beta0).
     pub priors: BTreeMap<String, (f64, f64)>,
 }
@@ -31,6 +37,7 @@ impl Default for ThompsonConfig {
         Self {
             alpha0: 1.0,
             beta0: 1.0,
+            decay: 1.0,
             priors: BTreeMap::new(),
         }
     }
@@ -108,6 +115,44 @@ impl ThompsonSampling {
         softmax_map(&scores, temperature)
     }
 
+    /// Select an arm by sampling from the mean-based softmax allocation, returning
+    /// both the chosen arm and the allocation used.
+    ///
+    /// This is a pragmatic “traffic splitting” selector:
+    /// - The returned map is a probability distribution over arms.
+    /// - The chosen arm is sampled from that distribution (seedable RNG).
+    /// - It still explores each arm once in stable order.
+    pub fn select_softmax_mean_with_probs<'a>(
+        &mut self,
+        arms_in_order: &'a [String],
+        temperature: f64,
+    ) -> Option<(&'a String, BTreeMap<String, f64>)> {
+        if arms_in_order.is_empty() {
+            return None;
+        }
+
+        // Explore first (stable).
+        for a in arms_in_order {
+            let s = *self.get_or_create_stats(a);
+            if s.uses == 0 {
+                let probs = self.allocation_mean_softmax(arms_in_order, temperature);
+                return Some((a, probs));
+            }
+        }
+
+        let probs = self.allocation_mean_softmax(arms_in_order, temperature);
+        // Sample from the returned distribution in `arms_in_order` order.
+        let r: f64 = self.rng.random();
+        let mut cdf = 0.0;
+        for a in arms_in_order {
+            cdf += probs.get(a).copied().unwrap_or(0.0);
+            if r < cdf {
+                return Some((a, probs));
+            }
+        }
+        Some((arms_in_order.last().unwrap(), probs))
+    }
+
     /// Reset all learned state.
     pub fn reset(&mut self) {
         self.stats.clear();
@@ -179,9 +224,16 @@ impl ThompsonSampling {
     /// - `beta += 1 - reward`
     pub fn update_reward(&mut self, arm: &str, reward01: f64) {
         let r = reward01.clamp(0.0, 1.0);
+        let (a0, b0) = self.prior_for(arm);
+        let decay = if self.cfg.decay.is_finite() && self.cfg.decay > 0.0 && self.cfg.decay <= 1.0 {
+            self.cfg.decay
+        } else {
+            1.0
+        };
         let s = self.get_or_create_stats(arm);
-        s.alpha += r;
-        s.beta += 1.0 - r;
+        // Decay toward prior, then add this observation.
+        s.alpha = a0 + decay * (s.alpha - a0) + r;
+        s.beta = b0 + decay * (s.beta - b0) + (1.0 - r);
         s.uses = s.uses.saturating_add(1);
     }
 }
@@ -195,6 +247,7 @@ impl Default for ThompsonSampling {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn explores_each_arm_once_in_order() {
@@ -235,5 +288,38 @@ mod tests {
         }
         let after = ts.stats().get("a").unwrap().expected_value();
         assert!(after > before);
+    }
+
+    proptest! {
+        #[test]
+        fn thompson_allocation_is_a_distribution_and_deterministic(
+            seed in any::<u64>(),
+            decay in 0.01f64..1.0f64,
+            temperature in prop_oneof![Just(f64::NAN), Just(0.0), Just(-1.0), 1.0e-6f64..1.0e6f64],
+            rewards in proptest::collection::vec(0.0f64..1.0f64, 0..100),
+        ) {
+            let cfg = ThompsonConfig { decay, ..ThompsonConfig::default() };
+            let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+
+            let mut t1 = ThompsonSampling::with_seed(cfg.clone(), seed);
+            let mut t2 = ThompsonSampling::with_seed(cfg, seed);
+
+            for (i, r) in rewards.iter().enumerate() {
+                let (c1, p1) = t1.select_softmax_mean_with_probs(&arms, temperature).unwrap();
+                let (c2, p2) = t2.select_softmax_mean_with_probs(&arms, temperature).unwrap();
+                prop_assert_eq!(c1, c2, "step={}", i);
+                prop_assert_eq!(p1.clone(), p2, "step={}", i);
+
+                let s: f64 = p1.values().sum();
+                prop_assert!((s - 1.0).abs() < 1e-9, "sum={}", s);
+                for v in p1.values() {
+                    prop_assert!(v.is_finite());
+                    prop_assert!(*v >= 0.0 && *v <= 1.0);
+                }
+
+                t1.update_reward(c1, *r);
+                t2.update_reward(c2, *r);
+            }
+        }
     }
 }

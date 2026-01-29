@@ -19,6 +19,11 @@ pub struct Exp3IxConfig {
     pub confidence_delta: Option<f64>,
     /// Seed for the internal RNG (used only after initial exploration).
     pub seed: u64,
+    /// Exponential decay factor in `(0, 1]` applied to accumulated losses each update.
+    ///
+    /// - `1.0` means no decay (no forgetting).
+    /// - Smaller values forget older losses faster (useful for non-stationarity).
+    pub decay: f64,
 }
 
 impl Default for Exp3IxConfig {
@@ -27,6 +32,7 @@ impl Default for Exp3IxConfig {
             horizon: 1_000,
             confidence_delta: None,
             seed: 0,
+            decay: 1.0,
         }
     }
 }
@@ -130,6 +136,37 @@ impl Exp3Ix {
         out
     }
 
+    /// Select an arm and return the probabilities used for selection.
+    pub fn select_with_probs<'a>(
+        &mut self,
+        arms_in_order: &'a [String],
+    ) -> Option<(&'a String, BTreeMap<String, f64>)> {
+        self.ensure_arms(arms_in_order);
+        if self.arms.is_empty() {
+            return None;
+        }
+
+        // Always return probabilities as of this decision.
+        let probs = self.probabilities(arms_in_order);
+
+        // Explore first.
+        for (i, a) in arms_in_order.iter().enumerate() {
+            if self.uses.get(i).copied().unwrap_or(0) == 0 {
+                return Some((a, probs));
+            }
+        }
+
+        let r: f64 = self.rng.random();
+        let mut cdf = 0.0;
+        for a in arms_in_order {
+            cdf += probs.get(a).copied().unwrap_or(0.0);
+            if r < cdf {
+                return Some((a, probs));
+            }
+        }
+        Some((arms_in_order.last().unwrap(), probs))
+    }
+
     /// Select an arm.
     ///
     /// Policy:
@@ -168,6 +205,16 @@ impl Exp3Ix {
         let Some(idx) = self.arms.iter().position(|a| a == arm) else {
             return;
         };
+        let decay = if self.cfg.decay.is_finite() && self.cfg.decay > 0.0 && self.cfg.decay <= 1.0 {
+            self.cfg.decay
+        } else {
+            1.0
+        };
+        if decay < 1.0 {
+            for x in &mut self.cum_loss_hat {
+                *x *= decay;
+            }
+        }
         let r = reward01.clamp(0.0, 1.0);
         let loss = 1.0 - r;
         let p = self.probs.get(idx).copied().unwrap_or(0.0);
@@ -189,6 +236,7 @@ impl Default for Exp3Ix {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn explores_each_arm_once_in_order() {
@@ -216,6 +264,7 @@ mod tests {
             horizon: 100,
             confidence_delta: None,
             seed: 7,
+            decay: 1.0,
         };
         let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let mut e1 = Exp3Ix::new(cfg);
@@ -237,6 +286,67 @@ mod tests {
             assert_eq!(a1, a2);
             e1.update_reward(&a1, 0.5);
             e2.update_reward(&a2, 0.5);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn exp3ix_probs_are_well_formed_and_choice_is_member(
+            seed in any::<u64>(),
+            horizon in 1usize..5000,
+            decay in 0.01f64..1.0f64,
+            steps in 0usize..200,
+            // reward stream (bounded)
+            rewards in proptest::collection::vec(0.0f64..1.0f64, 0..200),
+        ) {
+            let cfg = Exp3IxConfig {
+                seed,
+                horizon,
+                confidence_delta: None,
+                decay,
+            };
+            let mut ex = Exp3Ix::new(cfg);
+            let arms = vec!["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()];
+
+            let mut i = 0usize;
+            while i < steps {
+                let (chosen, probs) = ex.select_with_probs(&arms).unwrap();
+                // choice is a member
+                prop_assert!(arms.iter().any(|a| a == chosen));
+
+                // probs is a distribution
+                let s: f64 = probs.values().sum();
+                prop_assert!((s - 1.0).abs() < 1e-9, "sum={}", s);
+                for v in probs.values() {
+                    prop_assert!(v.is_finite());
+                    prop_assert!(*v >= 0.0 && *v <= 1.0);
+                }
+
+                let r = rewards.get(i).copied().unwrap_or(0.5);
+                ex.update_reward(chosen, r);
+                i += 1;
+            }
+        }
+
+        #[test]
+        fn exp3ix_is_deterministic_with_seed_for_select_with_probs(
+            seed in any::<u64>(),
+            decay in 0.1f64..1.0f64,
+            rewards in proptest::collection::vec(0.0f64..1.0f64, 0..100),
+        ) {
+            let cfg = Exp3IxConfig { seed, horizon: 1000, confidence_delta: None, decay };
+            let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+            let mut e1 = Exp3Ix::new(cfg);
+            let mut e2 = Exp3Ix::new(cfg);
+
+            for (i, r) in rewards.iter().enumerate() {
+                let (c1, p1) = e1.select_with_probs(&arms).unwrap();
+                let (c2, p2) = e2.select_with_probs(&arms).unwrap();
+                prop_assert_eq!(c1, c2, "step={}", i);
+                prop_assert_eq!(p1, p2, "step={}", i);
+                e1.update_reward(c1, *r);
+                e2.update_reward(c2, *r);
+            }
         }
     }
 }
