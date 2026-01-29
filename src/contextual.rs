@@ -293,6 +293,60 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    #[test]
+    fn linucb_explores_each_arm_once_in_order() {
+        let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let cfg = LinUcbConfig {
+            dim: 2,
+            lambda: 1.0,
+            alpha: 1.0,
+            seed: 0,
+            decay: 1.0,
+        };
+        let mut p = LinUcb::new(cfg);
+        let ctx = [0.2, 0.7];
+
+        let (c1, _) = p.select_with_scores(&arms, &ctx).unwrap();
+        p.update_reward(c1, &ctx, 0.0);
+        assert_eq!(c1.as_str(), "a");
+
+        let (c2, _) = p.select_with_scores(&arms, &ctx).unwrap();
+        p.update_reward(c2, &ctx, 0.0);
+        assert_eq!(c2.as_str(), "b");
+
+        let (c3, _) = p.select_with_scores(&arms, &ctx).unwrap();
+        p.update_reward(c3, &ctx, 0.0);
+        assert_eq!(c3.as_str(), "c");
+    }
+
+    #[test]
+    fn linucb_learns_better_arm_in_simple_linear_env() {
+        // Context is constant; arm "a" always yields reward 1, arm "b" yields reward 0.
+        // After initial exploration, LinUCB should prefer "a" most of the time.
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let cfg = LinUcbConfig {
+            dim: 2,
+            lambda: 1.0,
+            alpha: 0.1, // small exploration bonus
+            seed: 0,
+            decay: 1.0,
+        };
+        let mut p = LinUcb::new(cfg);
+        let ctx = [1.0, 0.5];
+
+        let mut chosen_a = 0u64;
+        for _ in 0..200 {
+            let (chosen, _) = p.select_with_scores(&arms, &ctx).unwrap();
+            if chosen.as_str() == "a" {
+                chosen_a += 1;
+                p.update_reward(chosen, &ctx, 1.0);
+            } else {
+                p.update_reward(chosen, &ctx, 0.0);
+            }
+        }
+        assert!(chosen_a >= 150, "chosen_a={}", chosen_a);
+    }
+
     proptest! {
         #[test]
         fn linucb_is_deterministic_given_seed(

@@ -818,4 +818,133 @@ mod tests {
         assert_eq!(e4.selection.chosen, "b");
         assert_eq!(sticky.dwell(), 1);
     }
+
+    #[test]
+    fn sticky_mab_respects_min_switch_margin() {
+        // Construct a base Selection directly so we can control scalar scores precisely.
+        let cfg = MabConfig::default();
+        let mut sticky = StickyMab::new(StickyConfig {
+            min_dwell: 0,
+            min_switch_margin: 0.5,
+        });
+
+        let mk = |chosen: &str, a_score: f64, b_score: f64| -> Selection {
+            Selection {
+                chosen: chosen.to_string(),
+                frontier: vec!["a".to_string(), "b".to_string()],
+                candidates: vec![
+                    CandidateDebug {
+                        name: "a".to_string(),
+                        calls: 10,
+                        ok: 0,
+                        http_429: 0,
+                        junk: 0,
+                        hard_junk: 0,
+                        ok_rate: 0.0,
+                        http_429_rate: 0.0,
+                        junk_rate: 0.0,
+                        hard_junk_rate: 0.0,
+                        soft_junk_rate: 0.0,
+                        mean_cost_units: 0.0,
+                        mean_elapsed_ms: 0.0,
+                        ucb: 0.0,
+                        objective_success: a_score,
+                    },
+                    CandidateDebug {
+                        name: "b".to_string(),
+                        calls: 10,
+                        ok: 0,
+                        http_429: 0,
+                        junk: 0,
+                        hard_junk: 0,
+                        ok_rate: 0.0,
+                        http_429_rate: 0.0,
+                        junk_rate: 0.0,
+                        hard_junk_rate: 0.0,
+                        soft_junk_rate: 0.0,
+                        mean_cost_units: 0.0,
+                        mean_elapsed_ms: 0.0,
+                        ucb: 0.0,
+                        objective_success: b_score,
+                    },
+                ],
+                config: cfg,
+            }
+        };
+
+        // Start on "a".
+        let e1 = sticky.apply(mk("a", 1.0, 1.0));
+        assert_eq!(e1.selection.chosen, "a");
+        assert_eq!(sticky.previous(), Some("a"));
+
+        // Candidate "b" is only slightly better: margin < 0.5 => keep "a".
+        let e2 = sticky.apply(mk("b", 1.0, 1.4));
+        assert_eq!(e2.selection.chosen, "a");
+
+        // Candidate "b" is much better: margin >= 0.5 => switch to "b".
+        let e3 = sticky.apply(mk("b", 1.0, 1.7));
+        assert_eq!(e3.selection.chosen, "b");
+        assert_eq!(sticky.previous(), Some("b"));
+    }
+
+    #[test]
+    fn sticky_mab_follows_base_choice_if_previous_missing_from_candidates() {
+        let cfg = MabConfig::default();
+        let mut sticky = StickyMab::new(StickyConfig {
+            min_dwell: 10,
+            min_switch_margin: 100.0,
+        });
+
+        // Set a previous arm that won't appear.
+        sticky.apply(Selection {
+            chosen: "old".to_string(),
+            frontier: vec!["old".to_string()],
+            candidates: vec![CandidateDebug {
+                name: "old".to_string(),
+                calls: 0,
+                ok: 0,
+                http_429: 0,
+                junk: 0,
+                hard_junk: 0,
+                ok_rate: 0.0,
+                http_429_rate: 0.0,
+                junk_rate: 0.0,
+                hard_junk_rate: 0.0,
+                soft_junk_rate: 0.0,
+                mean_cost_units: 0.0,
+                mean_elapsed_ms: 0.0,
+                ucb: 0.0,
+                objective_success: 0.0,
+            }],
+            config: cfg,
+        });
+        assert_eq!(sticky.previous(), Some("old"));
+
+        // Now candidates don't include "old" => stickiness must not force an unavailable arm.
+        let base = Selection {
+            chosen: "a".to_string(),
+            frontier: vec!["a".to_string()],
+            candidates: vec![CandidateDebug {
+                name: "a".to_string(),
+                calls: 10,
+                ok: 0,
+                http_429: 0,
+                junk: 0,
+                hard_junk: 0,
+                ok_rate: 0.0,
+                http_429_rate: 0.0,
+                junk_rate: 0.0,
+                hard_junk_rate: 0.0,
+                soft_junk_rate: 0.0,
+                mean_cost_units: 0.0,
+                mean_elapsed_ms: 0.0,
+                ucb: 0.0,
+                objective_success: 0.0,
+            }],
+            config: cfg,
+        };
+        let e = sticky.apply(base);
+        assert_eq!(e.selection.chosen, "a");
+        assert_eq!(sticky.previous(), Some("a"));
+    }
 }
