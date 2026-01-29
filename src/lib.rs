@@ -14,6 +14,7 @@
 //! - `ThompsonSampling`: seedable Thompson sampling for scalar rewards in `[0, 1]` (with optional decay).
 //! - `Exp3Ix`: seedable EXP3-IX for adversarial / fast-shifting scalar rewards in `[0, 1]` (with optional decay).
 //! - `softmax_map`: stable score→probability helper for traffic splitting.
+//! - (feature `contextual`) `LinUcb`: contextual bandit (linear UCB) for per-request routing using feature vectors.
 //!
 //! Non-goals:
 //! - This is not a full contextual-bandit library.
@@ -31,6 +32,11 @@ pub use exp3ix::*;
 
 mod thompson;
 pub use thompson::*;
+
+#[cfg(feature = "contextual")]
+mod contextual;
+#[cfg(feature = "contextual")]
+pub use contextual::*;
 
 /// A single observed outcome for an arm.
 #[derive(Debug, Clone, Copy, Default)]

@@ -22,12 +22,14 @@ This crate also includes:
 
 - a **seedable Thompson-sampling** policy (`ThompsonSampling`) for cases where you can provide a scalar reward in `[0, 1]` per call
 - a **seedable EXP3-IX** policy (`Exp3Ix`) for more adversarial / fast-shifting reward settings
+- (feature `contextual`) a **linear contextual bandit** policy (`LinUcb`) for per-request routing with feature vectors
 
 ## Which policy should I use?
 
 - **`select_mab` (Window + Pareto + scalarization)**: when you care about **multiple objectives** at once (success, 429, junk, cost, latency) and you want deterministic selection with hard constraints.
 - **`ThompsonSampling`**: when you can provide a **single reward** per call (in `[0, 1]`) and want a classic explore/exploit policy (seedable, optionally decayed).
 - **`Exp3Ix`**: when reward is **non-stationary / adversarial-ish** and you still want a probabilistic policy (seedable, optionally decayed).
+- **`LinUcb` (feature `contextual`)**: when you have a per-request feature vector (e.g. cheap “difficulty” features, embeddings, metadata) and want a contextual policy.
 
 ## Quick examples
 
@@ -100,6 +102,14 @@ Runnable:
 
 ```bash
 cargo run --example thompson_router
+```
+
+### Contextual routing (LinUCB)
+
+Runnable:
+
+```bash
+cargo run --example contextual_router --features contextual
 ```
 
 ## Usage

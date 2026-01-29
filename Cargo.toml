@@ -21,4 +21,5 @@ proptest = "1.9"
 [features]
 default = []
 serde = ["dep:serde"]
+contextual = []
 
