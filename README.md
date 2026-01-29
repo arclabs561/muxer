@@ -112,6 +112,14 @@ Runnable:
 cargo run --example contextual_router --features contextual
 ```
 
+### Stickiness / switching-cost control
+
+If you want to reduce “flapping” between arms, wrap deterministic selection with `StickyMab`:
+
+```bash
+cargo run --example sticky_mab_router
+```
+
 ## Usage
 
 ```toml

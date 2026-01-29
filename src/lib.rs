@@ -38,6 +38,9 @@ mod contextual;
 #[cfg(feature = "contextual")]
 pub use contextual::*;
 
+mod sticky;
+pub use sticky::*;
+
 /// A single observed outcome for an arm.
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -780,5 +783,39 @@ mod tests {
             let sel = select_mab(&arms, &m, MabConfig::default());
             prop_assert_eq!(sel.chosen, expected);
         }
+    }
+
+    #[test]
+    fn sticky_mab_respects_min_dwell() {
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let cfg = MabConfig::default();
+
+        let mut sticky = StickyMab::new(StickyConfig {
+            min_dwell: 3,
+            min_switch_margin: 0.0,
+        });
+
+        // First: pick "a".
+        let mut m1 = BTreeMap::new();
+        m1.insert("a".to_string(), s(10, 10, 0, 0, 0, 0, 0));
+        m1.insert("b".to_string(), s(10, 5, 0, 0, 0, 0, 0));
+        let e1 = sticky.apply(select_mab(&arms, &m1, cfg));
+        assert_eq!(e1.selection.chosen, "a");
+        assert_eq!(sticky.dwell(), 1);
+
+        // Now "b" is better, but dwell gate should keep "a" for 2 more decisions.
+        let mut m2 = BTreeMap::new();
+        m2.insert("a".to_string(), s(10, 5, 0, 0, 0, 0, 0));
+        m2.insert("b".to_string(), s(10, 10, 0, 0, 0, 0, 0));
+
+        let e2 = sticky.apply(select_mab(&arms, &m2, cfg));
+        assert_eq!(e2.selection.chosen, "a");
+        let e3 = sticky.apply(select_mab(&arms, &m2, cfg));
+        assert_eq!(e3.selection.chosen, "a");
+
+        // Next decision: allowed to switch.
+        let e4 = sticky.apply(select_mab(&arms, &m2, cfg));
+        assert_eq!(e4.selection.chosen, "b");
+        assert_eq!(sticky.dwell(), 1);
     }
 }

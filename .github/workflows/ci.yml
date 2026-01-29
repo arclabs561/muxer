@@ -26,3 +26,12 @@ jobs:
 
       - name: test
         run: cargo test --all-targets
+
+      - name: clippy (contextual)
+        run: cargo clippy --all-targets --features contextual -- -D warnings
+
+      - name: build examples (contextual)
+        run: cargo build --examples --features contextual
+
+      - name: test (contextual)
+        run: cargo test --all-targets --features contextual
