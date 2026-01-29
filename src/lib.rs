@@ -17,6 +17,9 @@
 use pare::{Direction, ParetoFrontier};
 use std::collections::{BTreeMap, VecDeque};
 
+mod thompson;
+pub use thompson::*;
+
 /// A single observed outcome for an arm.
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -442,11 +445,13 @@ pub fn select_mab(
     for (i, vals) in frontier_points.iter().enumerate() {
         frontier.push(vals.clone(), i);
     }
-    let frontier_indices: Vec<usize> = if frontier.is_empty() {
+    let mut frontier_indices: Vec<usize> = if frontier.is_empty() {
         (0..frontier_points.len()).collect()
     } else {
         frontier.points().iter().map(|p| p.data).collect()
     };
+    // Ensure stable ordering regardless of frontier internals.
+    frontier_indices.sort_unstable();
 
     let frontier_names: Vec<String> = frontier_indices
         .iter()
@@ -467,25 +472,19 @@ pub fn select_mab(
         .unwrap_or_else(|| arms_in_order.first().cloned().unwrap_or_default());
     let mut best_score = f64::NEG_INFINITY;
     for &idx in &frontier_indices {
-        let Some(name) = frontier_names_in_order.get(idx) else {
+        let Some(c) = candidates.get(idx) else {
             continue;
         };
-        let s = candidates
-            .iter()
-            .find(|c| &c.name == name)
-            .map(|c| {
-                // Maximize:
-                //   objective_success - w_cost * cost - w_lat * latency - w_hard * hard_junk - w_soft * soft_junk
-                c.objective_success
-                    - weights[1] * c.mean_cost_units
-                    - weights[2] * c.mean_elapsed_ms
-                    - weights[3] * c.hard_junk_rate
-                    - weights[4] * c.soft_junk_rate
-            })
-            .unwrap_or(f64::NEG_INFINITY);
-        if s > best_score || ((s - best_score).abs() <= 1e-12 && name < &best_name) {
+        // Maximize:
+        //   objective_success - w_cost * cost - w_lat * latency - w_hard * hard_junk - w_soft * soft_junk
+        let s = c.objective_success
+            - weights[1] * c.mean_cost_units
+            - weights[2] * c.mean_elapsed_ms
+            - weights[3] * c.hard_junk_rate
+            - weights[4] * c.soft_junk_rate;
+        if s > best_score || ((s - best_score).abs() <= 1e-12 && c.name < best_name) {
             best_score = s;
-            best_name = name.clone();
+            best_name = c.name.clone();
         }
     }
 

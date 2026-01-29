@@ -8,6 +8,8 @@ The core idea is:
 - compute a Pareto frontier over the objectives
 - pick a single provider deterministically via scalarization + stable tie-break
 
+This crate also includes a **seedable Thompson-sampling** policy (`ThompsonSampling`) for cases where you can provide a scalar reward in `[0, 1]` per call.
+
 ## Usage
 
 ```toml
