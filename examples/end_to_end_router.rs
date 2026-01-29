@@ -1,4 +1,4 @@
-use muxer::{select_mab, MabConfig, Outcome, StickyConfig, StickyMab, Window};
+use muxer::{select_mab_explain, MabConfig, Outcome, StickyConfig, StickyMab, Window};
 use rand::rngs::StdRng;
 use rand::Rng;
 use rand::SeedableRng;
@@ -116,8 +116,9 @@ fn main() {
             .map(|(k, w)| (k.clone(), w.summary()))
             .collect();
 
-        let base = select_mab(&arms, &summaries, cfg);
-        let explained = sticky.apply(base);
+        let base = select_mab_explain(&arms, &summaries, cfg);
+        let fallback = base.constraints_fallback_used;
+        let explained = sticky.apply_mab(base);
         let chosen = explained.selection.chosen.clone();
         *counts.entry(chosen.clone()).or_insert(0) += 1;
 
@@ -134,10 +135,11 @@ fn main() {
             let s = w.summary();
             // Intentionally log a single line per tick (easy to ingest into log pipelines).
             eprintln!(
-                "t={:4} chosen={} dwell={} counts={:?} ok_rate={:.3} http_429_rate={:.3} junk_rate={:.3} hard_junk_rate={:.3} reasons={:?}",
+                "t={:4} chosen={} dwell={} fallback={} counts={:?} ok_rate={:.3} http_429_rate={:.3} junk_rate={:.3} hard_junk_rate={:.3} reasons={:?}",
                 t,
                 chosen,
                 sticky.dwell(),
+                fallback,
                 counts,
                 s.ok_rate(),
                 s.http_429_rate(),

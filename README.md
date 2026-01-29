@@ -64,7 +64,7 @@ This combines multiple production patterns in one loop: window ingestion, constr
 cargo run --example end_to_end_router
 ```
 
-This same scenario has a CI-checked regression test in `tests/e2e_metrics.rs`.
+This same scenario has a CI-checked regression test in `tests/e2e_metrics.rs` and now logs whether constraint fallback was used.
 
 ### Window ingestion with delayed junk labeling
 

@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::{CandidateDebug, MabConfig, Selection};
+use crate::{CandidateDebug, MabConfig, MabSelectionDecision, Selection};
 
 /// Stickiness configuration.
 #[derive(Debug, Clone, Copy)]
@@ -135,10 +135,6 @@ impl StickyMab {
         self.dwell = 0;
     }
 
-    fn is_explore_first(sel: &Selection) -> bool {
-        sel.candidates.len() == 1 && sel.candidates[0].calls == 0
-    }
-
     fn scores_by_arm(sel: &Selection) -> BTreeMap<&str, f64> {
         let mut out = BTreeMap::new();
         for c in &sel.candidates {
@@ -151,7 +147,9 @@ impl StickyMab {
     pub fn apply(&mut self, mut sel: Selection) -> ExplainedSelection {
         let mut reasons: Vec<DecisionReason> = Vec::new();
 
-        if Self::is_explore_first(&sel) {
+        // Back-compat heuristic for explore-first (prefer `apply_mab` when possible).
+        let explore_first = sel.candidates.len() == 1 && sel.candidates[0].calls == 0;
+        if explore_first {
             let chosen = sel.chosen.clone();
             self.previous = Some(chosen.clone());
             self.dwell = 1;
@@ -236,6 +234,110 @@ impl StickyMab {
         }
 
         // Allow switch.
+        reasons.push(DecisionReason::Switched {
+            previous: prev.clone(),
+            candidate: candidate.clone(),
+            previous_score: prev_score,
+            candidate_score: cand_score,
+            margin,
+        });
+        self.previous = Some(candidate.clone());
+        self.dwell = 1;
+        ExplainedSelection {
+            selection: sel,
+            reasons,
+        }
+    }
+
+    /// Apply stickiness using `select_mab_explain` output (recommended).
+    ///
+    /// This avoids heuristics for detecting explore-first and also provides callers access
+    /// to constraint-fallback metadata via `decision.constraints_fallback_used`.
+    pub fn apply_mab(&mut self, decision: MabSelectionDecision) -> ExplainedSelection {
+        let mut sel = decision.selection;
+        let mut reasons: Vec<DecisionReason> = Vec::new();
+
+        if decision.explore_first {
+            let chosen = sel.chosen.clone();
+            self.previous = Some(chosen.clone());
+            self.dwell = 1;
+            reasons.push(DecisionReason::ExploreFirst { chosen });
+            return ExplainedSelection {
+                selection: sel,
+                reasons,
+            };
+        }
+
+        // Reuse the legacy logic for all other cases.
+        let candidate = sel.chosen.clone();
+        let Some(prev) = self.previous.clone() else {
+            self.previous = Some(candidate.clone());
+            self.dwell = 1;
+            reasons.push(DecisionReason::BaseChoice { chosen: candidate });
+            return ExplainedSelection {
+                selection: sel,
+                reasons,
+            };
+        };
+
+        let scores = Self::scores_by_arm(&sel);
+        let Some(prev_score) = scores.get(prev.as_str()).copied() else {
+            self.previous = Some(candidate.clone());
+            self.dwell = 1;
+            reasons.push(DecisionReason::BaseChoice { chosen: candidate });
+            return ExplainedSelection {
+                selection: sel,
+                reasons,
+            };
+        };
+
+        if candidate == prev {
+            self.dwell = self.dwell.saturating_add(1);
+            reasons.push(DecisionReason::BaseChoice { chosen: candidate });
+            return ExplainedSelection {
+                selection: sel,
+                reasons,
+            };
+        }
+
+        if self.cfg.min_dwell > 0 && self.dwell < self.cfg.min_dwell {
+            reasons.push(DecisionReason::KeptPreviousDwell {
+                previous: prev.clone(),
+                candidate: candidate.clone(),
+                dwell: self.dwell,
+                min_dwell: self.cfg.min_dwell,
+            });
+            sel.chosen = prev.clone();
+            self.dwell = self.dwell.saturating_add(1);
+            return ExplainedSelection {
+                selection: sel,
+                reasons,
+            };
+        }
+
+        let cand_score = scores
+            .get(candidate.as_str())
+            .copied()
+            .unwrap_or(f64::NEG_INFINITY);
+        let margin = cand_score - prev_score;
+        let min_margin = f64_or0(self.cfg.min_switch_margin);
+        if min_margin > 0.0 && !(margin.is_finite() && margin >= min_margin) {
+            reasons.push(DecisionReason::KeptPreviousMargin {
+                previous: prev.clone(),
+                candidate: candidate.clone(),
+                previous_score: prev_score,
+                candidate_score: cand_score,
+                margin,
+                min_margin,
+            });
+            sel.chosen = prev.clone();
+            self.dwell = self.dwell.saturating_add(1);
+            return ExplainedSelection {
+                selection: sel,
+                reasons,
+            };
+        }
+
         reasons.push(DecisionReason::Switched {
             previous: prev.clone(),
             candidate: candidate.clone(),

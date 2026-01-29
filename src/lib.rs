@@ -326,6 +326,26 @@ pub struct Selection {
     pub config: MabConfig,
 }
 
+/// Additional metadata for a deterministic `select_mab` decision.
+///
+/// This exists because production routers typically need more than "which arm":
+/// they also need to know whether constraints eliminated all arms (fallback) and
+/// whether the decision was explore-first.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct MabSelectionDecision {
+    /// The base deterministic selection output (chosen arm + debug rows).
+    pub selection: Selection,
+    /// Arms that were eligible after applying constraints.
+    ///
+    /// If constraints eliminated all arms, this is equal to the original `arms_in_order`.
+    pub eligible_arms: Vec<String>,
+    /// True if constraints eliminated all arms and the selector fell back to the original set.
+    pub constraints_fallback_used: bool,
+    /// True if the selector chose an arm due to explore-first (some arm had `calls == 0`).
+    pub explore_first: bool,
+}
+
 /// Deterministic selection:
 /// - Explore each arm at least once (in stable order).
 /// - Then:
@@ -361,6 +381,15 @@ pub fn select_mab(
     summaries: &BTreeMap<String, Summary>,
     cfg: MabConfig,
 ) -> Selection {
+    select_mab_explain(arms_in_order, summaries, cfg).selection
+}
+
+/// Like `select_mab`, but also returns metadata about constraints and explore-first behavior.
+pub fn select_mab_explain(
+    arms_in_order: &[String],
+    summaries: &BTreeMap<String, Summary>,
+    cfg: MabConfig,
+) -> MabSelectionDecision {
     // Apply hard constraints (BwK-ish “anytime” gating).
     // If constraints filter everything, fall back to the original arm set (never return empty).
     let mut eligible: Vec<String> = Vec::new();
@@ -386,7 +415,13 @@ pub fn select_mab(
             eligible.push(a.clone());
         }
     }
-    let arms_in_order: &[String] = if eligible.is_empty() {
+    let constraints_fallback_used = eligible.is_empty();
+    let eligible_arms: Vec<String> = if constraints_fallback_used {
+        arms_in_order.to_vec()
+    } else {
+        eligible.clone()
+    };
+    let arms_in_order: &[String] = if constraints_fallback_used {
         arms_in_order
     } else {
         &eligible
@@ -395,7 +430,7 @@ pub fn select_mab(
     // Explore first.
     for a in arms_in_order {
         if summaries.get(a).copied().unwrap_or_default().calls == 0 {
-            return Selection {
+            let sel = Selection {
                 chosen: a.clone(),
                 frontier: vec![a.clone()],
                 candidates: vec![CandidateDebug {
@@ -416,6 +451,12 @@ pub fn select_mab(
                     objective_success: 0.0,
                 }],
                 config: cfg,
+            };
+            return MabSelectionDecision {
+                selection: sel,
+                eligible_arms,
+                constraints_fallback_used,
+                explore_first: true,
             };
         }
     }
@@ -531,11 +572,17 @@ pub fn select_mab(
         }
     }
 
-    Selection {
+    let sel = Selection {
         chosen: best_name,
         frontier: frontier_names,
         candidates,
         config: cfg,
+    };
+    MabSelectionDecision {
+        selection: sel,
+        eligible_arms,
+        constraints_fallback_used,
+        explore_first: false,
     }
 }
 
