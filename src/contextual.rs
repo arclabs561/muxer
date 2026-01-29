@@ -347,6 +347,50 @@ mod tests {
         assert!(chosen_a >= 150, "chosen_a={}", chosen_a);
     }
 
+    #[test]
+    fn linucb_learns_context_dependent_routing() {
+        // Two contexts; each has a different optimal arm.
+        // Reward is deterministic (no noise) to avoid test flakiness.
+        let arms = vec!["small".to_string(), "big".to_string()];
+        let cfg = LinUcbConfig {
+            dim: 2,
+            lambda: 1.0,
+            alpha: 0.2,
+            seed: 0,
+            decay: 1.0,
+        };
+        let mut p = LinUcb::new(cfg);
+
+        // Context A => "small" best, context B => "big" best.
+        let ctx_a = [1.0, 0.0];
+        let ctx_b = [0.0, 1.0];
+
+        let mut correct = 0u64;
+        let mut total = 0u64;
+
+        for t in 0..400u64 {
+            let (ctx, optimal) = if t % 2 == 0 {
+                (&ctx_a[..], "small")
+            } else {
+                (&ctx_b[..], "big")
+            };
+            let (chosen, _) = p.select_with_scores(&arms, ctx).unwrap();
+            let reward = if chosen.as_str() == optimal { 1.0 } else { 0.0 };
+            p.update_reward(chosen, ctx, reward);
+
+            // Evaluate after warmup.
+            if t >= 50 {
+                total += 1;
+                if chosen.as_str() == optimal {
+                    correct += 1;
+                }
+            }
+        }
+
+        let acc = (correct as f64) / (total.max(1) as f64);
+        assert!(acc >= 0.85, "acc={}", acc);
+    }
+
     proptest! {
         #[test]
         fn linucb_is_deterministic_given_seed(
