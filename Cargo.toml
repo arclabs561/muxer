@@ -9,6 +9,9 @@ repository = "https://github.com/arclabs561/muxer"
 homepage = "https://github.com/arclabs561/muxer"
 documentation = "https://docs.rs/muxer"
 
+[package.metadata.docs.rs]
+features = ["serde", "contextual"]
+
 [dependencies]
 pare = "0.1.0"
 rand = "0.9"

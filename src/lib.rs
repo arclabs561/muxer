@@ -17,7 +17,8 @@
 //! - (feature `contextual`) `LinUcb`: contextual bandit (linear UCB) for per-request routing using feature vectors.
 //!
 //! Non-goals:
-//! - This is not a full contextual-bandit library.
+//! - This is not a full bandit “platform” (no storage, OPE pipelines, dashboards, etc.).
+//! - The `contextual` feature is intentionally a small, pragmatic policy module, not a full framework.
 
 #![forbid(unsafe_code)]
 

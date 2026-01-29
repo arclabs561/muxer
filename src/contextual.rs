@@ -13,6 +13,8 @@ use rand::Rng;
 use rand::SeedableRng;
 use std::collections::BTreeMap;
 
+use crate::softmax_map;
+
 /// Per-arm score tuple: `(ucb, mean, bonus)`.
 pub type LinUcbScore = (f64, f64, f64);
 
@@ -32,6 +34,11 @@ pub struct LinUcbConfig {
     ///
     /// - `1.0` means no decay (no forgetting).
     /// - Smaller values forget older observations faster (useful for drift).
+    ///
+    /// Implementation detail: if \(d \in (0, 1)\), we apply
+    /// `A <- d*A + x*x^T` and `b <- d*b + r*x` each update.
+    /// Since we store \(A^{-1}\), we first scale `A^{-1} <- A^{-1} / d`
+    /// before applying the Sherman–Morrison rank-1 update.
     pub decay: f64,
 }
 
@@ -239,6 +246,64 @@ impl LinUcb {
         Some((chosen, scores))
     }
 
+    /// Softmax distribution over arms based on their current UCB scores for this context.
+    ///
+    /// This is useful for:
+    /// - traffic-splitting (probabilistic routing)
+    /// - logging an approximate propensity distribution for offline evaluation
+    pub fn probabilities(
+        &mut self,
+        arms_in_order: &[String],
+        context: &[f64],
+        temperature: f64,
+    ) -> BTreeMap<String, f64> {
+        let scores = self.scores(arms_in_order, context);
+        let mut ucb: BTreeMap<String, f64> = BTreeMap::new();
+        for a in arms_in_order {
+            ucb.insert(
+                a.clone(),
+                scores.get(a.as_str()).map(|t| t.0).unwrap_or(0.0),
+            );
+        }
+        softmax_map(&ucb, temperature)
+    }
+
+    /// Select an arm by sampling from `probabilities(...)`, returning the chosen arm and the probabilities used.
+    ///
+    /// Policy:
+    /// - Explore each arm once in stable order (still returns a full `probs` map).
+    /// - Otherwise sample from a softmax over UCB scores (seeded RNG).
+    pub fn select_softmax_ucb_with_probs<'a>(
+        &mut self,
+        arms_in_order: &'a [String],
+        context: &[f64],
+        temperature: f64,
+    ) -> Option<(&'a String, BTreeMap<String, f64>)> {
+        self.ensure_arms(arms_in_order);
+        if arms_in_order.is_empty() {
+            return None;
+        }
+
+        let probs = self.probabilities(arms_in_order, context, temperature);
+
+        for a in arms_in_order {
+            let uses = self.state.get(a).map(|s| s.uses).unwrap_or(0);
+            if uses == 0 {
+                return Some((a, probs));
+            }
+        }
+
+        let r: f64 = self.rng.random();
+        let mut cdf = 0.0;
+        for a in arms_in_order {
+            cdf += probs.get(a).copied().unwrap_or(0.0);
+            if r < cdf {
+                return Some((a, probs));
+            }
+        }
+        Some((arms_in_order.last().unwrap(), probs))
+    }
+
     /// Update the model for `arm` given the same context used for selection and a reward in `[0, 1]`.
     pub fn update_reward(&mut self, arm: &str, context: &[f64], reward01: f64) {
         let d = self.dim();
@@ -249,6 +314,7 @@ impl LinUcb {
         } else {
             1.0
         };
+        let decay = decay.clamp(1.0e-6, 1.0);
 
         let Some(st) = self.state.get_mut(arm) else {
             return;
@@ -259,8 +325,9 @@ impl LinUcb {
             for v in &mut st.b {
                 *v *= decay;
             }
+            // If A <- d*A, then A^{-1} <- A^{-1} / d.
             for v in &mut st.a_inv {
-                *v *= 1.0; // A^{-1} decay is non-trivial; keep stable and only decay b (pragmatic).
+                *v /= decay;
             }
         }
 
@@ -282,9 +349,6 @@ impl LinUcb {
             st.b[i] += r * xi;
         }
         st.uses = st.uses.saturating_add(1);
-
-        // Touch RNG so its presence is not “dead state” (keeps future extensions consistent).
-        let _: f64 = self.rng.random();
     }
 }
 
@@ -389,6 +453,84 @@ mod tests {
 
         let acc = (correct as f64) / (total.max(1) as f64);
         assert!(acc >= 0.85, "acc={}", acc);
+    }
+
+    #[test]
+    fn linucb_softmax_probs_is_a_distribution_and_deterministic() {
+        let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let cfg = LinUcbConfig {
+            dim: 2,
+            lambda: 1.0,
+            alpha: 0.5,
+            seed: 0,
+            decay: 0.97,
+        };
+        let mut p = LinUcb::new(cfg);
+        let ctx = [0.1, 0.9];
+
+        let probs1 = p.probabilities(&arms, &ctx, 0.3);
+        let probs2 = p.probabilities(&arms, &ctx, 0.3);
+        assert_eq!(probs1, probs2);
+
+        let sum: f64 = probs1.values().sum();
+        assert!((sum - 1.0).abs() < 1e-9);
+        for v in probs1.values() {
+            assert!(v.is_finite());
+            assert!(*v >= 0.0 && *v <= 1.0);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn linucb_decay_keeps_state_finite(
+            dim in 1usize..10,
+            decay in 0.5f64..1.0f64,
+            alpha in 0.0f64..3.0f64,
+            lambda in 1.0e-6f64..10.0f64,
+            steps in 0usize..200,
+            ctxs in proptest::collection::vec(
+                proptest::collection::vec(prop_oneof![Just(f64::NAN), -1.0e3f64..1.0e3f64], 0..20),
+                0..200
+            ),
+            rewards in proptest::collection::vec(prop_oneof![Just(f64::NAN), -10.0f64..10.0f64], 0..200),
+        ) {
+            let arms = vec!["a".to_string(), "b".to_string()];
+            let cfg = LinUcbConfig { dim, alpha, lambda, seed: 0, decay };
+            let mut p = LinUcb::new(cfg);
+
+            for i in 0..steps {
+                let ctx = ctxs.get(i).cloned().unwrap_or_default();
+                let (chosen, _scores) = p.select_with_scores(&arms, &ctx).unwrap();
+                let r = rewards.get(i).copied().unwrap_or(0.0);
+                p.update_reward(chosen, &ctx, r);
+            }
+
+            // Invariants: scores finite, state finite, A^{-1} roughly symmetric.
+            let ctx = ctxs.first().cloned().unwrap_or_default();
+            let scores = p.scores(&arms, &ctx);
+            for (_a, (ucb, mean, bonus)) in scores.iter() {
+                prop_assert!(ucb.is_finite());
+                prop_assert!(mean.is_finite());
+                prop_assert!(bonus.is_finite());
+            }
+
+            for st in p.state.values() {
+                for v in &st.b {
+                    prop_assert!(v.is_finite());
+                }
+                for v in &st.a_inv {
+                    prop_assert!(v.is_finite());
+                }
+                let d = p.dim();
+                for i in 0..d {
+                    for j in 0..d {
+                        let aij = st.a_inv[i*d + j];
+                        let aji = st.a_inv[j*d + i];
+                        prop_assert!((aij - aji).abs() < 1e-7);
+                    }
+                }
+            }
+        }
     }
 
     proptest! {
