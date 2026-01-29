@@ -122,6 +122,19 @@ impl ThompsonSampling {
     /// - The returned map is a probability distribution over arms.
     /// - The chosen arm is sampled from that distribution (seedable RNG).
     /// - It still explores each arm once in stable order.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use muxer::{ThompsonConfig, ThompsonSampling};
+    ///
+    /// let arms = vec!["a".to_string(), "b".to_string()];
+    /// let mut ts = ThompsonSampling::with_seed(ThompsonConfig { decay: 0.99, ..ThompsonConfig::default() }, 0);
+    /// let (chosen, probs) = ts.select_softmax_mean_with_probs(&arms, 0.5).unwrap();
+    /// ts.update_reward(chosen, 1.0);
+    /// let s: f64 = probs.values().sum();
+    /// assert!((s - 1.0).abs() < 1e-9);
+    /// ```
     pub fn select_softmax_mean_with_probs<'a>(
         &mut self,
         arms_in_order: &'a [String],
@@ -319,6 +332,31 @@ mod tests {
 
                 t1.update_reward(c1, *r);
                 t2.update_reward(c2, *r);
+            }
+        }
+
+        #[test]
+        fn thompson_decay_stays_finite_under_many_updates(
+            seed in any::<u64>(),
+            decay in 0.01f64..1.0f64,
+            steps in 0usize..500,
+            rewards in proptest::collection::vec(0.0f64..1.0f64, 0..500),
+        ) {
+            let cfg = ThompsonConfig { decay, ..ThompsonConfig::default() };
+            let mut ts = ThompsonSampling::with_seed(cfg, seed);
+            let arms = vec!["a".to_string(), "b".to_string()];
+
+            for i in 0..steps {
+                let a = ts.select(&arms).unwrap().clone();
+                let r = rewards.get(i).copied().unwrap_or(0.5);
+                ts.update_reward(&a, r);
+            }
+
+            for s in ts.stats().values() {
+                prop_assert!(s.alpha.is_finite());
+                prop_assert!(s.beta.is_finite());
+                prop_assert!(s.alpha > 0.0);
+                prop_assert!(s.beta > 0.0);
             }
         }
     }

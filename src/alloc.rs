@@ -10,6 +10,22 @@ use std::collections::BTreeMap;
 /// - `temperature` controls sharpness (must be finite and > 0).
 /// - Uses the standard max-trick for numerical stability.
 /// - Returns a distribution that sums to 1 (or empty if input is empty).
+///
+/// # Example
+///
+/// ```rust
+/// use muxer::softmax_map;
+/// use std::collections::BTreeMap;
+///
+/// let mut s = BTreeMap::new();
+/// s.insert("a".to_string(), 0.0);
+/// s.insert("b".to_string(), 1.0);
+/// let p = softmax_map(&s, 1.0);
+///
+/// let sum: f64 = p.values().sum();
+/// assert!((sum - 1.0).abs() < 1e-9);
+/// assert!(p["b"] > p["a"]);
+/// ```
 pub fn softmax_map(scores: &BTreeMap<String, f64>, temperature: f64) -> BTreeMap<String, f64> {
     if scores.is_empty() {
         return BTreeMap::new();

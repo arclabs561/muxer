@@ -137,6 +137,19 @@ impl Exp3Ix {
     }
 
     /// Select an arm and return the probabilities used for selection.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use muxer::{Exp3Ix, Exp3IxConfig};
+    ///
+    /// let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+    /// let mut ex = Exp3Ix::new(Exp3IxConfig { seed: 123, decay: 0.98, ..Exp3IxConfig::default() });
+    /// let (chosen, probs) = ex.select_with_probs(&arms).unwrap();
+    /// ex.update_reward(chosen, 0.7);
+    /// let s: f64 = probs.values().sum();
+    /// assert!((s - 1.0).abs() < 1e-9);
+    /// ```
     pub fn select_with_probs<'a>(
         &mut self,
         arms_in_order: &'a [String],
@@ -346,6 +359,30 @@ mod tests {
                 prop_assert_eq!(p1, p2, "step={}", i);
                 e1.update_reward(c1, *r);
                 e2.update_reward(c2, *r);
+            }
+        }
+
+        #[test]
+        fn exp3ix_decay_keeps_probs_well_formed(
+            seed in any::<u64>(),
+            decay in 0.01f64..1.0f64,
+            steps in 0usize..400,
+            rewards in proptest::collection::vec(0.0f64..1.0f64, 0..400),
+        ) {
+            let cfg = Exp3IxConfig { seed, horizon: 2000, confidence_delta: None, decay };
+            let mut ex = Exp3Ix::new(cfg);
+            let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+
+            for i in 0..steps {
+                let (chosen, probs) = ex.select_with_probs(&arms).unwrap();
+                let sum: f64 = probs.values().sum();
+                prop_assert!((sum - 1.0).abs() < 1e-9);
+                for v in probs.values() {
+                    prop_assert!(v.is_finite());
+                    prop_assert!(*v >= 0.0 && *v <= 1.0);
+                }
+                let r = rewards.get(i).copied().unwrap_or(0.5);
+                ex.update_reward(chosen, r);
             }
         }
     }

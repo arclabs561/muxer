@@ -325,6 +325,27 @@ pub struct Selection {
 ///     - minimize mean latency
 ///     - minimize junk_rate
 ///   - pick the best scalarized point (with stable tie-break)
+///
+/// # Example
+///
+/// ```rust
+/// use muxer::{select_mab, MabConfig, Summary};
+/// use std::collections::BTreeMap;
+///
+/// let arms = vec!["a".to_string(), "b".to_string()];
+/// let mut summaries = BTreeMap::new();
+/// summaries.insert(
+///     "a".to_string(),
+///     Summary { calls: 10, ok: 9, http_429: 0, junk: 0, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900 }
+/// );
+/// summaries.insert(
+///     "b".to_string(),
+///     Summary { calls: 10, ok: 9, http_429: 0, junk: 2, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900 }
+/// );
+///
+/// let sel = select_mab(&arms, &summaries, MabConfig::default());
+/// assert_eq!(sel.chosen, "a");
+/// ```
 pub fn select_mab(
     arms_in_order: &[String],
     summaries: &BTreeMap<String, Summary>,
@@ -723,6 +744,35 @@ mod tests {
 
             let sel2 = select_mab(&arms, &m, cfg);
             prop_assert_eq!(sel1.chosen, sel2.chosen);
+        }
+
+        #[test]
+        fn select_mab_explores_first_zero_call_arm(
+            // Ensure we have at least one unexplored arm.
+            calls_a in 0u64..10,
+            calls_b in 0u64..10,
+            calls_c in 0u64..10,
+        ) {
+            let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+            let mut m = BTreeMap::new();
+            m.insert("a".to_string(), s(calls_a, 0, 0, 0, 0, 0, 0));
+            m.insert("b".to_string(), s(calls_b, 0, 0, 0, 0, 0, 0));
+            m.insert("c".to_string(), s(calls_c, 0, 0, 0, 0, 0, 0));
+
+            // Find first index with calls == 0.
+            let expected = if calls_a == 0 {
+                "a"
+            } else if calls_b == 0 {
+                "b"
+            } else if calls_c == 0 {
+                "c"
+            } else {
+                // No zero-call arms -> skip (property vacuously holds).
+                return Ok(());
+            };
+
+            let sel = select_mab(&arms, &m, MabConfig::default());
+            prop_assert_eq!(sel.chosen, expected);
         }
     }
 }
