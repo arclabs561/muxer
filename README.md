@@ -64,6 +64,8 @@ This combines multiple production patterns in one loop: window ingestion, constr
 cargo run --example end_to_end_router
 ```
 
+This same scenario has a CI-checked regression test in `tests/e2e_metrics.rs`.
+
 ### Window ingestion with delayed junk labeling
 
 If your “junk” classification is only known after downstream parsing/validation, you can update the most recent outcome:
