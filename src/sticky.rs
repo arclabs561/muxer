@@ -251,3 +251,92 @@ impl StickyMab {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{CandidateDebug, MabConfig};
+
+    fn mk_sel(previous: &str, candidate: &str) -> Selection {
+        let cfg = MabConfig::default();
+        Selection {
+            chosen: candidate.to_string(),
+            frontier: vec!["a".to_string(), "b".to_string()],
+            candidates: vec![
+                CandidateDebug {
+                    name: "a".to_string(),
+                    calls: 10,
+                    ok: 0,
+                    http_429: 0,
+                    junk: 0,
+                    hard_junk: 0,
+                    ok_rate: 0.0,
+                    http_429_rate: 0.0,
+                    junk_rate: 0.0,
+                    hard_junk_rate: 0.0,
+                    soft_junk_rate: 0.0,
+                    mean_cost_units: 0.0,
+                    mean_elapsed_ms: 0.0,
+                    ucb: 0.0,
+                    objective_success: if previous == "a" { 1.0 } else { 2.0 },
+                },
+                CandidateDebug {
+                    name: "b".to_string(),
+                    calls: 10,
+                    ok: 0,
+                    http_429: 0,
+                    junk: 0,
+                    hard_junk: 0,
+                    ok_rate: 0.0,
+                    http_429_rate: 0.0,
+                    junk_rate: 0.0,
+                    hard_junk_rate: 0.0,
+                    soft_junk_rate: 0.0,
+                    mean_cost_units: 0.0,
+                    mean_elapsed_ms: 0.0,
+                    ucb: 0.0,
+                    objective_success: if previous == "a" { 2.0 } else { 1.0 },
+                },
+            ],
+            config: cfg,
+        }
+    }
+
+    #[test]
+    fn sticky_never_returns_arm_not_in_candidates() {
+        let mut sticky = StickyMab::new(StickyConfig {
+            min_dwell: 100,
+            min_switch_margin: 100.0,
+        });
+
+        // Seed previous as "a".
+        let _ = sticky.apply(mk_sel("a", "a"));
+
+        // Now provide a selection that does not include "a" at all.
+        let cfg = MabConfig::default();
+        let sel = Selection {
+            chosen: "x".to_string(),
+            frontier: vec!["x".to_string()],
+            candidates: vec![CandidateDebug {
+                name: "x".to_string(),
+                calls: 10,
+                ok: 0,
+                http_429: 0,
+                junk: 0,
+                hard_junk: 0,
+                ok_rate: 0.0,
+                http_429_rate: 0.0,
+                junk_rate: 0.0,
+                hard_junk_rate: 0.0,
+                soft_junk_rate: 0.0,
+                mean_cost_units: 0.0,
+                mean_elapsed_ms: 0.0,
+                ucb: 0.0,
+                objective_success: 0.0,
+            }],
+            config: cfg,
+        };
+        let out = sticky.apply(sel);
+        assert_eq!(out.selection.chosen, "x");
+    }
+}

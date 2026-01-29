@@ -948,4 +948,27 @@ mod tests {
         assert_eq!(e.selection.chosen, "a");
         assert_eq!(sticky.previous(), Some("a"));
     }
+
+    #[test]
+    fn select_mab_chosen_satisfies_constraints_when_eligible_exists() {
+        // If at least one arm passes constraints, we should never return a violating arm.
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let mut m = BTreeMap::new();
+
+        // Arm "a" violates http_429 constraint, arm "b" is fine.
+        m.insert("a".to_string(), s(100, 90, 80, 0, 0, 10, 1000));
+        m.insert("b".to_string(), s(100, 90, 0, 0, 0, 10, 1000));
+
+        let cfg = MabConfig {
+            max_http_429_rate: Some(0.1),
+            ..MabConfig::default()
+        };
+
+        let sel = select_mab(&arms, &m, cfg);
+        assert_eq!(sel.chosen, "b");
+
+        // Sanity: chosen meets constraints.
+        let s = m.get(&sel.chosen).copied().unwrap_or_default();
+        assert!(s.http_429_rate() <= 0.1);
+    }
 }

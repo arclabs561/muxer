@@ -56,6 +56,14 @@ This is closer to production usage: you maintain a `Window` per arm, push `Outco
 cargo run --example deterministic_router
 ```
 
+### End-to-end router demo (Window + constraints + stickiness + delayed junk)
+
+This combines multiple production patterns in one loop: window ingestion, constraints+weights, stickiness reasons, and delayed junk labeling.
+
+```bash
+cargo run --example end_to_end_router
+```
+
 ### Window ingestion with delayed junk labeling
 
 If your “junk” classification is only known after downstream parsing/validation, you can update the most recent outcome:
