@@ -25,13 +25,20 @@
 use pare::{Direction, ParetoFrontier};
 use std::collections::{BTreeMap, VecDeque};
 
+mod decision;
+pub use decision::*;
+
 mod alloc;
 pub use alloc::*;
 
+#[cfg(feature = "stochastic")]
 mod exp3ix;
+#[cfg(feature = "stochastic")]
 pub use exp3ix::*;
 
+#[cfg(feature = "stochastic")]
 mod thompson;
+#[cfg(feature = "stochastic")]
 pub use thompson::*;
 
 #[cfg(feature = "contextual")]
@@ -586,6 +593,33 @@ pub fn select_mab_explain(
     }
 }
 
+/// Unified decision envelope for deterministic MAB selection.
+///
+/// This is a convenience wrapper around `select_mab_explain` that returns a `Decision`
+/// suitable for consistent logging/replay across policies.
+pub fn select_mab_decide(
+    arms_in_order: &[String],
+    summaries: &BTreeMap<String, Summary>,
+    cfg: MabConfig,
+) -> Decision {
+    let d = select_mab_explain(arms_in_order, summaries, cfg);
+    let mut notes = vec![DecisionNote::Constraints {
+        eligible_arms: d.eligible_arms.clone(),
+        fallback_used: d.constraints_fallback_used,
+    }];
+    if d.explore_first {
+        notes.push(DecisionNote::ExploreFirst);
+    } else {
+        notes.push(DecisionNote::DeterministicChoice);
+    }
+    Decision {
+        policy: DecisionPolicy::Mab,
+        chosen: d.selection.chosen.clone(),
+        probs: None,
+        notes,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -847,7 +881,7 @@ mod tests {
         let mut m1 = BTreeMap::new();
         m1.insert("a".to_string(), s(10, 10, 0, 0, 0, 0, 0));
         m1.insert("b".to_string(), s(10, 5, 0, 0, 0, 0, 0));
-        let e1 = sticky.apply(select_mab(&arms, &m1, cfg));
+        let e1 = sticky.apply_mab(select_mab_explain(&arms, &m1, cfg));
         assert_eq!(e1.selection.chosen, "a");
         assert_eq!(sticky.dwell(), 1);
 
@@ -856,13 +890,13 @@ mod tests {
         m2.insert("a".to_string(), s(10, 5, 0, 0, 0, 0, 0));
         m2.insert("b".to_string(), s(10, 10, 0, 0, 0, 0, 0));
 
-        let e2 = sticky.apply(select_mab(&arms, &m2, cfg));
+        let e2 = sticky.apply_mab(select_mab_explain(&arms, &m2, cfg));
         assert_eq!(e2.selection.chosen, "a");
-        let e3 = sticky.apply(select_mab(&arms, &m2, cfg));
+        let e3 = sticky.apply_mab(select_mab_explain(&arms, &m2, cfg));
         assert_eq!(e3.selection.chosen, "a");
 
         // Next decision: allowed to switch.
-        let e4 = sticky.apply(select_mab(&arms, &m2, cfg));
+        let e4 = sticky.apply_mab(select_mab_explain(&arms, &m2, cfg));
         assert_eq!(e4.selection.chosen, "b");
         assert_eq!(sticky.dwell(), 1);
     }
@@ -876,61 +910,66 @@ mod tests {
             min_switch_margin: 0.5,
         });
 
-        let mk = |chosen: &str, a_score: f64, b_score: f64| -> Selection {
-            Selection {
-                chosen: chosen.to_string(),
-                frontier: vec!["a".to_string(), "b".to_string()],
-                candidates: vec![
-                    CandidateDebug {
-                        name: "a".to_string(),
-                        calls: 10,
-                        ok: 0,
-                        http_429: 0,
-                        junk: 0,
-                        hard_junk: 0,
-                        ok_rate: 0.0,
-                        http_429_rate: 0.0,
-                        junk_rate: 0.0,
-                        hard_junk_rate: 0.0,
-                        soft_junk_rate: 0.0,
-                        mean_cost_units: 0.0,
-                        mean_elapsed_ms: 0.0,
-                        ucb: 0.0,
-                        objective_success: a_score,
-                    },
-                    CandidateDebug {
-                        name: "b".to_string(),
-                        calls: 10,
-                        ok: 0,
-                        http_429: 0,
-                        junk: 0,
-                        hard_junk: 0,
-                        ok_rate: 0.0,
-                        http_429_rate: 0.0,
-                        junk_rate: 0.0,
-                        hard_junk_rate: 0.0,
-                        soft_junk_rate: 0.0,
-                        mean_cost_units: 0.0,
-                        mean_elapsed_ms: 0.0,
-                        ucb: 0.0,
-                        objective_success: b_score,
-                    },
-                ],
-                config: cfg,
+        let mk = |chosen: &str, a_score: f64, b_score: f64| -> MabSelectionDecision {
+            MabSelectionDecision {
+                selection: Selection {
+                    chosen: chosen.to_string(),
+                    frontier: vec!["a".to_string(), "b".to_string()],
+                    candidates: vec![
+                        CandidateDebug {
+                            name: "a".to_string(),
+                            calls: 10,
+                            ok: 0,
+                            http_429: 0,
+                            junk: 0,
+                            hard_junk: 0,
+                            ok_rate: 0.0,
+                            http_429_rate: 0.0,
+                            junk_rate: 0.0,
+                            hard_junk_rate: 0.0,
+                            soft_junk_rate: 0.0,
+                            mean_cost_units: 0.0,
+                            mean_elapsed_ms: 0.0,
+                            ucb: 0.0,
+                            objective_success: a_score,
+                        },
+                        CandidateDebug {
+                            name: "b".to_string(),
+                            calls: 10,
+                            ok: 0,
+                            http_429: 0,
+                            junk: 0,
+                            hard_junk: 0,
+                            ok_rate: 0.0,
+                            http_429_rate: 0.0,
+                            junk_rate: 0.0,
+                            hard_junk_rate: 0.0,
+                            soft_junk_rate: 0.0,
+                            mean_cost_units: 0.0,
+                            mean_elapsed_ms: 0.0,
+                            ucb: 0.0,
+                            objective_success: b_score,
+                        },
+                    ],
+                    config: cfg,
+                },
+                eligible_arms: vec!["a".to_string(), "b".to_string()],
+                constraints_fallback_used: false,
+                explore_first: false,
             }
         };
 
         // Start on "a".
-        let e1 = sticky.apply(mk("a", 1.0, 1.0));
+        let e1 = sticky.apply_mab(mk("a", 1.0, 1.0));
         assert_eq!(e1.selection.chosen, "a");
         assert_eq!(sticky.previous(), Some("a"));
 
         // Candidate "b" is only slightly better: margin < 0.5 => keep "a".
-        let e2 = sticky.apply(mk("b", 1.0, 1.4));
+        let e2 = sticky.apply_mab(mk("b", 1.0, 1.4));
         assert_eq!(e2.selection.chosen, "a");
 
         // Candidate "b" is much better: margin >= 0.5 => switch to "b".
-        let e3 = sticky.apply(mk("b", 1.0, 1.7));
+        let e3 = sticky.apply_mab(mk("b", 1.0, 1.7));
         assert_eq!(e3.selection.chosen, "b");
         assert_eq!(sticky.previous(), Some("b"));
     }
@@ -944,27 +983,32 @@ mod tests {
         });
 
         // Set a previous arm that won't appear.
-        sticky.apply(Selection {
-            chosen: "old".to_string(),
-            frontier: vec!["old".to_string()],
-            candidates: vec![CandidateDebug {
-                name: "old".to_string(),
-                calls: 0,
-                ok: 0,
-                http_429: 0,
-                junk: 0,
-                hard_junk: 0,
-                ok_rate: 0.0,
-                http_429_rate: 0.0,
-                junk_rate: 0.0,
-                hard_junk_rate: 0.0,
-                soft_junk_rate: 0.0,
-                mean_cost_units: 0.0,
-                mean_elapsed_ms: 0.0,
-                ucb: 0.0,
-                objective_success: 0.0,
-            }],
-            config: cfg,
+        sticky.apply_mab(MabSelectionDecision {
+            selection: Selection {
+                chosen: "old".to_string(),
+                frontier: vec!["old".to_string()],
+                candidates: vec![CandidateDebug {
+                    name: "old".to_string(),
+                    calls: 0,
+                    ok: 0,
+                    http_429: 0,
+                    junk: 0,
+                    hard_junk: 0,
+                    ok_rate: 0.0,
+                    http_429_rate: 0.0,
+                    junk_rate: 0.0,
+                    hard_junk_rate: 0.0,
+                    soft_junk_rate: 0.0,
+                    mean_cost_units: 0.0,
+                    mean_elapsed_ms: 0.0,
+                    ucb: 0.0,
+                    objective_success: 0.0,
+                }],
+                config: cfg,
+            },
+            eligible_arms: vec!["old".to_string()],
+            constraints_fallback_used: false,
+            explore_first: true,
         });
         assert_eq!(sticky.previous(), Some("old"));
 
@@ -991,7 +1035,12 @@ mod tests {
             }],
             config: cfg,
         };
-        let e = sticky.apply(base);
+        let e = sticky.apply_mab(MabSelectionDecision {
+            selection: base,
+            eligible_arms: vec!["a".to_string()],
+            constraints_fallback_used: false,
+            explore_first: false,
+        });
         assert_eq!(e.selection.chosen, "a");
         assert_eq!(sticky.previous(), Some("a"));
     }

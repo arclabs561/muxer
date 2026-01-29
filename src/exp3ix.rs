@@ -9,6 +9,8 @@ use rand::Rng;
 use rand::SeedableRng;
 use std::collections::BTreeMap;
 
+use crate::{Decision, DecisionNote, DecisionPolicy};
+
 /// Configuration for EXP3-IX.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -154,30 +156,11 @@ impl Exp3Ix {
         &mut self,
         arms_in_order: &'a [String],
     ) -> Option<(&'a String, BTreeMap<String, f64>)> {
-        self.ensure_arms(arms_in_order);
-        if self.arms.is_empty() {
-            return None;
-        }
-
-        // Always return probabilities as of this decision.
-        let probs = self.probabilities(arms_in_order);
-
-        // Explore first.
-        for (i, a) in arms_in_order.iter().enumerate() {
-            if self.uses.get(i).copied().unwrap_or(0) == 0 {
-                return Some((a, probs));
-            }
-        }
-
-        let r: f64 = self.rng.random();
-        let mut cdf = 0.0;
-        for a in arms_in_order {
-            cdf += probs.get(a).copied().unwrap_or(0.0);
-            if r < cdf {
-                return Some((a, probs));
-            }
-        }
-        Some((arms_in_order.last().unwrap(), probs))
+        let d = self.decide(arms_in_order)?;
+        let chosen = arms_in_order
+            .iter()
+            .find(|a| a.as_str() == d.chosen.as_str())?;
+        Some((chosen, d.probs.unwrap_or_default()))
     }
 
     /// Select an arm.
@@ -207,6 +190,59 @@ impl Exp3Ix {
         }
         // Numerical fallback.
         arms_in_order.last()
+    }
+
+    /// Select an arm and return a unified `Decision` (recommended for logging/replay).
+    ///
+    /// Notes:
+    /// - Always includes a `probs` distribution over arms as of this decision.
+    /// - Records whether explore-first occurred and whether numerical fallback was used.
+    pub fn decide(&mut self, arms_in_order: &[String]) -> Option<Decision> {
+        self.ensure_arms(arms_in_order);
+        if self.arms.is_empty() {
+            return None;
+        }
+
+        // Always capture probabilities as of this decision.
+        let probs = self.probabilities(arms_in_order);
+
+        // Explore first (stable order).
+        for (i, a) in arms_in_order.iter().enumerate() {
+            if self.uses.get(i).copied().unwrap_or(0) == 0 {
+                return Some(Decision {
+                    policy: DecisionPolicy::Exp3Ix,
+                    chosen: a.clone(),
+                    probs: Some(probs),
+                    notes: vec![DecisionNote::ExploreFirst],
+                });
+            }
+        }
+
+        let r: f64 = self.rng.random();
+        let mut cdf = 0.0;
+        for a in arms_in_order {
+            cdf += probs.get(a).copied().unwrap_or(0.0);
+            if r < cdf {
+                return Some(Decision {
+                    policy: DecisionPolicy::Exp3Ix,
+                    chosen: a.clone(),
+                    probs: Some(probs),
+                    notes: vec![DecisionNote::SampledFromDistribution],
+                });
+            }
+        }
+
+        // Numerical fallback (CDF did not reach 1.0 due to rounding/NaNs).
+        let last = arms_in_order.last()?.clone();
+        Some(Decision {
+            policy: DecisionPolicy::Exp3Ix,
+            chosen: last,
+            probs: Some(probs),
+            notes: vec![
+                DecisionNote::SampledFromDistribution,
+                DecisionNote::NumericalFallbackToLastArm,
+            ],
+        })
     }
 
     /// Update EXP3-IX with a bounded reward in `[0, 1]`.

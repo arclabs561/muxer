@@ -1,9 +1,15 @@
-use muxer::{Exp3Ix, Exp3IxConfig};
-use rand::rngs::StdRng;
-use rand::Rng;
-use rand::SeedableRng;
-
+#[cfg(not(feature = "stochastic"))]
 fn main() {
+    eprintln!("This example requires: cargo run --example exp3ix_router --features stochastic");
+}
+
+#[cfg(feature = "stochastic")]
+fn main() {
+    use muxer::{Exp3Ix, Exp3IxConfig};
+    use rand::rngs::StdRng;
+    use rand::Rng;
+    use rand::SeedableRng;
+
     let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
 
     // Simulated true reward probabilities (adversarial-ish: they drift).
@@ -24,8 +30,10 @@ fn main() {
             p.rotate_left(1);
         }
 
-        let (chosen, probs) = ex.select_with_probs(&arms).unwrap();
-        let idx = match chosen.as_str() {
+        let d = ex.decide(&arms).unwrap();
+        let chosen = d.chosen.as_str();
+        let probs = d.probs.clone().unwrap_or_default();
+        let idx = match chosen {
             "a" => 0,
             "b" => 1,
             _ => 2,
@@ -39,8 +47,8 @@ fn main() {
 
         if t % 200 == 0 {
             eprintln!(
-                "t={:4} chosen={} reward={} probs={:?} true_p={:?}",
-                t, chosen, reward, probs, p
+                "t={:4} decision={:?} reward={} true_p={:?} probs={:?}",
+                t, d, reward, p, probs
             );
         }
     }

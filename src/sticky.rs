@@ -11,7 +11,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::{CandidateDebug, MabConfig, MabSelectionDecision, Selection};
+use crate::{
+    CandidateDebug, Decision, DecisionNote, DecisionPolicy, MabConfig, MabSelectionDecision,
+    Selection,
+};
 
 /// Stickiness configuration.
 #[derive(Debug, Clone, Copy)]
@@ -350,6 +353,84 @@ impl StickyMab {
         ExplainedSelection {
             selection: sel,
             reasons,
+        }
+    }
+
+    /// Apply stickiness and return a unified `Decision` (recommended for logging/replay).
+    ///
+    /// This is the “end of the line” decision object: it includes constraint gating metadata
+    /// and stickiness actions (kept previous / switched), so downstream systems can ingest a
+    /// single format regardless of selection policy and wrappers.
+    pub fn apply_mab_decide(&mut self, decision: MabSelectionDecision) -> Decision {
+        let constraints = DecisionNote::Constraints {
+            eligible_arms: decision.eligible_arms.clone(),
+            fallback_used: decision.constraints_fallback_used,
+        };
+
+        // Explore-first bypasses stickiness gates (it seeds stickiness state).
+        if decision.explore_first {
+            return Decision {
+                policy: DecisionPolicy::Mab,
+                chosen: decision.selection.chosen.clone(),
+                probs: None,
+                notes: vec![constraints, DecisionNote::ExploreFirst],
+            };
+        }
+
+        let explained = self.apply_mab(decision);
+        let mut notes = vec![constraints, DecisionNote::DeterministicChoice];
+
+        for r in &explained.reasons {
+            match r {
+                DecisionReason::KeptPreviousDwell {
+                    previous,
+                    candidate,
+                    dwell,
+                    min_dwell,
+                } => notes.push(DecisionNote::StickyKeptPreviousDwell {
+                    previous: previous.clone(),
+                    candidate: candidate.clone(),
+                    dwell: *dwell,
+                    min_dwell: *min_dwell,
+                }),
+                DecisionReason::KeptPreviousMargin {
+                    previous,
+                    candidate,
+                    previous_score,
+                    candidate_score,
+                    margin,
+                    min_margin,
+                } => notes.push(DecisionNote::StickyKeptPreviousMargin {
+                    previous: previous.clone(),
+                    candidate: candidate.clone(),
+                    previous_score: *previous_score,
+                    candidate_score: *candidate_score,
+                    margin: *margin,
+                    min_margin: *min_margin,
+                }),
+                DecisionReason::Switched {
+                    previous,
+                    candidate,
+                    previous_score,
+                    candidate_score,
+                    margin,
+                } => notes.push(DecisionNote::StickySwitched {
+                    previous: previous.clone(),
+                    candidate: candidate.clone(),
+                    previous_score: *previous_score,
+                    candidate_score: *candidate_score,
+                    margin: *margin,
+                }),
+                // Don't copy-through these (too noisy; encoded by chosen + other notes).
+                DecisionReason::ExploreFirst { .. } | DecisionReason::BaseChoice { .. } => {}
+            }
+        }
+
+        Decision {
+            policy: DecisionPolicy::Mab,
+            chosen: explained.selection.chosen,
+            probs: None,
+            notes,
         }
     }
 }

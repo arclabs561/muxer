@@ -14,6 +14,7 @@ use rand::SeedableRng;
 use std::collections::BTreeMap;
 
 use crate::softmax_map;
+use crate::{Decision, DecisionNote, DecisionPolicy};
 
 /// Per-arm score tuple: `(ucb, mean, bonus)`.
 pub type LinUcbScore = (f64, f64, f64);
@@ -246,6 +247,34 @@ impl LinUcb {
         Some((chosen, scores))
     }
 
+    /// Select (argmax UCB) and return a unified `Decision`.
+    ///
+    /// Notes:
+    /// - Does not include `probs` (this method is deterministic argmax).
+    /// - Records explore-first vs deterministic choice.
+    pub fn decide(&mut self, arms_in_order: &[String], context: &[f64]) -> Option<Decision> {
+        let (chosen, _scores) = self.select_with_scores(arms_in_order, context)?;
+
+        // Determine whether this was explore-first (chosen had uses == 0 at decision time).
+        // `select_with_scores` itself uses explore-first in stable order before argmax.
+        let explore_first = self
+            .state
+            .get(chosen.as_str())
+            .map(|s| s.uses == 0)
+            .unwrap_or(false);
+
+        Some(Decision {
+            policy: DecisionPolicy::LinUcb,
+            chosen: chosen.clone(),
+            probs: None,
+            notes: if explore_first {
+                vec![DecisionNote::ExploreFirst]
+            } else {
+                vec![DecisionNote::DeterministicChoice]
+            },
+        })
+    }
+
     /// Softmax distribution over arms based on their current UCB scores for this context.
     ///
     /// This is useful for:
@@ -333,6 +362,63 @@ impl LinUcb {
             }
         }
         Some((arms_in_order.last().unwrap(), probs))
+    }
+
+    /// Select via softmax over UCB scores and return a unified `Decision`.
+    ///
+    /// Notes:
+    /// - Always includes `probs` (the softmax allocation over UCB for this context).
+    /// - Records explore-first vs sampling and numerical fallback.
+    pub fn decide_softmax_ucb(
+        &mut self,
+        arms_in_order: &[String],
+        context: &[f64],
+        temperature: f64,
+    ) -> Option<Decision> {
+        self.ensure_arms(arms_in_order);
+        if arms_in_order.is_empty() {
+            return None;
+        }
+
+        let probs = self.probabilities(arms_in_order, context, temperature);
+
+        // Explore first (stable order) while still returning full probs.
+        for a in arms_in_order {
+            let uses = self.state.get(a).map(|s| s.uses).unwrap_or(0);
+            if uses == 0 {
+                return Some(Decision {
+                    policy: DecisionPolicy::LinUcb,
+                    chosen: a.clone(),
+                    probs: Some(probs),
+                    notes: vec![DecisionNote::ExploreFirst],
+                });
+            }
+        }
+
+        let r: f64 = self.rng.random();
+        let mut cdf = 0.0;
+        for a in arms_in_order {
+            cdf += probs.get(a).copied().unwrap_or(0.0);
+            if r < cdf {
+                return Some(Decision {
+                    policy: DecisionPolicy::LinUcb,
+                    chosen: a.clone(),
+                    probs: Some(probs),
+                    notes: vec![DecisionNote::SampledFromDistribution],
+                });
+            }
+        }
+
+        let last = arms_in_order.last()?.clone();
+        Some(Decision {
+            policy: DecisionPolicy::LinUcb,
+            chosen: last,
+            probs: Some(probs),
+            notes: vec![
+                DecisionNote::SampledFromDistribution,
+                DecisionNote::NumericalFallbackToLastArm,
+            ],
+        })
     }
 
     /// Update the model for `arm` given the same context used for selection and a reward in `[0, 1]`.

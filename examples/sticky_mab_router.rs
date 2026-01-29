@@ -1,4 +1,4 @@
-use muxer::{select_mab, MabConfig, StickyConfig, StickyMab, Summary};
+use muxer::{select_mab_explain, MabConfig, StickyConfig, StickyMab, Summary};
 use std::collections::BTreeMap;
 
 fn main() {
@@ -68,15 +68,9 @@ fn main() {
             );
         }
 
-        let base = select_mab(&arms, &summaries, mab_cfg);
-        let explained = sticky.apply(base);
+        let base = select_mab_explain(&arms, &summaries, mab_cfg);
+        let d = sticky.apply_mab_decide(base);
 
-        eprintln!(
-            "t={:2} chosen={} dwell={} reasons={:?}",
-            t,
-            explained.selection.chosen,
-            sticky.dwell(),
-            explained.reasons
-        );
+        eprintln!("t={:2} decision={:?} dwell={}", t, d, sticky.dwell());
     }
 }

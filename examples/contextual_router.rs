@@ -32,10 +32,12 @@ fn main() {
         let difficulty = env.random::<f64>(); // 0..1
         let ctx = [prompt_len / 2000.0, difficulty];
 
-        let (chosen, scores) = pol.select_with_scores(&arms, &ctx).unwrap();
+        let d = pol.decide(&arms, &ctx).unwrap();
+        let chosen = d.chosen.as_str();
+        let scores = pol.scores(&arms, &ctx);
 
         // Reward: success probability depends on context and chosen arm.
-        let p_success = match chosen.as_str() {
+        let p_success = match chosen {
             "small" => 0.70 - 0.25 * difficulty,
             "big" => 0.70 - 0.05 * difficulty,
             _ => 0.5,
@@ -51,8 +53,8 @@ fn main() {
 
         if t % 200 == 0 {
             eprintln!(
-                "t={:4} ctx={:?} chosen={} reward={} scores={:?}",
-                t, ctx, chosen, reward, scores
+                "t={:4} ctx={:?} decision={:?} reward={} scores={:?}",
+                t, ctx, d, reward, scores
             );
         }
     }

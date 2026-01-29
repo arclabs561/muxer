@@ -27,6 +27,12 @@ jobs:
       - name: test
         run: cargo test --all-targets
 
+      - name: clippy (no default features)
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
+
+      - name: test (no default features)
+        run: cargo test --all-targets --no-default-features
+
       - name: clippy (contextual)
         run: cargo clippy --all-targets --features contextual -- -D warnings
 
@@ -35,3 +41,9 @@ jobs:
 
       - name: test (contextual)
         run: cargo test --all-targets --features contextual
+
+      - name: clippy (contextual, no default features)
+        run: cargo clippy --all-targets --no-default-features --features contextual -- -D warnings
+
+      - name: test (contextual, no default features)
+        run: cargo test --all-targets --no-default-features --features contextual

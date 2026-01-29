@@ -32,15 +32,15 @@ fn main() {
         let difficulty = env.random::<f64>();
         let ctx = [prompt_len / 2000.0, difficulty];
 
-        let (chosen, probs) = pol
-            .select_softmax_ucb_with_probs(&arms, &ctx, temperature)
-            .unwrap();
+        let d = pol.decide_softmax_ucb(&arms, &ctx, temperature).unwrap();
+        let chosen = d.chosen.as_str();
+        let probs = d.probs.clone().unwrap_or_default();
 
         // Example: compute a "propensity" for the chosen arm (approximate).
-        let propensity = probs.get(chosen.as_str()).copied().unwrap_or(0.0);
+        let propensity = probs.get(chosen).copied().unwrap_or(0.0);
 
         // Simulated reward: big does better when difficulty is high.
-        let p_success = match chosen.as_str() {
+        let p_success = match chosen {
             "small" => (0.70 - 0.25 * difficulty).clamp(0.0, 1.0),
             "big" => (0.70 - 0.05 * difficulty).clamp(0.0, 1.0),
             _ => 0.5,
@@ -54,8 +54,8 @@ fn main() {
 
         if t % 200 == 0 {
             eprintln!(
-                "t={:4} ctx={:?} chosen={} propensity={:.3} reward={} probs={:?}",
-                t, ctx, chosen, propensity, reward, probs
+                "t={:4} ctx={:?} decision={:?} propensity={:.3} reward={} probs={:?}",
+                t, ctx, d, propensity, reward, probs
             );
         }
     }

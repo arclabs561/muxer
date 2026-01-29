@@ -1,47 +1,53 @@
-use muxer::{select_mab_explain, MabConfig, Outcome, StickyConfig, StickyMab, Window};
-use rand::rngs::StdRng;
-use rand::Rng;
-use rand::SeedableRng;
-use std::collections::BTreeMap;
-
-#[derive(Clone, Copy)]
-struct ArmTruth {
-    ok_p: f64,
-    http_429_p: f64,
-    // “true junkiness” might only be known after downstream work.
-    junk_p: f64,
-    hard_junk_p: f64,
-    mean_cost_units: u64,
-    mean_latency_ms: u64,
-}
-
-fn sample_outcome(rng: &mut StdRng, t: ArmTruth) -> (Outcome, bool, bool) {
-    let http_429 = rng.random::<f64>() < t.http_429_p;
-    let ok = !http_429 && (rng.random::<f64>() < t.ok_p);
-
-    // This is discovered later.
-    let is_junk = ok && (rng.random::<f64>() < t.junk_p);
-    let is_hard = is_junk && (rng.random::<f64>() < t.hard_junk_p);
-
-    let cost_units = t.mean_cost_units.saturating_add(rng.random_range(0..=2));
-    let elapsed_ms = t.mean_latency_ms.saturating_add(rng.random_range(0..=250));
-
-    (
-        Outcome {
-            ok,
-            http_429,
-            // initial label is unknown (set later)
-            junk: false,
-            hard_junk: false,
-            cost_units,
-            elapsed_ms,
-        },
-        is_junk,
-        is_hard,
-    )
-}
-
+#[cfg(not(feature = "stochastic"))]
 fn main() {
+    eprintln!("This example requires: cargo run --example end_to_end_router --features stochastic");
+}
+
+#[cfg(feature = "stochastic")]
+fn main() {
+    use muxer::{select_mab_explain, MabConfig, Outcome, StickyConfig, StickyMab, Window};
+    use rand::rngs::StdRng;
+    use rand::Rng;
+    use rand::SeedableRng;
+    use std::collections::BTreeMap;
+
+    #[derive(Clone, Copy)]
+    struct ArmTruth {
+        ok_p: f64,
+        http_429_p: f64,
+        // “true junkiness” might only be known after downstream work.
+        junk_p: f64,
+        hard_junk_p: f64,
+        mean_cost_units: u64,
+        mean_latency_ms: u64,
+    }
+
+    fn sample_outcome(rng: &mut StdRng, t: ArmTruth) -> (Outcome, bool, bool) {
+        let http_429 = rng.random::<f64>() < t.http_429_p;
+        let ok = !http_429 && (rng.random::<f64>() < t.ok_p);
+
+        // This is discovered later.
+        let is_junk = ok && (rng.random::<f64>() < t.junk_p);
+        let is_hard = is_junk && (rng.random::<f64>() < t.hard_junk_p);
+
+        let cost_units = t.mean_cost_units.saturating_add(rng.random_range(0..=2));
+        let elapsed_ms = t.mean_latency_ms.saturating_add(rng.random_range(0..=250));
+
+        (
+            Outcome {
+                ok,
+                http_429,
+                // initial label is unknown (set later)
+                junk: false,
+                hard_junk: false,
+                cost_units,
+                elapsed_ms,
+            },
+            is_junk,
+            is_hard,
+        )
+    }
+
     // Stable order is part of determinism contract.
     let arms = vec![
         "cheap".to_string(),
@@ -117,9 +123,8 @@ fn main() {
             .collect();
 
         let base = select_mab_explain(&arms, &summaries, cfg);
-        let fallback = base.constraints_fallback_used;
-        let explained = sticky.apply_mab(base);
-        let chosen = explained.selection.chosen.clone();
+        let d = sticky.apply_mab_decide(base);
+        let chosen = d.chosen.clone();
         *counts.entry(chosen.clone()).or_insert(0) += 1;
 
         // Start request: push immediate outcome.
@@ -135,17 +140,15 @@ fn main() {
             let s = w.summary();
             // Intentionally log a single line per tick (easy to ingest into log pipelines).
             eprintln!(
-                "t={:4} chosen={} dwell={} fallback={} counts={:?} ok_rate={:.3} http_429_rate={:.3} junk_rate={:.3} hard_junk_rate={:.3} reasons={:?}",
+                "t={:4} decision={:?} dwell={} counts={:?} ok_rate={:.3} http_429_rate={:.3} junk_rate={:.3} hard_junk_rate={:.3}",
                 t,
-                chosen,
+                d,
                 sticky.dwell(),
-                fallback,
                 counts,
                 s.ok_rate(),
                 s.http_429_rate(),
                 s.junk_rate(),
-                s.hard_junk_rate(),
-                explained.reasons
+                s.hard_junk_rate()
             );
         }
     }

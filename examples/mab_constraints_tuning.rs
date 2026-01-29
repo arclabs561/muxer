@@ -1,4 +1,4 @@
-use muxer::{select_mab, MabConfig, Outcome, Window};
+use muxer::{select_mab_decide, MabConfig, Outcome, Window};
 use std::collections::BTreeMap;
 
 fn main() {
@@ -79,11 +79,8 @@ fn main() {
         max_junk_rate: Some(0.10),
         ..MabConfig::default()
     };
-    let sel1 = select_mab(&arms, &summaries, cfg_constraints);
-    eprintln!(
-        "constraints-only chosen={} frontier={:?}",
-        sel1.chosen, sel1.frontier
-    );
+    let d1 = select_mab_decide(&arms, &summaries, cfg_constraints);
+    eprintln!("constraints-only decision={:?}", d1);
 
     // Then: tune trade-offs once all candidates are "acceptable".
     let cfg_tradeoffs = MabConfig {
@@ -95,9 +92,6 @@ fn main() {
         hard_junk_weight: 2.0,
         ..MabConfig::default()
     };
-    let sel2 = select_mab(&arms, &summaries, cfg_tradeoffs);
-    eprintln!(
-        "tradeoffs chosen={} frontier={:?}",
-        sel2.chosen, sel2.frontier
-    );
+    let d2 = select_mab_decide(&arms, &summaries, cfg_tradeoffs);
+    eprintln!("tradeoffs decision={:?}", d2);
 }

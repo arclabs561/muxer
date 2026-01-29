@@ -1,4 +1,4 @@
-use muxer::{select_mab, MabConfig, Outcome, StickyConfig, StickyMab, Window};
+use muxer::{select_mab_explain, MabConfig, Outcome, StickyConfig, StickyMab, Window};
 use std::collections::BTreeMap;
 
 fn push_n(w: &mut Window, n: usize, o: Outcome) {
@@ -53,8 +53,8 @@ fn select_mab_prefers_non_429_arm_when_window_is_429_heavy() {
         ..MabConfig::default()
     };
 
-    let sel = select_mab(&arms, &summaries, cfg);
-    assert_eq!(sel.chosen, "b");
+    let d = select_mab_explain(&arms, &summaries, cfg);
+    assert_eq!(d.selection.chosen, "b");
 }
 
 #[test]
@@ -121,9 +121,9 @@ fn sticky_reduces_switching_under_alternating_small_advantages() {
         };
 
         let summaries = BTreeMap::from([("a".to_string(), sa), ("b".to_string(), sb)]);
-        let base = select_mab(&arms, &summaries, cfg);
-        let chosen_base = base.chosen.clone();
-        let chosen_sticky = sticky.apply(base).selection.chosen;
+        let base = select_mab_explain(&arms, &summaries, cfg);
+        let chosen_base = base.selection.chosen.clone();
+        let chosen_sticky = sticky.apply_mab(base).selection.chosen;
 
         if let Some(prev) = &prev_base {
             if prev != &chosen_base {

@@ -1,4 +1,6 @@
-use muxer::{select_mab, MabConfig, Outcome, StickyConfig, StickyMab, Window};
+#![cfg(feature = "stochastic")]
+
+use muxer::{select_mab_explain, MabConfig, Outcome, StickyConfig, StickyMab, Window};
 use rand::rngs::StdRng;
 use rand::Rng;
 use rand::SeedableRng;
@@ -103,8 +105,8 @@ fn sticky_bounds_switch_rate_in_stable_environment() {
             .iter()
             .map(|(k, w)| (k.clone(), w.summary()))
             .collect();
-        let base = select_mab(&arms, &summaries, cfg);
-        let chosen = sticky.apply(base).selection.chosen;
+        let base = select_mab_explain(&arms, &summaries, cfg);
+        let chosen = sticky.apply_mab(base).selection.chosen;
 
         if let Some(p) = &prev {
             if p != &chosen {
@@ -160,6 +162,6 @@ fn constraints_hold_in_windowed_summary_when_one_arm_is_bad() {
         ("good".to_string(), w_good.summary()),
     ]);
 
-    let sel = select_mab(&arms, &summaries, cfg);
-    assert_eq!(sel.chosen, "good");
+    let d = select_mab_explain(&arms, &summaries, cfg);
+    assert_eq!(d.selection.chosen, "good");
 }

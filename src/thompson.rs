@@ -14,6 +14,7 @@ use rand_distr::{Beta, Distribution};
 use std::collections::BTreeMap;
 
 use crate::alloc::softmax_map;
+use crate::{Decision, DecisionNote, DecisionPolicy};
 
 /// Configuration for Thompson sampling.
 #[derive(Debug, Clone)]
@@ -140,30 +141,11 @@ impl ThompsonSampling {
         arms_in_order: &'a [String],
         temperature: f64,
     ) -> Option<(&'a String, BTreeMap<String, f64>)> {
-        if arms_in_order.is_empty() {
-            return None;
-        }
-
-        // Explore first (stable).
-        for a in arms_in_order {
-            let s = *self.get_or_create_stats(a);
-            if s.uses == 0 {
-                let probs = self.allocation_mean_softmax(arms_in_order, temperature);
-                return Some((a, probs));
-            }
-        }
-
-        let probs = self.allocation_mean_softmax(arms_in_order, temperature);
-        // Sample from the returned distribution in `arms_in_order` order.
-        let r: f64 = self.rng.random();
-        let mut cdf = 0.0;
-        for a in arms_in_order {
-            cdf += probs.get(a).copied().unwrap_or(0.0);
-            if r < cdf {
-                return Some((a, probs));
-            }
-        }
-        Some((arms_in_order.last().unwrap(), probs))
+        let d = self.decide_softmax_mean(arms_in_order, temperature)?;
+        let chosen = arms_in_order
+            .iter()
+            .find(|a| a.as_str() == d.chosen.as_str())?;
+        Some((chosen, d.probs.unwrap_or_default()))
     }
 
     /// Reset all learned state.
@@ -228,6 +210,97 @@ impl ThompsonSampling {
             }
         }
         best
+    }
+
+    /// Select via mean-softmax sampling and return a unified `Decision`.
+    ///
+    /// Notes:
+    /// - Always includes `probs` (the mean-softmax allocation).
+    /// - Records explore-first vs sampling and numerical fallback.
+    pub fn decide_softmax_mean(
+        &mut self,
+        arms_in_order: &[String],
+        temperature: f64,
+    ) -> Option<Decision> {
+        if arms_in_order.is_empty() {
+            return None;
+        }
+
+        // Ensure stats exist before we compute probs (so probs map contains all arms).
+        for a in arms_in_order {
+            self.get_or_create_stats(a);
+        }
+        let probs = self.allocation_mean_softmax(arms_in_order, temperature);
+
+        // Explore first (stable order).
+        for a in arms_in_order {
+            let s = *self.get_or_create_stats(a);
+            if s.uses == 0 {
+                return Some(Decision {
+                    policy: DecisionPolicy::Thompson,
+                    chosen: a.clone(),
+                    probs: Some(probs),
+                    notes: vec![DecisionNote::ExploreFirst],
+                });
+            }
+        }
+
+        // Sample from the returned distribution in `arms_in_order` order.
+        let r: f64 = self.rng.random();
+        let mut cdf = 0.0;
+        for a in arms_in_order {
+            cdf += probs.get(a).copied().unwrap_or(0.0);
+            if r < cdf {
+                return Some(Decision {
+                    policy: DecisionPolicy::Thompson,
+                    chosen: a.clone(),
+                    probs: Some(probs),
+                    notes: vec![DecisionNote::SampledFromDistribution],
+                });
+            }
+        }
+
+        let last = arms_in_order.last()?.clone();
+        Some(Decision {
+            policy: DecisionPolicy::Thompson,
+            chosen: last,
+            probs: Some(probs),
+            notes: vec![
+                DecisionNote::SampledFromDistribution,
+                DecisionNote::NumericalFallbackToLastArm,
+            ],
+        })
+    }
+
+    /// Select via Thompson posterior sampling and return a unified `Decision`.
+    ///
+    /// Notes:
+    /// - Does not include `probs` (this method samples per-arm posteriors and chooses the max).
+    /// - Records explore-first vs posterior sampling.
+    pub fn decide(&mut self, arms_in_order: &[String]) -> Option<Decision> {
+        if arms_in_order.is_empty() {
+            return None;
+        }
+
+        for a in arms_in_order {
+            let s = *self.get_or_create_stats(a);
+            if s.uses == 0 {
+                return Some(Decision {
+                    policy: DecisionPolicy::Thompson,
+                    chosen: a.clone(),
+                    probs: None,
+                    notes: vec![DecisionNote::ExploreFirst],
+                });
+            }
+        }
+
+        let chosen = self.select(arms_in_order)?.clone();
+        Some(Decision {
+            policy: DecisionPolicy::Thompson,
+            chosen,
+            probs: None,
+            notes: vec![DecisionNote::SampledPosteriorMax],
+        })
     }
 
     /// Update the chosen arm with a bounded reward in `[0, 1]`.

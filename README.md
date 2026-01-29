@@ -31,6 +31,16 @@ This crate also includes:
 - **`Exp3Ix`**: when reward is **non-stationary / adversarial-ish** and you still want a probabilistic policy (seedable, optionally decayed).
 - **`LinUcb` (feature `contextual`)**: when you have a per-request feature vector (e.g. cheap “difficulty” features, embeddings, metadata) and want a contextual policy.
 
+## Unified decision records (recommended for logging/replay)
+
+Most production routers want a single “decision object” shape regardless of policy so logging, auditing, and replay don’t depend on per-policy conventions. `muxer` provides a unified `Decision` envelope with:
+
+- `chosen`: the arm name
+- `probs`: optional probability distribution (when a policy has one)
+- `notes`: typed audit notes (explore-first, constraint gating, numerical fallback, etc.)
+
+Each policy has a `*_decide` / `decide_*` method that returns this.
+
 ## Quick examples
 
 ### Deterministic multi-objective selection (Pareto + scalarization)
@@ -56,6 +66,8 @@ This is closer to production usage: you maintain a `Window` per arm, push `Outco
 cargo run --example deterministic_router
 ```
 
+Note: this example simulates an environment and therefore requires `--features stochastic` if you disabled default features.
+
 ### End-to-end router demo (Window + constraints + stickiness + delayed junk)
 
 This combines multiple production patterns in one loop: window ingestion, constraints+weights, stickiness reasons, and delayed junk labeling.
@@ -63,6 +75,8 @@ This combines multiple production patterns in one loop: window ingestion, constr
 ```bash
 cargo run --example end_to_end_router
 ```
+
+Note: this example simulates an environment and therefore requires `--features stochastic` if you disabled default features.
 
 This same scenario has a CI-checked regression test in `tests/e2e_metrics.rs` and now logs whether constraint fallback was used.
 
@@ -90,10 +104,11 @@ use muxer::{Exp3Ix, Exp3IxConfig};
 let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
 let mut ex = Exp3Ix::new(Exp3IxConfig { seed: 123, decay: 0.98, ..Exp3IxConfig::default() });
 
-let (chosen, probs) = ex.select_with_probs(&arms).unwrap();
-// ... run request with `chosen` ...
-ex.update_reward(chosen, 0.7); // reward in [0, 1]
+let d = ex.decide(&arms).unwrap();
+// ... run request with `d.chosen` ...
+ex.update_reward(&d.chosen, 0.7); // reward in [0, 1]
 
+let probs = d.probs.unwrap();
 let s: f64 = probs.values().sum();
 assert!((s - 1.0).abs() < 1e-9);
 ```
@@ -103,6 +118,8 @@ Runnable:
 ```bash
 cargo run --example exp3ix_router
 ```
+
+Note: this example requires `--features stochastic` if you disabled default features.
 
 ### Thompson “traffic splitting” selector (mean-softmax allocation)
 
@@ -117,9 +134,10 @@ let mut ts = ThompsonSampling::with_seed(
     },
     0,
 );
-let (chosen, alloc) = ts.select_softmax_mean_with_probs(&arms, 0.3).unwrap();
-ts.update_reward(chosen, 1.0);
+let d = ts.decide_softmax_mean(&arms, 0.3).unwrap();
+ts.update_reward(&d.chosen, 1.0);
 
+let alloc = d.probs.unwrap();
 let s: f64 = alloc.values().sum();
 assert!((s - 1.0).abs() < 1e-9);
 ```
@@ -129,6 +147,8 @@ Runnable:
 ```bash
 cargo run --example thompson_router
 ```
+
+Note: this example requires `--features stochastic` if you disabled default features.
 
 ### Contextual routing (LinUCB)
 
@@ -140,7 +160,7 @@ cargo run --example contextual_router --features contextual
 
 Notes:
 
-- If you want a probability distribution over arms for this context (e.g. for traffic-splitting or logging approximate propensities), use `LinUcb::probabilities(...)` or `LinUcb::select_softmax_ucb_with_probs(...)`.
+- If you want a probability distribution over arms for this context (e.g. for traffic-splitting or logging approximate propensities), use `LinUcb::probabilities(...)` or `LinUcb::decide_softmax_ucb(...)`.
 - Algorithm reference: LinUCB (Chu et al., “Contextual bandits with linear payoff functions”).
 
 Contextual “propensity logging” example:
@@ -162,6 +182,13 @@ cargo run --example sticky_mab_router
 ```toml
 [dependencies]
 muxer = "0.1.0"
+```
+
+If you only want the deterministic `Window` + `select_mab*` core (no stochastic bandits), disable default features:
+
+```toml
+[dependencies]
+muxer = { version = "0.1.0", default-features = false }
 ```
 
 ## Development
