@@ -374,9 +374,11 @@ pub fn select_mab(
         }
     }
 
-    let total_calls: f64 = summaries
-        .values()
-        .map(|s| s.calls as f64)
+    // Only count calls for the arms actually being considered (important if `summaries`
+    // contains additional entries beyond `arms_in_order`).
+    let total_calls: f64 = arms_in_order
+        .iter()
+        .map(|a| summaries.get(a).copied().unwrap_or_default().calls as f64)
         .sum::<f64>()
         .max(1.0);
 
@@ -386,7 +388,7 @@ pub fn select_mab(
     //
     // We keep the frontier computation separate from scalarization so callers can
     // inspect "who is on the frontier" deterministically.
-    let mut frontier_points: Vec<Vec<f32>> = Vec::new();
+    let mut frontier_points: Vec<Vec<f64>> = Vec::new();
     let mut frontier_names_in_order: Vec<String> = Vec::new();
 
     let mut candidates = Vec::new();
@@ -427,18 +429,18 @@ pub fn select_mab(
         });
 
         frontier_points.push(vec![
-            objective_success as f32,
-            (-mean_cost) as f32,
-            (-mean_lat) as f32,
-            (-hard_junk_rate) as f32,
-            (-soft_junk_rate) as f32,
+            objective_success,
+            -mean_cost,
+            -mean_lat,
+            -hard_junk_rate,
+            -soft_junk_rate,
         ]);
         frontier_names_in_order.push(a.clone());
     }
 
     let mut frontier = ParetoFrontier::new(vec![Direction::Maximize; 5]);
     for (i, vals) in frontier_points.iter().enumerate() {
-        frontier.push(vals.iter().map(|&x| x as f64).collect::<Vec<_>>(), i);
+        frontier.push(vals.clone(), i);
     }
     let frontier_indices: Vec<usize> = if frontier.is_empty() {
         (0..frontier_points.len()).collect()

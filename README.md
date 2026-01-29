@@ -18,5 +18,10 @@ muxer = "0.1.0"
 ## Development
 
 ```bash
-cargo test
+# If you are in a larger Cargo workspace, scope to this package:
+cargo test -p muxer
+
+# (Optional) Match CI checks:
+cargo fmt -p muxer --check
+cargo clippy -p muxer --all-targets -- -D warnings
 ```
