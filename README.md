@@ -56,6 +56,22 @@ This is closer to production usage: you maintain a `Window` per arm, push `Outco
 cargo run --example deterministic_router
 ```
 
+### Window ingestion with delayed junk labeling
+
+If your “junk” classification is only known after downstream parsing/validation, you can update the most recent outcome:
+
+```bash
+cargo run --example window_delayed_junk_label
+```
+
+### Constraint + trade-off tuning for `select_mab`
+
+Example showing “constraints first, then weights”:
+
+```bash
+cargo run --example mab_constraints_tuning
+```
+
 ### EXP3-IX (adversarial bandit) with probabilities
 
 ```rust
@@ -116,6 +132,12 @@ Notes:
 
 - If you want a probability distribution over arms for this context (e.g. for traffic-splitting or logging approximate propensities), use `LinUcb::probabilities(...)` or `LinUcb::select_softmax_ucb_with_probs(...)`.
 - Algorithm reference: LinUCB (Chu et al., “Contextual bandits with linear payoff functions”).
+
+Contextual “propensity logging” example:
+
+```bash
+cargo run --example contextual_propensity_logging --features contextual
+```
 
 ### Stickiness / switching-cost control
 
