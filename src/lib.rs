@@ -102,6 +102,19 @@ pub struct LogTopCandidate {
     pub hard_junk_rate: Option<f64>,
 }
 
+/// A typed top-candidates payload for logging.
+///
+/// `kind` describes the meaning of `rows[*].score`, e.g. `"mab_scalar"` or `"exp3ix_prob"`.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct LogTopCandidates {
+    pub kind: String,
+    pub rows: Vec<LogTopCandidate>,
+}
+
+pub const LOG_SCORE_KIND_MAB_SCALAR: &str = "mab_scalar";
+pub const LOG_SCORE_KIND_EXP3IX_PROB: &str = "exp3ix_prob";
+
 /// Extract top candidate rows from a MAB decision using the same scalarization as selection.
 pub fn log_top_candidates_mab(decision: &MabSelectionDecision, top: usize) -> Vec<LogTopCandidate> {
     let cfg = decision.selection.config;
@@ -150,6 +163,25 @@ pub fn log_top_candidates_exp3ix(decision: &Decision, top: usize) -> Vec<LogTopC
             hard_junk_rate: None,
         })
         .collect()
+}
+
+/// Extract top-candidates payload for MAB with a self-describing `kind`.
+pub fn log_top_candidates_mab_typed(
+    decision: &MabSelectionDecision,
+    top: usize,
+) -> LogTopCandidates {
+    LogTopCandidates {
+        kind: LOG_SCORE_KIND_MAB_SCALAR.to_string(),
+        rows: log_top_candidates_mab(decision, top),
+    }
+}
+
+/// Extract top-candidates payload for EXP3-IX with a self-describing `kind`.
+pub fn log_top_candidates_exp3ix_typed(decision: &Decision, top: usize) -> LogTopCandidates {
+    LogTopCandidates {
+        kind: LOG_SCORE_KIND_EXP3IX_PROB.to_string(),
+        rows: log_top_candidates_exp3ix(decision, top),
+    }
 }
 
 /// A single observed outcome for an arm.
