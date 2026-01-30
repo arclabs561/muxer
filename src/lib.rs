@@ -114,6 +114,7 @@ pub struct LogTopCandidates {
 
 pub const LOG_SCORE_KIND_MAB_SCALAR: &str = "mab_scalar";
 pub const LOG_SCORE_KIND_EXP3IX_PROB: &str = "exp3ix_prob";
+pub const MUXER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Extract top candidate rows from a MAB decision using the same scalarization as selection.
 pub fn log_top_candidates_mab(decision: &MabSelectionDecision, top: usize) -> Vec<LogTopCandidate> {
