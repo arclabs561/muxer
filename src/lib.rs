@@ -72,6 +72,86 @@ pub struct MabKSelection {
     pub rounds: Vec<MabKRound>,
 }
 
+/// Small “log-ready” top-candidate row, used to avoid duplicating score/prob formatting in harnesses.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct LogTopCandidate {
+    pub arm: String,
+    /// Score used for sorting (meaning depends on policy).
+    pub score: f64,
+    /// Optional call count (present for MAB).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub calls: Option<u64>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub ok_rate: Option<f64>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub junk_rate: Option<f64>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub hard_junk_rate: Option<f64>,
+}
+
+/// Extract top candidate rows from a MAB decision using the same scalarization as selection.
+pub fn log_top_candidates_mab(decision: &MabSelectionDecision, top: usize) -> Vec<LogTopCandidate> {
+    let cfg = decision.selection.config;
+    let mut rows: Vec<(f64, &CandidateDebug)> = decision
+        .selection
+        .candidates
+        .iter()
+        .map(|c| {
+            let score = c.objective_success
+                - cfg.cost_weight * c.mean_cost_units
+                - cfg.latency_weight * c.mean_elapsed_ms
+                - cfg.hard_junk_weight * c.hard_junk_rate
+                - cfg.junk_weight * c.soft_junk_rate;
+            (score, c)
+        })
+        .collect();
+    rows.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
+    rows.into_iter()
+        .take(top.max(1))
+        .map(|(score, c)| LogTopCandidate {
+            arm: c.name.clone(),
+            score,
+            calls: Some(c.calls),
+            ok_rate: Some(c.ok_rate),
+            junk_rate: Some(c.junk_rate),
+            hard_junk_rate: Some(c.hard_junk_rate),
+        })
+        .collect()
+}
+
+/// Extract top probability rows from an EXP3-IX decision.
+pub fn log_top_candidates_exp3ix(decision: &Decision, top: usize) -> Vec<LogTopCandidate> {
+    let Some(ref probs) = decision.probs else {
+        return Vec::new();
+    };
+    let mut rows: Vec<(f64, String)> = probs.iter().map(|(k, v)| (*v, k.clone())).collect();
+    rows.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    rows.into_iter()
+        .take(top.max(1))
+        .map(|(p, arm)| LogTopCandidate {
+            arm,
+            score: p,
+            calls: None,
+            ok_rate: None,
+            junk_rate: None,
+            hard_junk_rate: None,
+        })
+        .collect()
+}
+
 /// A single observed outcome for an arm.
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
