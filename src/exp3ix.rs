@@ -64,6 +64,12 @@ pub struct Exp3IxState {
     pub arms: Vec<String>,
     pub uses: Vec<u64>,
     pub cum_loss_hat: Vec<f64>,
+    /// Probability distribution aligned with `arms`.
+    ///
+    /// This is redundant (it can be recomputed from `cum_loss_hat`), but storing it avoids
+    /// small numerical drift and makes persistence/replay cheaper.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub probs: Vec<f64>,
 }
 
 impl Exp3Ix {
@@ -163,6 +169,7 @@ impl Exp3Ix {
             arms: self.arms.clone(),
             uses: self.uses.clone(),
             cum_loss_hat: self.cum_loss_hat.clone(),
+            probs: self.probs.clone(),
         }
     }
 
@@ -177,6 +184,162 @@ impl Exp3Ix {
         self.reset_arms(&st.arms);
         self.uses = st.uses;
         self.cum_loss_hat = st.cum_loss_hat;
+        if st.probs.len() == self.arms.len() && st.probs.iter().all(|x| x.is_finite()) {
+            self.probs = st.probs;
+        } else {
+            self.recompute_probs();
+        }
+    }
+
+    fn splitmix64(mut x: u64) -> u64 {
+        x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = x;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    fn u01(seed: u64) -> f64 {
+        // Map a u64 to [0,1) with ~53 bits of mantissa precision.
+        let x = Self::splitmix64(seed);
+        let top = (x >> 11) as u64; // 53 bits
+        (top as f64) / ((1u64 << 53) as f64)
+    }
+
+    fn filtered_probs(&self, eligible_in_order: &[String]) -> BTreeMap<String, f64> {
+        // Base probabilities are `self.probs` aligned with `self.arms`.
+        // We project onto `eligible_in_order` and renormalize.
+        let mut out = BTreeMap::new();
+        let mut sum = 0.0;
+        for a in eligible_in_order {
+            let p = self
+                .arms
+                .iter()
+                .position(|x| x == a)
+                .and_then(|i| self.probs.get(i).copied())
+                .unwrap_or(0.0);
+            let pi = if p.is_finite() && p > 0.0 { p } else { 0.0 };
+            out.insert(a.clone(), pi);
+            sum += pi;
+        }
+        if sum > 0.0 && sum.is_finite() {
+            for v in out.values_mut() {
+                *v /= sum;
+            }
+            return out;
+        }
+        // Fallback: uniform over eligible.
+        let k = eligible_in_order.len().max(1) as f64;
+        out.clear();
+        for a in eligible_in_order {
+            out.insert(a.clone(), 1.0 / k);
+        }
+        out
+    }
+
+    /// Deterministic decision from a filtered eligible set.
+    ///
+    /// This is designed for callers (like `anno`) that:
+    /// - keep persistent EXP3-IX state across process runs
+    /// - apply external hard constraints (e.g. latency guardrail) that shrink the eligible set
+    /// - want a deterministic decision given a seed, without persisting RNG state
+    ///
+    /// The returned `Decision.probs` is over `eligible_in_order` (renormalized).
+    /// If you update using this decision, prefer `update_reward_with_prob(...)` with
+    /// `prob_used := decision.probs[chosen]`.
+    pub fn decide_deterministic_filtered(
+        &mut self,
+        arms_in_order: &[String],
+        eligible_in_order: &[String],
+        decision_seed: u64,
+    ) -> Option<Decision> {
+        self.ensure_arms(arms_in_order);
+        if self.arms.is_empty() || eligible_in_order.is_empty() {
+            return None;
+        }
+
+        // Always capture probabilities as of this decision.
+        let probs = self.filtered_probs(eligible_in_order);
+
+        // Explore-first within the eligible set (stable order).
+        for a in eligible_in_order {
+            let uses = self
+                .arms
+                .iter()
+                .position(|x| x == a)
+                .and_then(|i| self.uses.get(i).copied())
+                .unwrap_or(0);
+            if uses == 0 {
+                return Some(Decision {
+                    policy: DecisionPolicy::Exp3Ix,
+                    chosen: a.clone(),
+                    probs: Some(probs),
+                    notes: vec![DecisionNote::ExploreFirst],
+                });
+            }
+        }
+
+        let r = Self::u01(decision_seed);
+        let mut cdf = 0.0;
+        for a in eligible_in_order {
+            cdf += probs.get(a).copied().unwrap_or(0.0);
+            if r < cdf {
+                return Some(Decision {
+                    policy: DecisionPolicy::Exp3Ix,
+                    chosen: a.clone(),
+                    probs: Some(probs),
+                    notes: vec![DecisionNote::SampledFromDistribution],
+                });
+            }
+        }
+
+        // Numerical fallback.
+        let last = eligible_in_order.last()?.clone();
+        Some(Decision {
+            policy: DecisionPolicy::Exp3Ix,
+            chosen: last,
+            probs: Some(probs),
+            notes: vec![
+                DecisionNote::SampledFromDistribution,
+                DecisionNote::NumericalFallbackToLastArm,
+            ],
+        })
+    }
+
+    /// Update EXP3-IX with a bounded reward in `[0, 1]`, using an explicit probability.
+    ///
+    /// This is useful when the decision was made from a filtered/renormalized distribution
+    /// (e.g. a latency guardrail) and you want the importance weighting to use the exact
+    /// probability mass function that was actually sampled.
+    pub fn update_reward_with_prob(&mut self, arm: &str, reward01: f64, prob_used: f64) {
+        if self.arms.is_empty() {
+            return;
+        }
+        let Some(idx) = self.arms.iter().position(|a| a == arm) else {
+            return;
+        };
+        let decay = if self.cfg.decay.is_finite() && self.cfg.decay > 0.0 && self.cfg.decay <= 1.0 {
+            self.cfg.decay
+        } else {
+            1.0
+        };
+        if decay < 1.0 {
+            for x in &mut self.cum_loss_hat {
+                *x *= decay;
+            }
+        }
+        let r = reward01.clamp(0.0, 1.0);
+        let loss = 1.0 - r;
+        let p = if prob_used.is_finite() && prob_used > 0.0 {
+            prob_used
+        } else {
+            0.0
+        };
+        let denom = p + self.gamma;
+        let loss_hat = if denom > 0.0 { loss / denom } else { loss };
+
+        self.cum_loss_hat[idx] += loss_hat;
+        self.uses[idx] = self.uses[idx].saturating_add(1);
         self.recompute_probs();
     }
 
@@ -296,25 +459,8 @@ impl Exp3Ix {
         let Some(idx) = self.arms.iter().position(|a| a == arm) else {
             return;
         };
-        let decay = if self.cfg.decay.is_finite() && self.cfg.decay > 0.0 && self.cfg.decay <= 1.0 {
-            self.cfg.decay
-        } else {
-            1.0
-        };
-        if decay < 1.0 {
-            for x in &mut self.cum_loss_hat {
-                *x *= decay;
-            }
-        }
-        let r = reward01.clamp(0.0, 1.0);
-        let loss = 1.0 - r;
         let p = self.probs.get(idx).copied().unwrap_or(0.0);
-        let denom = p + self.gamma;
-        let loss_hat = if denom > 0.0 { loss / denom } else { loss };
-
-        self.cum_loss_hat[idx] += loss_hat;
-        self.uses[idx] = self.uses[idx].saturating_add(1);
-        self.recompute_probs();
+        self.update_reward_with_prob(arm, reward01, p);
     }
 }
 
