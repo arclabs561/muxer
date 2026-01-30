@@ -31,6 +31,9 @@ pub use decision::*;
 mod alloc;
 pub use alloc::*;
 
+mod guardrail;
+pub use guardrail::*;
+
 #[cfg(feature = "stochastic")]
 mod exp3ix;
 #[cfg(feature = "stochastic")]
