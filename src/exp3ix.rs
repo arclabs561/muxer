@@ -54,6 +54,18 @@ pub struct Exp3Ix {
     probs: Vec<f64>,
 }
 
+/// Serializable EXP3-IX state snapshot (for persistence).
+///
+/// This intentionally excludes RNG state; callers that want deterministic sampling can
+/// sample deterministically from `probabilities(...)` using their own seed.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Exp3IxState {
+    pub arms: Vec<String>,
+    pub uses: Vec<u64>,
+    pub cum_loss_hat: Vec<f64>,
+}
+
 impl Exp3Ix {
     /// Create a new EXP3-IX instance with deterministic defaults.
     pub fn new(cfg: Exp3IxConfig) -> Self {
@@ -75,10 +87,7 @@ impl Exp3Ix {
         }
     }
 
-    fn ensure_arms(&mut self, arms_in_order: &[String]) {
-        if self.arms == arms_in_order {
-            return;
-        }
+    fn reset_arms(&mut self, arms_in_order: &[String]) {
         self.arms = arms_in_order.to_vec();
         let k = self.arms.len().max(1);
         self.uses = vec![0; k];
@@ -97,6 +106,13 @@ impl Exp3Ix {
         };
         self.learning_rate = lr;
         self.gamma = 0.5 * lr;
+    }
+
+    fn ensure_arms(&mut self, arms_in_order: &[String]) {
+        if self.arms == arms_in_order {
+            return;
+        }
+        self.reset_arms(arms_in_order);
     }
 
     fn recompute_probs(&mut self) {
@@ -136,6 +152,32 @@ impl Exp3Ix {
             out.insert(a.clone(), self.probs.get(i).copied().unwrap_or(0.0));
         }
         out
+    }
+
+    /// Capture a persistence snapshot of the current EXP3-IX state.
+    ///
+    /// Callers should prefer calling this after `probabilities(...)` or `decide(...)` so
+    /// `arms` is initialized and `probs` is up to date.
+    pub fn snapshot(&self) -> Exp3IxState {
+        Exp3IxState {
+            arms: self.arms.clone(),
+            uses: self.uses.clone(),
+            cum_loss_hat: self.cum_loss_hat.clone(),
+        }
+    }
+
+    /// Restore a previously snapshotted EXP3-IX state.
+    ///
+    /// If the stored state is inconsistent (length mismatches), this resets to a fresh state.
+    pub fn restore(&mut self, st: Exp3IxState) {
+        if st.arms.len() != st.uses.len() || st.arms.len() != st.cum_loss_hat.len() {
+            self.reset_arms(&[]);
+            return;
+        }
+        self.reset_arms(&st.arms);
+        self.uses = st.uses;
+        self.cum_loss_hat = st.cum_loss_hat;
+        self.recompute_probs();
     }
 
     /// Select an arm and return the probabilities used for selection.
@@ -336,6 +378,83 @@ mod tests {
             e1.update_reward(&a1, 0.5);
             e2.update_reward(&a2, 0.5);
         }
+    }
+
+    #[test]
+    fn exp3ix_can_outperform_mab_when_reward_is_graded_but_success_is_constant() {
+        // This is a deliberately constructed scenario to demonstrate a *capability gap*:
+        //
+        // - MAB selection in this crate consumes `Summary` (ok/junk/latency/cost) and cannot
+        //   express a graded reward signal when `ok_rate` is 1.0 for all arms and other metrics
+        //   are equal.
+        // - EXP3-IX consumes a scalar reward in [0, 1] and can learn to prefer higher reward.
+        //
+        // So, in this scenario EXP3-IX should strictly beat deterministic MAB selection.
+        use crate::{select_mab_explain, MabConfig, Summary};
+
+        let arms = vec!["a".to_string(), "b".to_string()];
+
+        // But rewards differ (graded quality). With identical summaries, deterministic MAB
+        // tie-breaking will stick to one arm; we set that arm ("a", lexicographically first)
+        // to be worse so EXP3-IX has an opportunity to learn and beat it.
+        let r_a = 0.6;
+        let r_b = 0.9;
+
+        // MAB config with only success dimension (no penalties).
+        let cfg = MabConfig {
+            exploration_c: 0.8,
+            cost_weight: 0.0,
+            latency_weight: 0.0,
+            junk_weight: 0.0,
+            hard_junk_weight: 0.0,
+            max_junk_rate: None,
+            max_hard_junk_rate: None,
+            max_http_429_rate: None,
+            max_mean_cost_units: None,
+        };
+
+        let mut ex = Exp3Ix::new(Exp3IxConfig {
+            horizon: 200,
+            confidence_delta: None,
+            seed: 0,
+            decay: 1.0,
+        });
+
+        // Both arms have identical summaries forever: MAB cannot distinguish them.
+        let s = Summary {
+            calls: 10,
+            ok: 10,
+            http_429: 0,
+            junk: 0,
+            hard_junk: 0,
+            cost_units: 0,
+            elapsed_ms_sum: 0,
+        };
+
+        let mut total_mab = 0.0;
+        let mut total_exp3 = 0.0;
+
+        for _ in 0..200 {
+            let mut m = BTreeMap::new();
+            m.insert("a".to_string(), s);
+            m.insert("b".to_string(), s);
+            let mab_choice = select_mab_explain(&arms, &m, cfg).selection.chosen;
+            let r = if mab_choice == "a" { r_a } else { r_b };
+            total_mab += r;
+
+            // EXP3-IX learns from scalar reward.
+            let chosen = ex.select(&arms).unwrap().clone();
+            let r = if chosen == "a" { r_a } else { r_b };
+            total_exp3 += r;
+            ex.update_reward(&chosen, r);
+        }
+
+        assert!(
+            total_exp3 > total_mab + 5.0,
+            "expected exp3ix to beat mab in this scenario: exp3={} mab={}",
+            total_exp3,
+            total_mab
+        );
     }
 
     proptest! {
