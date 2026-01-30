@@ -148,6 +148,45 @@ pub struct Exp3IxGuardrailedDecision {
     pub prob_used: f64,
 }
 
+/// A compact, log-ready row for an EXP3-IX decision under an external guardrail.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Exp3IxRoundLog {
+    pub remaining: Vec<String>,
+    pub guardrail_eligible: Vec<String>,
+    pub guardrail_fallback_used: bool,
+    pub guardrail_stop_early: bool,
+    pub chosen: String,
+    pub explore_first: bool,
+    pub prob_used: f64,
+    pub top_candidates: crate::LogTopCandidates,
+}
+
+/// Convert a persisted, guardrailed EXP3-IX decision into a compact log row.
+#[cfg(feature = "stochastic")]
+pub fn log_exp3ix_guardrailed_typed(
+    gd: &Exp3IxGuardrailedDecision,
+    remaining: &[String],
+    top: usize,
+) -> Exp3IxRoundLog {
+    let explore_first = gd
+        .decision
+        .notes
+        .iter()
+        .any(|n| matches!(n, crate::DecisionNote::ExploreFirst));
+
+    Exp3IxRoundLog {
+        remaining: remaining.to_vec(),
+        guardrail_eligible: gd.guardrail.eligible.clone(),
+        guardrail_fallback_used: gd.guardrail.fallback_used,
+        guardrail_stop_early: gd.guardrail.stop_early,
+        chosen: gd.decision.chosen.clone(),
+        explore_first,
+        prob_used: gd.prob_used,
+        top_candidates: crate::log_top_candidates_exp3ix_typed(&gd.decision, top),
+    }
+}
+
 #[cfg(feature = "stochastic")]
 pub fn exp3ix_decide_persisted_guardrailed(
     cfg: Exp3IxConfig,
@@ -593,6 +632,59 @@ mod tests {
         let p = ex.probabilities(&arms);
         let s: f64 = p.values().sum();
         assert!((s - 1.0).abs() < 1e-9, "sum={}", s);
+    }
+
+    #[test]
+    fn exp3ix_guardrailed_log_row_is_well_formed() {
+        let cfg = Exp3IxConfig {
+            horizon: 100,
+            confidence_delta: None,
+            seed: 0,
+            decay: 1.0,
+        };
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let mut m = BTreeMap::new();
+        m.insert(
+            "a".to_string(),
+            Summary {
+                calls: 1,
+                ok: 1,
+                http_429: 0,
+                junk: 0,
+                hard_junk: 0,
+                cost_units: 0,
+                elapsed_ms_sum: 10,
+            },
+        );
+        m.insert(
+            "b".to_string(),
+            Summary {
+                calls: 1,
+                ok: 1,
+                http_429: 0,
+                junk: 0,
+                hard_junk: 0,
+                cost_units: 0,
+                elapsed_ms_sum: 10,
+            },
+        );
+        let gd = exp3ix_decide_persisted_guardrailed(
+            cfg,
+            None,
+            &arms,
+            &m,
+            LatencyGuardrailConfig::default(),
+            0,
+            123,
+        )
+        .expect("decision");
+
+        let row = log_exp3ix_guardrailed_typed(&gd, &arms, 2);
+        assert_eq!(row.remaining, arms);
+        assert_eq!(row.guardrail_eligible.len(), 2);
+        assert!(row.prob_used.is_finite());
+        assert_eq!(row.top_candidates.kind, crate::LOG_SCORE_KIND_EXP3IX_PROB);
+        assert!(!row.chosen.is_empty());
     }
 
     #[test]
