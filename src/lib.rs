@@ -63,6 +63,27 @@ pub struct MabKRound {
     pub mab: MabSelectionDecision,
 }
 
+/// Stop information for multi-pick MAB selection.
+#[derive(Debug, Clone)]
+pub struct MabKStop {
+    /// Remaining arms at the stop point.
+    pub remaining: Vec<String>,
+    /// Result of applying the latency guardrail to `remaining` at the stop point.
+    pub guardrail: LatencyGuardrailDecision,
+}
+
+/// Output of selecting up to `k` unique arms via repeated MAB selection, including a stop record
+/// when the loop terminates early due to guardrail/emptiness.
+#[derive(Debug, Clone)]
+pub struct MabKExplain {
+    /// Chosen arms (unique, in pick order).
+    pub chosen: Vec<String>,
+    /// Per-round details (one entry per chosen arm).
+    pub rounds: Vec<MabKRound>,
+    /// Present when the loop stopped early (e.g. guardrail `stop_early=true`).
+    pub stop: Option<MabKStop>,
+}
+
 /// Output of selecting up to `k` unique arms via repeated MAB selection.
 #[derive(Debug, Clone)]
 pub struct MabKSelection {
@@ -70,6 +91,42 @@ pub struct MabKSelection {
     pub chosen: Vec<String>,
     /// Per-round details (one entry per chosen arm).
     pub rounds: Vec<MabKRound>,
+}
+
+/// A compact, log-ready row for a single round of a multi-pick MAB selection.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct MabKRoundLog {
+    pub round: usize,
+    pub remaining: Vec<String>,
+    pub guardrail_eligible: Vec<String>,
+    pub guardrail_fallback_used: bool,
+    pub guardrail_stop_early: bool,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub chosen: Option<String>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub explore_first: Option<bool>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub constraints_fallback_used: Option<bool>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub constraints_eligible_arms: Option<Vec<String>>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub top_candidates: Option<LogTopCandidates>,
 }
 
 /// Small “log-ready” top-candidate row, used to avoid duplicating score/prob formatting in harnesses.
@@ -811,6 +868,103 @@ where
     MabKSelection { chosen, rounds }
 }
 
+/// Like `select_mab_k_guardrailed_explain`, but also returns a stop record when the selection
+/// ends early due to guardrail semantics or an empty eligible set.
+pub fn select_mab_k_guardrailed_explain_full<F>(
+    arms_in_order: &[String],
+    mut summaries_for: F,
+    cfg: MabConfig,
+    guardrail: LatencyGuardrailConfig,
+    k: usize,
+) -> MabKExplain
+where
+    F: FnMut(&[String]) -> BTreeMap<String, Summary>,
+{
+    if arms_in_order.is_empty() || k == 0 {
+        return MabKExplain {
+            chosen: Vec::new(),
+            rounds: Vec::new(),
+            stop: None,
+        };
+    }
+
+    let mut remaining: Vec<String> = arms_in_order.to_vec();
+    let mut chosen: Vec<String> = Vec::new();
+    let mut rounds: Vec<MabKRound> = Vec::new();
+    let mut stop: Option<MabKStop> = None;
+
+    for _round in 0..k.min(remaining.len()) {
+        let remaining_in = remaining.clone();
+        let summaries = summaries_for(&remaining_in);
+
+        let gd = apply_latency_guardrail(&remaining_in, &summaries, guardrail, chosen.len());
+        if gd.stop_early || gd.eligible.is_empty() {
+            stop = Some(MabKStop {
+                remaining: remaining_in,
+                guardrail: gd,
+            });
+            break;
+        }
+
+        let d = select_mab_explain(&gd.eligible, &summaries, cfg);
+        let pick = d.selection.chosen.clone();
+        chosen.push(pick.clone());
+        remaining.retain(|b| b != &pick);
+
+        rounds.push(MabKRound {
+            remaining: remaining_in,
+            guardrail: gd,
+            mab: d,
+        });
+    }
+
+    MabKExplain {
+        chosen,
+        rounds,
+        stop,
+    }
+}
+
+/// Convert a multi-pick MAB explanation into compact, log-ready round rows.
+///
+/// This includes an additional “stop row” when selection ends early (e.g. guardrail `stop_early=true`).
+pub fn log_mab_k_rounds_typed(explain: &MabKExplain, top: usize) -> Vec<MabKRoundLog> {
+    let mut out: Vec<MabKRoundLog> = Vec::new();
+
+    for (i, r) in explain.rounds.iter().enumerate() {
+        let d = &r.mab;
+        out.push(MabKRoundLog {
+            round: i + 1,
+            remaining: r.remaining.clone(),
+            guardrail_eligible: r.guardrail.eligible.clone(),
+            guardrail_fallback_used: r.guardrail.fallback_used,
+            guardrail_stop_early: r.guardrail.stop_early,
+            chosen: Some(d.selection.chosen.clone()),
+            explore_first: Some(d.explore_first),
+            constraints_fallback_used: Some(d.constraints_fallback_used),
+            constraints_eligible_arms: Some(d.eligible_arms.clone()),
+            top_candidates: Some(log_top_candidates_mab_typed(d, top)),
+        });
+    }
+
+    if let Some(ref s) = explain.stop {
+        out.push(MabKRoundLog {
+            round: explain.rounds.len() + 1,
+            remaining: s.remaining.clone(),
+            guardrail_eligible: s.guardrail.eligible.clone(),
+            guardrail_fallback_used: s.guardrail.fallback_used,
+            guardrail_stop_early: s.guardrail.stop_early,
+            chosen: None,
+            explore_first: None,
+            constraints_fallback_used: None,
+            constraints_eligible_arms: None,
+            top_candidates: None,
+        });
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -894,6 +1048,62 @@ mod tests {
         };
         let sel = select_mab(&arms, &m, cfg);
         assert_eq!(sel.chosen, "b");
+    }
+
+    #[test]
+    fn mab_k_full_includes_guardrail_stop_record() {
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let cfg = MabConfig::default();
+        let guardrail = LatencyGuardrailConfig {
+            max_mean_ms: Some(10.0),
+            require_measured: false,
+            allow_fewer: true,
+        };
+
+        // Both arms are "slow" so guardrail will:
+        // - fallback on round 1 (already_chosen=0)
+        // - stop early on round 2 (already_chosen>0)
+        let mut all = BTreeMap::new();
+        all.insert(
+            "a".to_string(),
+            Summary {
+                calls: 1,
+                ok: 1,
+                http_429: 0,
+                junk: 0,
+                hard_junk: 0,
+                cost_units: 0,
+                elapsed_ms_sum: 1000,
+            },
+        );
+        all.insert(
+            "b".to_string(),
+            Summary {
+                calls: 1,
+                ok: 1,
+                http_429: 0,
+                junk: 0,
+                hard_junk: 0,
+                cost_units: 0,
+                elapsed_ms_sum: 1000,
+            },
+        );
+
+        let ex = select_mab_k_guardrailed_explain_full(
+            &arms,
+            |_remaining| all.clone(),
+            cfg,
+            guardrail,
+            2,
+        );
+        assert_eq!(ex.chosen.len(), 1);
+        assert!(ex.stop.is_some());
+        assert!(ex.stop.as_ref().unwrap().guardrail.stop_early);
+
+        let logs = log_mab_k_rounds_typed(&ex, 3);
+        assert_eq!(logs.len(), 2);
+        assert!(logs[1].guardrail_stop_early);
+        assert!(logs[1].chosen.is_none());
     }
 
     proptest! {
