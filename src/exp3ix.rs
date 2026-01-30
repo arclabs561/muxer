@@ -9,7 +9,10 @@ use rand::Rng;
 use rand::SeedableRng;
 use std::collections::BTreeMap;
 
-use crate::{Decision, DecisionNote, DecisionPolicy};
+use crate::{
+    apply_latency_guardrail, Decision, DecisionNote, DecisionPolicy, LatencyGuardrailConfig,
+    Summary,
+};
 
 /// Configuration for EXP3-IX.
 #[derive(Debug, Clone, Copy)]
@@ -132,6 +135,41 @@ pub fn exp3ix_update_persisted(
     ex.restore(state);
     ex.update_reward_with_prob(chosen, reward01, prob_used);
     ex.snapshot()
+}
+
+/// Convenience helper: apply a latency guardrail and then make a persisted EXP3-IX decision.
+///
+/// Returns the guardrail decision metadata plus the EXP3-IX decision ticket.
+#[derive(Debug, Clone)]
+pub struct Exp3IxGuardrailedDecision {
+    pub guardrail: crate::LatencyGuardrailDecision,
+    pub decision: Decision,
+    pub state: Exp3IxState,
+    pub prob_used: f64,
+}
+
+#[cfg(feature = "stochastic")]
+pub fn exp3ix_decide_persisted_guardrailed(
+    cfg: Exp3IxConfig,
+    state: Option<Exp3IxState>,
+    arms_in_order: &[String],
+    summaries: &BTreeMap<String, Summary>,
+    guardrail: LatencyGuardrailConfig,
+    already_chosen: usize,
+    decision_seed: u64,
+) -> Option<Exp3IxGuardrailedDecision> {
+    let gd = apply_latency_guardrail(arms_in_order, summaries, guardrail, already_chosen);
+    if gd.stop_early || gd.eligible.is_empty() {
+        return None;
+    }
+    let (decision, st, prob_used) =
+        exp3ix_decide_persisted_with_prob(cfg, state, arms_in_order, &gd.eligible, decision_seed)?;
+    Some(Exp3IxGuardrailedDecision {
+        guardrail: gd,
+        decision,
+        state: st,
+        prob_used,
+    })
 }
 
 impl Exp3Ix {
