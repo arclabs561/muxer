@@ -52,6 +52,26 @@ pub use contextual::*;
 mod sticky;
 pub use sticky::*;
 
+/// Per-round details for multi-pick MAB selection with an external latency guardrail.
+#[derive(Debug, Clone)]
+pub struct MabKRound {
+    /// Remaining arms at the start of the round.
+    pub remaining: Vec<String>,
+    /// Result of applying the latency guardrail to `remaining` for this round.
+    pub guardrail: LatencyGuardrailDecision,
+    /// MAB selection decision for this round (run on `guardrail.eligible`).
+    pub mab: MabSelectionDecision,
+}
+
+/// Output of selecting up to `k` unique arms via repeated MAB selection.
+#[derive(Debug, Clone)]
+pub struct MabKSelection {
+    /// Chosen arms (unique, in pick order).
+    pub chosen: Vec<String>,
+    /// Per-round details (one entry per chosen arm).
+    pub rounds: Vec<MabKRound>,
+}
+
 /// A single observed outcome for an arm.
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -621,6 +641,61 @@ pub fn select_mab_decide(
         probs: None,
         notes,
     }
+}
+
+/// Select up to `k` unique arms by repeatedly applying `select_mab_explain`, with an optional
+/// external latency guardrail applied each round.
+///
+/// This is intended for “thin harnesses” that want consistent guardrail semantics without
+/// re-implementing the multi-pick loop.
+///
+/// The `summaries_for` callback is invoked once per round with the *current* remaining arm set.
+pub fn select_mab_k_guardrailed_explain<F>(
+    arms_in_order: &[String],
+    mut summaries_for: F,
+    cfg: MabConfig,
+    guardrail: LatencyGuardrailConfig,
+    k: usize,
+) -> MabKSelection
+where
+    F: FnMut(&[String]) -> BTreeMap<String, Summary>,
+{
+    if arms_in_order.is_empty() || k == 0 {
+        return MabKSelection {
+            chosen: Vec::new(),
+            rounds: Vec::new(),
+        };
+    }
+
+    let mut remaining: Vec<String> = arms_in_order.to_vec();
+    let mut chosen: Vec<String> = Vec::new();
+    let mut rounds: Vec<MabKRound> = Vec::new();
+
+    for _round in 0..k.min(remaining.len()) {
+        let remaining_in = remaining.clone();
+        let summaries = summaries_for(&remaining_in);
+
+        let gd = apply_latency_guardrail(&remaining_in, &summaries, guardrail, chosen.len());
+        if gd.stop_early {
+            break;
+        }
+        if gd.eligible.is_empty() {
+            break;
+        }
+
+        let d = select_mab_explain(&gd.eligible, &summaries, cfg);
+        let pick = d.selection.chosen.clone();
+        chosen.push(pick.clone());
+        remaining.retain(|b| b != &pick);
+
+        rounds.push(MabKRound {
+            remaining: remaining_in,
+            guardrail: gd,
+            mab: d,
+        });
+    }
+
+    MabKSelection { chosen, rounds }
 }
 
 #[cfg(test)]
