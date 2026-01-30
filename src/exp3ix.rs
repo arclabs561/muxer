@@ -94,6 +94,28 @@ pub fn exp3ix_decide_persisted(
     Some((d, st))
 }
 
+/// Persisted EXP3-IX decision helper that also returns the probability used.
+///
+/// This returns a "ticket" (`chosen`, `prob_used`) that can be stored across an evaluation and
+/// later fed back into `exp3ix_update_persisted(...)` without retaining the full `Decision`.
+#[cfg(feature = "stochastic")]
+pub fn exp3ix_decide_persisted_with_prob(
+    cfg: Exp3IxConfig,
+    state: Option<Exp3IxState>,
+    arms_in_order: &[String],
+    eligible_in_order: &[String],
+    decision_seed: u64,
+) -> Option<(Decision, Exp3IxState, f64)> {
+    let (d, st) =
+        exp3ix_decide_persisted(cfg, state, arms_in_order, eligible_in_order, decision_seed)?;
+    let prob_used = d
+        .probs
+        .as_ref()
+        .and_then(|m| m.get(d.chosen.as_str()).copied())
+        .unwrap_or(0.0);
+    Some((d, st, prob_used))
+}
+
 /// Persisted EXP3-IX update helper.
 ///
 /// Updates the stored state using an explicit probability mass (typically the probability
