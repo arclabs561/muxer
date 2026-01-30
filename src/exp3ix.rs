@@ -72,6 +72,46 @@ pub struct Exp3IxState {
     pub probs: Vec<f64>,
 }
 
+/// Deterministic persisted EXP3-IX decision helper.
+///
+/// This is designed for “thin harnesses” that want to keep storage logic outside of `muxer`.
+/// It restores state (if present), makes a deterministic filtered decision, and returns the
+/// updated persistence snapshot (with cached probabilities).
+#[cfg(feature = "stochastic")]
+pub fn exp3ix_decide_persisted(
+    cfg: Exp3IxConfig,
+    state: Option<Exp3IxState>,
+    arms_in_order: &[String],
+    eligible_in_order: &[String],
+    decision_seed: u64,
+) -> Option<(Decision, Exp3IxState)> {
+    let mut ex = Exp3Ix::new(cfg);
+    if let Some(st) = state {
+        ex.restore(st);
+    }
+    let d = ex.decide_deterministic_filtered(arms_in_order, eligible_in_order, decision_seed)?;
+    let st = ex.snapshot();
+    Some((d, st))
+}
+
+/// Persisted EXP3-IX update helper.
+///
+/// Updates the stored state using an explicit probability mass (typically the probability
+/// that was actually used to sample the chosen arm after external filtering/renormalization).
+#[cfg(feature = "stochastic")]
+pub fn exp3ix_update_persisted(
+    cfg: Exp3IxConfig,
+    state: Exp3IxState,
+    chosen: &str,
+    reward01: f64,
+    prob_used: f64,
+) -> Exp3IxState {
+    let mut ex = Exp3Ix::new(cfg);
+    ex.restore(state);
+    ex.update_reward_with_prob(chosen, reward01, prob_used);
+    ex.snapshot()
+}
+
 impl Exp3Ix {
     /// Create a new EXP3-IX instance with deterministic defaults.
     pub fn new(cfg: Exp3IxConfig) -> Self {
