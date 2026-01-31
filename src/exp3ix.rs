@@ -211,6 +211,182 @@ pub fn exp3ix_decide_persisted_guardrailed(
     })
 }
 
+/// Multi-pick EXP3-IX selection round (guardrailed).
+#[derive(Debug, Clone)]
+pub struct Exp3IxKRound {
+    pub remaining: Vec<String>,
+    pub guardrail: crate::LatencyGuardrailDecision,
+    pub decision: Decision,
+    pub prob_used: f64,
+}
+
+/// Stop record when multi-pick selection ends early (guardrail stop/empty eligible).
+#[derive(Debug, Clone)]
+pub struct Exp3IxKStop {
+    pub remaining: Vec<String>,
+    pub guardrail: crate::LatencyGuardrailDecision,
+}
+
+/// Multi-pick EXP3-IX selection (guardrailed, deterministic, persisted-state friendly).
+#[derive(Debug, Clone)]
+pub struct Exp3IxKExplain {
+    /// Chosen arms in selection order.
+    pub chosen: Vec<String>,
+    /// Per-round decision details.
+    pub rounds: Vec<Exp3IxKRound>,
+    /// Optional stop record when selection ends early.
+    pub stop: Option<Exp3IxKStop>,
+    /// Updated persistence snapshot (same arm order, cached probabilities).
+    pub state: Exp3IxState,
+}
+
+/// Log-ready row for a multi-pick EXP3-IX selection.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Exp3IxKRoundLog {
+    pub round: usize,
+    pub remaining: Vec<String>,
+    pub guardrail_eligible: Vec<String>,
+    pub guardrail_fallback_used: bool,
+    pub guardrail_stop_early: bool,
+    pub chosen: Option<String>,
+    pub explore_first: Option<bool>,
+    pub prob_used: Option<f64>,
+    pub top_candidates: Option<crate::LogTopCandidates>,
+}
+
+/// Convert a multi-pick EXP3-IX explanation into compact, log-ready round rows.
+///
+/// This includes an additional “stop row” when selection ends early (e.g. guardrail `stop_early=true`).
+#[cfg(feature = "stochastic")]
+pub fn log_exp3ix_k_rounds_typed(explain: &Exp3IxKExplain, top: usize) -> Vec<Exp3IxKRoundLog> {
+    let mut out: Vec<Exp3IxKRoundLog> = Vec::new();
+
+    for (i, r) in explain.rounds.iter().enumerate() {
+        let explore_first = r
+            .decision
+            .notes
+            .iter()
+            .any(|n| matches!(n, DecisionNote::ExploreFirst));
+        out.push(Exp3IxKRoundLog {
+            round: i + 1,
+            remaining: r.remaining.clone(),
+            guardrail_eligible: r.guardrail.eligible.clone(),
+            guardrail_fallback_used: r.guardrail.fallback_used,
+            guardrail_stop_early: r.guardrail.stop_early,
+            chosen: Some(r.decision.chosen.clone()),
+            explore_first: Some(explore_first),
+            prob_used: Some(r.prob_used),
+            top_candidates: Some(crate::log_top_candidates_exp3ix_typed(&r.decision, top)),
+        });
+    }
+
+    if let Some(ref s) = explain.stop {
+        out.push(Exp3IxKRoundLog {
+            round: explain.rounds.len() + 1,
+            remaining: s.remaining.clone(),
+            guardrail_eligible: s.guardrail.eligible.clone(),
+            guardrail_fallback_used: s.guardrail.fallback_used,
+            guardrail_stop_early: s.guardrail.stop_early,
+            chosen: None,
+            explore_first: None,
+            prob_used: None,
+            top_candidates: None,
+        });
+    }
+
+    out
+}
+
+/// Select up to `k` unique arms by repeatedly applying deterministic EXP3-IX sampling, with an optional
+/// external latency guardrail applied each round.
+///
+/// Notes:
+/// - This does **not** update EXP3-IX losses between picks; it only selects a batch of distinct arms
+///   for evaluation. Callers should feed the observed rewards back via `exp3ix_update_persisted(...)`.
+/// - The returned `prob_used` is the probability mass from the renormalized eligible distribution in
+///   the round that produced that pick.
+#[cfg(feature = "stochastic")]
+pub fn exp3ix_decide_k_persisted_guardrailed_explain_full(
+    cfg: Exp3IxConfig,
+    state: Option<Exp3IxState>,
+    arms_in_order: &[String],
+    summaries: &BTreeMap<String, Summary>,
+    guardrail: LatencyGuardrailConfig,
+    k: usize,
+    decision_seed: u64,
+) -> Exp3IxKExplain {
+    if arms_in_order.is_empty() || k == 0 {
+        let mut ex = Exp3Ix::new(cfg);
+        if let Some(st) = state {
+            ex.restore(st);
+        }
+        // Ensure arm order is initialized for persistence stability.
+        ex.ensure_arms(arms_in_order);
+        return Exp3IxKExplain {
+            chosen: Vec::new(),
+            rounds: Vec::new(),
+            stop: None,
+            state: ex.snapshot(),
+        };
+    }
+
+    let mut ex = Exp3Ix::new(cfg);
+    if let Some(st) = state {
+        ex.restore(st);
+    }
+    ex.ensure_arms(arms_in_order);
+
+    let mut remaining: Vec<String> = arms_in_order.to_vec();
+    let mut chosen: Vec<String> = Vec::new();
+    let mut rounds: Vec<Exp3IxKRound> = Vec::new();
+    let mut stop: Option<Exp3IxKStop> = None;
+
+    for round in 0..k.min(remaining.len()) {
+        let remaining_in = remaining.clone();
+        let gd = apply_latency_guardrail(&remaining_in, summaries, guardrail, chosen.len());
+        if gd.stop_early || gd.eligible.is_empty() {
+            stop = Some(Exp3IxKStop {
+                remaining: remaining_in,
+                guardrail: gd,
+            });
+            break;
+        }
+
+        let seed = decision_seed ^ ((round as u64).wrapping_add(1).wrapping_mul(0x9E37_79B9));
+        let Some(decision) = ex.decide_deterministic_filtered(arms_in_order, &gd.eligible, seed)
+        else {
+            stop = Some(Exp3IxKStop {
+                remaining: remaining_in,
+                guardrail: gd,
+            });
+            break;
+        };
+        let pick = decision.chosen.clone();
+        let prob_used = decision
+            .probs
+            .as_ref()
+            .and_then(|m| m.get(pick.as_str()).copied())
+            .unwrap_or(0.0);
+
+        chosen.push(pick.clone());
+        remaining.retain(|b| b != &pick);
+        rounds.push(Exp3IxKRound {
+            remaining: remaining_in,
+            guardrail: gd,
+            decision,
+            prob_used,
+        });
+    }
+
+    Exp3IxKExplain {
+        chosen,
+        rounds,
+        stop,
+        state: ex.snapshot(),
+    }
+}
+
 impl Exp3Ix {
     /// Create a new EXP3-IX instance with deterministic defaults.
     pub fn new(cfg: Exp3IxConfig) -> Self {
@@ -685,6 +861,53 @@ mod tests {
         assert!(row.prob_used.is_finite());
         assert_eq!(row.top_candidates.kind, crate::LOG_SCORE_KIND_EXP3IX_PROB);
         assert!(!row.chosen.is_empty());
+    }
+
+    #[test]
+    fn exp3ix_multi_pick_guardrailed_selects_unique_arms() {
+        let cfg = Exp3IxConfig {
+            horizon: 100,
+            confidence_delta: None,
+            seed: 0,
+            decay: 1.0,
+        };
+        let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let mut m = BTreeMap::new();
+        for a in &arms {
+            m.insert(
+                a.clone(),
+                Summary {
+                    calls: 1,
+                    ok: 1,
+                    http_429: 0,
+                    junk: 0,
+                    hard_junk: 0,
+                    cost_units: 0,
+                    elapsed_ms_sum: 10,
+                },
+            );
+        }
+
+        let ex = exp3ix_decide_k_persisted_guardrailed_explain_full(
+            cfg,
+            None,
+            &arms,
+            &m,
+            LatencyGuardrailConfig::default(),
+            2,
+            123,
+        );
+
+        assert_eq!(ex.chosen.len(), 2);
+        assert_ne!(ex.chosen[0], ex.chosen[1], "multi-pick must not repeat arms");
+        assert_eq!(ex.rounds.len(), 2);
+
+        let logs = log_exp3ix_k_rounds_typed(&ex, 3);
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0].round, 1);
+        assert_eq!(logs[1].round, 2);
+        assert!(logs[0].chosen.as_ref().is_some());
+        assert!(logs[0].prob_used.unwrap_or(0.0).is_finite());
     }
 
     #[test]
