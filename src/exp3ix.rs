@@ -517,7 +517,7 @@ impl Exp3Ix {
     fn u01(seed: u64) -> f64 {
         // Map a u64 to [0,1) with ~53 bits of mantissa precision.
         let x = Self::splitmix64(seed);
-        let top = (x >> 11) as u64; // 53 bits
+        let top = x >> 11; // 53 bits
         (top as f64) / ((1u64 << 53) as f64)
     }
 
