@@ -65,6 +65,9 @@ pub use prior::*;
 mod worst_first;
 pub use worst_first::*;
 
+mod harness;
+pub use harness::*;
+
 /// Per-round details for multi-pick MAB selection with an external latency guardrail.
 #[derive(Debug, Clone)]
 pub struct MabKRound {
