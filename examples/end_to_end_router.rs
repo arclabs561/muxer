@@ -14,7 +14,6 @@ fn main() {
     #[derive(Clone, Copy)]
     struct ArmTruth {
         ok_p: f64,
-        http_429_p: f64,
         // “true junkiness” might only be known after downstream work.
         junk_p: f64,
         hard_junk_p: f64,
@@ -23,8 +22,7 @@ fn main() {
     }
 
     fn sample_outcome(rng: &mut StdRng, t: ArmTruth) -> (Outcome, bool, bool) {
-        let http_429 = rng.random::<f64>() < t.http_429_p;
-        let ok = !http_429 && (rng.random::<f64>() < t.ok_p);
+        let ok = rng.random::<f64>() < t.ok_p;
 
         // This is discovered later.
         let is_junk = ok && (rng.random::<f64>() < t.junk_p);
@@ -36,7 +34,6 @@ fn main() {
         (
             Outcome {
                 ok,
-                http_429,
                 // initial label is unknown (set later)
                 junk: false,
                 hard_junk: false,
@@ -60,7 +57,6 @@ fn main() {
             "cheap",
             ArmTruth {
                 ok_p: 0.88,
-                http_429_p: 0.06,
                 junk_p: 0.03,
                 hard_junk_p: 0.05,
                 mean_cost_units: 1,
@@ -71,7 +67,6 @@ fn main() {
             "fast",
             ArmTruth {
                 ok_p: 0.90,
-                http_429_p: 0.02,
                 junk_p: 0.10,
                 hard_junk_p: 0.20,
                 mean_cost_units: 2,
@@ -82,7 +77,6 @@ fn main() {
             "reliable",
             ArmTruth {
                 ok_p: 0.96,
-                http_429_p: 0.00,
                 junk_p: 0.02,
                 hard_junk_p: 0.05,
                 mean_cost_units: 4,
@@ -97,7 +91,6 @@ fn main() {
     // Constraints first, then trade-offs.
     let cfg = MabConfig {
         // constrain bad operational behavior
-        max_http_429_rate: Some(0.20),
         max_hard_junk_rate: Some(0.10),
         // trade-off tuning
         cost_weight: 0.25,
@@ -140,13 +133,12 @@ fn main() {
             let s = w.summary();
             // Intentionally log a single line per tick (easy to ingest into log pipelines).
             eprintln!(
-                "t={:4} decision={:?} dwell={} counts={:?} ok_rate={:.3} http_429_rate={:.3} junk_rate={:.3} hard_junk_rate={:.3}",
+                "t={:4} decision={:?} dwell={} counts={:?} ok_rate={:.3} junk_rate={:.3} hard_junk_rate={:.3}",
                 t,
                 d,
                 sticky.dwell(),
                 counts,
                 s.ok_rate(),
-                s.http_429_rate(),
                 s.junk_rate(),
                 s.hard_junk_rate()
             );

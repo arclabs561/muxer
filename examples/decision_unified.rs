@@ -20,7 +20,6 @@ fn main() {
             Summary {
                 calls: 100,
                 ok: 95,
-                http_429: 0,
                 junk: 0,
                 hard_junk: 0,
                 cost_units: 200,      // mean 2.0
@@ -32,7 +31,6 @@ fn main() {
             Summary {
                 calls: 100,
                 ok: 93,
-                http_429: 0,
                 junk: 0,
                 hard_junk: 0,
                 cost_units: 100,      // mean 1.0

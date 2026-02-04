@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 
 fn main() {
     // Motivated example: constraints first, then tune trade-offs.
-    // Imagine three providers where one is cheaper but sometimes rate-limits,
+    // Imagine three providers where one is cheaper but sometimes fails,
     // another is fast but sometimes junky, and one is expensive but reliable.
     let arms = vec![
         "cheap".to_string(),
@@ -18,7 +18,6 @@ fn main() {
     for _ in 0..45 {
         windows.get_mut("cheap").unwrap().push(Outcome {
             ok: true,
-            http_429: false,
             junk: false,
             hard_junk: false,
             cost_units: 1,
@@ -28,9 +27,9 @@ fn main() {
     for _ in 0..5 {
         windows.get_mut("cheap").unwrap().push(Outcome {
             ok: false,
-            http_429: true,
-            junk: false,
-            hard_junk: false,
+            // Treat operational failures as "hard junk" for routing purposes.
+            junk: true,
+            hard_junk: true,
             cost_units: 1,
             elapsed_ms: 200,
         });
@@ -39,7 +38,6 @@ fn main() {
     for _ in 0..45 {
         windows.get_mut("fast").unwrap().push(Outcome {
             ok: true,
-            http_429: false,
             junk: true,
             hard_junk: false,
             cost_units: 2,
@@ -49,7 +47,6 @@ fn main() {
     for _ in 0..5 {
         windows.get_mut("fast").unwrap().push(Outcome {
             ok: true,
-            http_429: false,
             junk: false,
             hard_junk: false,
             cost_units: 2,
@@ -60,7 +57,6 @@ fn main() {
     for _ in 0..50 {
         windows.get_mut("reliable").unwrap().push(Outcome {
             ok: true,
-            http_429: false,
             junk: false,
             hard_junk: false,
             cost_units: 4,
@@ -75,7 +71,7 @@ fn main() {
 
     // First: hard constraints to avoid clearly-bad arms.
     let cfg_constraints = MabConfig {
-        max_http_429_rate: Some(0.05),
+        max_hard_junk_rate: Some(0.05),
         max_junk_rate: Some(0.10),
         ..MabConfig::default()
     };
@@ -84,7 +80,7 @@ fn main() {
 
     // Then: tune trade-offs once all candidates are "acceptable".
     let cfg_tradeoffs = MabConfig {
-        max_http_429_rate: Some(0.20),
+        max_hard_junk_rate: Some(0.20),
         max_junk_rate: Some(0.25),
         cost_weight: 0.30,
         latency_weight: 0.001,

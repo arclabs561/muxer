@@ -16,7 +16,6 @@ fn main() {
     #[derive(Clone, Copy)]
     struct ArmTruth {
         ok_p: f64,
-        http_429_p: f64,
         junk_p: f64,
         hard_junk_p: f64,
         mean_cost_units: u64,
@@ -24,8 +23,7 @@ fn main() {
     }
 
     fn sample_outcome(rng: &mut StdRng, t: ArmTruth) -> Outcome {
-        let http_429 = rng.random::<f64>() < t.http_429_p;
-        let ok = !http_429 && (rng.random::<f64>() < t.ok_p);
+        let ok = rng.random::<f64>() < t.ok_p;
         let junk = ok && (rng.random::<f64>() < t.junk_p);
         let hard_junk = junk && (rng.random::<f64>() < t.hard_junk_p);
 
@@ -35,7 +33,6 @@ fn main() {
 
         Outcome {
             ok,
-            http_429,
             junk,
             hard_junk,
             cost_units,
@@ -56,7 +53,6 @@ fn main() {
             "fast",
             ArmTruth {
                 ok_p: 0.92,
-                http_429_p: 0.01,
                 junk_p: 0.08,
                 hard_junk_p: 0.15,
                 mean_cost_units: 2,
@@ -67,7 +63,6 @@ fn main() {
             "cheap",
             ArmTruth {
                 ok_p: 0.88,
-                http_429_p: 0.03,
                 junk_p: 0.06,
                 hard_junk_p: 0.10,
                 mean_cost_units: 1,
@@ -78,7 +73,6 @@ fn main() {
             "reliable",
             ArmTruth {
                 ok_p: 0.95,
-                http_429_p: 0.00,
                 junk_p: 0.03,
                 hard_junk_p: 0.05,
                 mean_cost_units: 3,
@@ -98,7 +92,6 @@ fn main() {
         latency_weight: 0.0015,
         junk_weight: 1.5,
         hard_junk_weight: 2.0,
-        max_http_429_rate: Some(0.20),
         ..MabConfig::default()
     };
 

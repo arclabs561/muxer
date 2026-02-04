@@ -3,6 +3,7 @@
 //! This crate is designed for “provider routing” style problems:
 //! you have a small set of arms (providers) and repeated calls that produce
 //! outcomes (ok/fail, rate limit, cost, latency, “junk”).
+//! outcomes (ok/fail, cost, latency, “junk”).
 //!
 //! Goals:
 //! - **Deterministic by default**: same stats + config → same choice.
@@ -248,8 +249,6 @@ pub fn log_top_candidates_exp3ix_typed(decision: &Decision, top: usize) -> LogTo
 pub struct Outcome {
     /// Whether the request succeeded for this arm.
     pub ok: bool,
-    /// Whether the request failed due to rate limiting (HTTP 429).
-    pub http_429: bool,
     /// Whether the downstream result was judged “low value” (e.g. blocked, empty extraction).
     pub junk: bool,
     /// Whether the junk was “hard” (e.g. JS/auth wall) vs “soft” (low-signal extraction).
@@ -325,14 +324,12 @@ impl Window {
             return Summary::default();
         }
         let mut ok = 0u64;
-        let mut http_429 = 0u64;
         let mut junk = 0u64;
         let mut hard_junk = 0u64;
         let mut cost_units = 0u64;
         let mut elapsed_ms_sum = 0u64;
         for o in &self.buf {
             ok += o.ok as u64;
-            http_429 += o.http_429 as u64;
             junk += o.junk as u64;
             hard_junk += o.hard_junk as u64;
             cost_units = cost_units.saturating_add(o.cost_units);
@@ -341,7 +338,6 @@ impl Window {
         Summary {
             calls: n,
             ok,
-            http_429,
             junk,
             hard_junk,
             cost_units,
@@ -358,8 +354,6 @@ pub struct Summary {
     pub calls: u64,
     /// Number of successful calls.
     pub ok: u64,
-    /// Number of HTTP 429 (rate-limited) calls.
-    pub http_429: u64,
     /// Number of calls judged “junk”.
     pub junk: u64,
     /// Number of calls judged “hard junk”.
@@ -377,15 +371,6 @@ impl Summary {
             0.0
         } else {
             (self.ok as f64) / (self.calls as f64)
-        }
-    }
-
-    /// Fraction of calls that were rate-limited (HTTP 429).
-    pub fn http_429_rate(&self) -> f64 {
-        if self.calls == 0 {
-            0.0
-        } else {
-            (self.http_429 as f64) / (self.calls as f64)
         }
     }
 
@@ -454,8 +439,6 @@ pub struct MabConfig {
     pub max_junk_rate: Option<f64>,
     /// Optional constraint: discard arms whose windowed hard_junk_rate exceeds this.
     pub max_hard_junk_rate: Option<f64>,
-    /// Optional constraint: discard arms whose windowed http_429_rate exceeds this.
-    pub max_http_429_rate: Option<f64>,
     /// Optional constraint: discard arms whose windowed mean_cost_units exceeds this.
     pub max_mean_cost_units: Option<f64>,
 }
@@ -470,7 +453,6 @@ impl Default for MabConfig {
             hard_junk_weight: 0.0,
             max_junk_rate: None,
             max_hard_junk_rate: None,
-            max_http_429_rate: None,
             max_mean_cost_units: None,
         }
     }
@@ -486,16 +468,12 @@ pub struct CandidateDebug {
     pub calls: u64,
     /// Successes observed in the summary.
     pub ok: u64,
-    /// Rate-limit events observed in the summary.
-    pub http_429: u64,
     /// Junk outcomes observed in the summary.
     pub junk: u64,
     /// Hard junk outcomes observed in the summary.
     pub hard_junk: u64,
     /// Success rate.
     pub ok_rate: f64,
-    /// HTTP 429 rate.
-    pub http_429_rate: f64,
     /// Junk rate.
     pub junk_rate: f64,
     /// Hard junk rate.
@@ -550,7 +528,7 @@ pub struct MabSelectionDecision {
 /// - Explore each arm at least once (in stable order).
 /// - Then:
 ///   - build a Pareto frontier over:
-///     - maximize success (ok_rate with 429 penalty, plus UCB)
+///     - maximize success (ok_rate, plus UCB)
 ///     - minimize mean cost_units
 ///     - minimize mean latency
 ///     - minimize junk_rate
@@ -566,11 +544,11 @@ pub struct MabSelectionDecision {
 /// let mut summaries = BTreeMap::new();
 /// summaries.insert(
 ///     "a".to_string(),
-///     Summary { calls: 10, ok: 9, http_429: 0, junk: 0, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900 }
+///     Summary { calls: 10, ok: 9, junk: 0, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900 }
 /// );
 /// summaries.insert(
 ///     "b".to_string(),
-///     Summary { calls: 10, ok: 9, http_429: 0, junk: 2, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900 }
+///     Summary { calls: 10, ok: 9, junk: 2, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900 }
 /// );
 ///
 /// let sel = select_mab(&arms, &summaries, MabConfig::default());
@@ -604,10 +582,6 @@ pub fn select_mab_explain(
                 .map(|thr| s.hard_junk_rate() <= thr)
                 .unwrap_or(true)
             && cfg
-                .max_http_429_rate
-                .map(|thr| s.http_429_rate() <= thr)
-                .unwrap_or(true)
-            && cfg
                 .max_mean_cost_units
                 .map(|thr| s.mean_cost_units() <= thr)
                 .unwrap_or(true);
@@ -637,11 +611,9 @@ pub fn select_mab_explain(
                     name: a.clone(),
                     calls: 0,
                     ok: 0,
-                    http_429: 0,
                     junk: 0,
                     hard_junk: 0,
                     ok_rate: 0.0,
-                    http_429_rate: 0.0,
                     junk_rate: 0.0,
                     hard_junk_rate: 0.0,
                     soft_junk_rate: 0.0,
@@ -683,16 +655,12 @@ pub fn select_mab_explain(
         let s = summaries.get(a).copied().unwrap_or_default();
         let n = (s.calls as f64).max(1.0);
         let ok_rate = s.ok_rate();
-        let rl_rate = s.http_429_rate();
         let junk_rate = s.junk_rate();
         let hard_junk_rate = s.hard_junk_rate();
         let soft_junk_rate = s.soft_junk_rate();
 
-        // Success objective discourages providers that are 429-ing right now.
-        // Junk is handled as a separate minimized objective (and optionally weighted).
-        let effective_ok = ok_rate * (1.0 - rl_rate);
         let ucb = cfg.exploration_c * ((total_calls.ln() / n).sqrt());
-        let objective_success = effective_ok + ucb;
+        let objective_success = ok_rate + ucb;
 
         let mean_cost = s.mean_cost_units();
         let mean_lat = s.mean_elapsed_ms();
@@ -701,11 +669,9 @@ pub fn select_mab_explain(
             name: a.clone(),
             calls: s.calls,
             ok: s.ok,
-            http_429: s.http_429,
             junk: s.junk,
             hard_junk: s.hard_junk,
             ok_rate,
-            http_429_rate: rl_rate,
             junk_rate,
             hard_junk_rate,
             soft_junk_rate,
@@ -973,7 +939,6 @@ mod tests {
     fn s(
         calls: u64,
         ok: u64,
-        http_429: u64,
         junk: u64,
         hard_junk: u64,
         cost_units: u64,
@@ -982,7 +947,6 @@ mod tests {
         Summary {
             calls,
             ok,
-            http_429,
             junk,
             hard_junk,
             cost_units,
@@ -994,9 +958,9 @@ mod tests {
     fn select_mab_is_deterministic_and_prefers_lower_junk_all_else_equal() {
         let arms = vec!["a".to_string(), "b".to_string()];
         let mut m = BTreeMap::new();
-        // Same ok/http_429/cost/lat, but different junk.
-        m.insert("a".to_string(), s(10, 9, 0, 5, 0, 10, 1000));
-        m.insert("b".to_string(), s(10, 9, 0, 0, 0, 10, 1000));
+        // Same ok/cost/lat, but different junk.
+        m.insert("a".to_string(), s(10, 9, 5, 0, 10, 1000));
+        m.insert("b".to_string(), s(10, 9, 0, 0, 10, 1000));
 
         let sel1 = select_mab(&arms, &m, MabConfig::default());
         let sel2 = select_mab(&arms, &m, MabConfig::default());
@@ -1008,8 +972,8 @@ mod tests {
     fn constraints_filter_arms_but_never_return_empty() {
         let arms = vec!["a".to_string(), "b".to_string()];
         let mut m = BTreeMap::new();
-        m.insert("a".to_string(), s(10, 9, 0, 9, 0, 10, 1000));
-        m.insert("b".to_string(), s(10, 9, 0, 9, 0, 10, 1000));
+        m.insert("a".to_string(), s(10, 9, 9, 0, 10, 1000));
+        m.insert("b".to_string(), s(10, 9, 9, 0, 10, 1000));
 
         let cfg = MabConfig {
             max_junk_rate: Some(0.1),
@@ -1021,26 +985,11 @@ mod tests {
     }
 
     #[test]
-    fn constraints_can_exclude_high_429_arm() {
-        let arms = vec!["brave".to_string(), "tavily".to_string()];
-        let mut m = BTreeMap::new();
-        m.insert("brave".to_string(), s(10, 10, 8, 0, 0, 10, 1000));
-        m.insert("tavily".to_string(), s(10, 9, 0, 0, 0, 10, 1000));
-
-        let cfg = MabConfig {
-            max_http_429_rate: Some(0.5),
-            ..MabConfig::default()
-        };
-        let sel = select_mab(&arms, &m, cfg);
-        assert_eq!(sel.chosen, "tavily");
-    }
-
-    #[test]
     fn constraints_can_exclude_high_hard_junk_arm() {
         let arms = vec!["a".to_string(), "b".to_string()];
         let mut m = BTreeMap::new();
-        m.insert("a".to_string(), s(10, 9, 0, 1, 1, 10, 1000));
-        m.insert("b".to_string(), s(10, 9, 0, 1, 0, 10, 1000));
+        m.insert("a".to_string(), s(10, 9, 1, 1, 10, 1000));
+        m.insert("b".to_string(), s(10, 9, 1, 0, 10, 1000));
 
         let cfg = MabConfig {
             max_hard_junk_rate: Some(0.05),
@@ -1069,7 +1018,6 @@ mod tests {
             Summary {
                 calls: 1,
                 ok: 1,
-                http_429: 0,
                 junk: 0,
                 hard_junk: 0,
                 cost_units: 0,
@@ -1081,7 +1029,6 @@ mod tests {
             Summary {
                 calls: 1,
                 ok: 1,
-                http_429: 0,
                 junk: 0,
                 hard_junk: 0,
                 cost_units: 0,
@@ -1114,8 +1061,6 @@ mod tests {
             calls_b in 0u64..50,
             ok_a in 0u64..50,
             ok_b in 0u64..50,
-            http_a in 0u64..50,
-            http_b in 0u64..50,
             junk_a in 0u64..50,
             junk_b in 0u64..50,
             hard_a in 0u64..50,
@@ -1132,7 +1077,6 @@ mod tests {
             let sa = s(
                 calls_a,
                 ok_a.min(calls_a),
-                http_a.min(calls_a),
                 junk_a.min(calls_a),
                 hard_a.min(junk_a.min(calls_a)),
                 cost_a,
@@ -1141,7 +1085,6 @@ mod tests {
             let sb = s(
                 calls_b,
                 ok_b.min(calls_b),
-                http_b.min(calls_b),
                 junk_b.min(calls_b),
                 hard_b.min(junk_b.min(calls_b)),
                 cost_b,
@@ -1158,7 +1101,6 @@ mod tests {
                 hard_junk_weight: 0.0,
                 max_junk_rate: None,
                 max_hard_junk_rate: None,
-                max_http_429_rate: None,
                 max_mean_cost_units: None,
             };
 
@@ -1177,8 +1119,6 @@ mod tests {
             calls_b in 1u64..50,
             ok_a in 0u64..50,
             ok_b in 0u64..50,
-            http_a in 0u64..50,
-            http_b in 0u64..50,
             junk_a in 0u64..50,
             junk_b in 0u64..50,
             hard_a in 0u64..50,
@@ -1189,7 +1129,6 @@ mod tests {
             lat_b in 0u64..50_000,
             extra_calls in 0u64..50,
             extra_ok in 0u64..50,
-            extra_http in 0u64..50,
             extra_junk in 0u64..50,
             extra_hard in 0u64..50,
             extra_cost in 0u64..500,
@@ -1201,7 +1140,6 @@ mod tests {
             let sa = s(
                 calls_a,
                 ok_a.min(calls_a),
-                http_a.min(calls_a),
                 junk_a.min(calls_a),
                 hard_a.min(junk_a.min(calls_a)),
                 cost_a,
@@ -1210,7 +1148,6 @@ mod tests {
             let sb = s(
                 calls_b,
                 ok_b.min(calls_b),
-                http_b.min(calls_b),
                 junk_b.min(calls_b),
                 hard_b.min(junk_b.min(calls_b)),
                 cost_b,
@@ -1226,7 +1163,6 @@ mod tests {
             let sx = s(
                 extra_calls,
                 extra_ok.min(extra_calls),
-                extra_http.min(extra_calls),
                 extra_junk.min(extra_calls),
                 extra_hard.min(extra_junk.min(extra_calls)),
                 extra_cost,
@@ -1247,9 +1183,9 @@ mod tests {
         ) {
             let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
             let mut m = BTreeMap::new();
-            m.insert("a".to_string(), s(calls_a, 0, 0, 0, 0, 0, 0));
-            m.insert("b".to_string(), s(calls_b, 0, 0, 0, 0, 0, 0));
-            m.insert("c".to_string(), s(calls_c, 0, 0, 0, 0, 0, 0));
+            m.insert("a".to_string(), s(calls_a, 0, 0, 0, 0, 0));
+            m.insert("b".to_string(), s(calls_b, 0, 0, 0, 0, 0));
+            m.insert("c".to_string(), s(calls_c, 0, 0, 0, 0, 0));
 
             // Find first index with calls == 0.
             let expected = if calls_a == 0 {
@@ -1280,16 +1216,16 @@ mod tests {
 
         // First: pick "a".
         let mut m1 = BTreeMap::new();
-        m1.insert("a".to_string(), s(10, 10, 0, 0, 0, 0, 0));
-        m1.insert("b".to_string(), s(10, 5, 0, 0, 0, 0, 0));
+        m1.insert("a".to_string(), s(10, 10, 0, 0, 0, 0));
+        m1.insert("b".to_string(), s(10, 5, 0, 0, 0, 0));
         let e1 = sticky.apply_mab(select_mab_explain(&arms, &m1, cfg));
         assert_eq!(e1.selection.chosen, "a");
         assert_eq!(sticky.dwell(), 1);
 
         // Now "b" is better, but dwell gate should keep "a" for 2 more decisions.
         let mut m2 = BTreeMap::new();
-        m2.insert("a".to_string(), s(10, 5, 0, 0, 0, 0, 0));
-        m2.insert("b".to_string(), s(10, 10, 0, 0, 0, 0, 0));
+        m2.insert("a".to_string(), s(10, 5, 0, 0, 0, 0));
+        m2.insert("b".to_string(), s(10, 10, 0, 0, 0, 0));
 
         let e2 = sticky.apply_mab(select_mab_explain(&arms, &m2, cfg));
         assert_eq!(e2.selection.chosen, "a");
@@ -1321,11 +1257,9 @@ mod tests {
                             name: "a".to_string(),
                             calls: 10,
                             ok: 0,
-                            http_429: 0,
                             junk: 0,
                             hard_junk: 0,
                             ok_rate: 0.0,
-                            http_429_rate: 0.0,
                             junk_rate: 0.0,
                             hard_junk_rate: 0.0,
                             soft_junk_rate: 0.0,
@@ -1338,11 +1272,9 @@ mod tests {
                             name: "b".to_string(),
                             calls: 10,
                             ok: 0,
-                            http_429: 0,
                             junk: 0,
                             hard_junk: 0,
                             ok_rate: 0.0,
-                            http_429_rate: 0.0,
                             junk_rate: 0.0,
                             hard_junk_rate: 0.0,
                             soft_junk_rate: 0.0,
@@ -1392,11 +1324,9 @@ mod tests {
                     name: "old".to_string(),
                     calls: 0,
                     ok: 0,
-                    http_429: 0,
                     junk: 0,
                     hard_junk: 0,
                     ok_rate: 0.0,
-                    http_429_rate: 0.0,
                     junk_rate: 0.0,
                     hard_junk_rate: 0.0,
                     soft_junk_rate: 0.0,
@@ -1421,11 +1351,9 @@ mod tests {
                 name: "a".to_string(),
                 calls: 10,
                 ok: 0,
-                http_429: 0,
                 junk: 0,
                 hard_junk: 0,
                 ok_rate: 0.0,
-                http_429_rate: 0.0,
                 junk_rate: 0.0,
                 hard_junk_rate: 0.0,
                 soft_junk_rate: 0.0,
@@ -1452,12 +1380,12 @@ mod tests {
         let arms = vec!["a".to_string(), "b".to_string()];
         let mut m = BTreeMap::new();
 
-        // Arm "a" violates http_429 constraint, arm "b" is fine.
-        m.insert("a".to_string(), s(100, 90, 80, 0, 0, 10, 1000));
-        m.insert("b".to_string(), s(100, 90, 0, 0, 0, 10, 1000));
+        // Arm "a" violates junk constraint, arm "b" is fine.
+        m.insert("a".to_string(), s(100, 90, 80, 0, 10, 1000));
+        m.insert("b".to_string(), s(100, 90, 0, 0, 10, 1000));
 
         let cfg = MabConfig {
-            max_http_429_rate: Some(0.1),
+            max_junk_rate: Some(0.1),
             ..MabConfig::default()
         };
 
@@ -1466,6 +1394,6 @@ mod tests {
 
         // Sanity: chosen meets constraints.
         let s = m.get(&sel.chosen).copied().unwrap_or_default();
-        assert!(s.http_429_rate() <= 0.1);
+        assert!(s.junk_rate() <= 0.1);
     }
 }

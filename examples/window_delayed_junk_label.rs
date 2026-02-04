@@ -8,7 +8,6 @@ fn main() {
     // Request returned OK; we don't yet know junk-ness.
     w.push(Outcome {
         ok: true,
-        http_429: false,
         junk: false,
         hard_junk: false,
         cost_units: 2,

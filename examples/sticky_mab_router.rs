@@ -22,7 +22,6 @@ fn main() {
                 Summary {
                     calls: 50,
                     ok: 49,
-                    http_429: 0,
                     junk: 0,
                     hard_junk: 0,
                     cost_units: 50,
@@ -34,7 +33,6 @@ fn main() {
                 Summary {
                     calls: 50,
                     ok: 46,
-                    http_429: 0,
                     junk: 0,
                     hard_junk: 0,
                     cost_units: 50,
@@ -47,7 +45,6 @@ fn main() {
                 Summary {
                     calls: 50,
                     ok: 46,
-                    http_429: 0,
                     junk: 0,
                     hard_junk: 0,
                     cost_units: 50,
@@ -59,7 +56,6 @@ fn main() {
                 Summary {
                     calls: 50,
                     ok: 49,
-                    http_429: 0,
                     junk: 0,
                     hard_junk: 0,
                     cost_units: 50,

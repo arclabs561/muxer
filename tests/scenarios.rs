@@ -8,22 +8,21 @@ fn push_n(w: &mut Window, n: usize, o: Outcome) {
 }
 
 #[test]
-fn select_mab_prefers_non_429_arm_when_window_is_429_heavy() {
+fn select_mab_prefers_non_hard_junk_arm_when_window_is_hard_junk_heavy() {
     let arms = vec!["a".to_string(), "b".to_string()];
 
     // Preload realistic windows instead of hand-constructing Summary rows.
     let mut wa = Window::new(50);
     let mut wb = Window::new(50);
 
-    // Arm "a" is currently rate-limiting heavily.
+    // Arm "a" is currently producing lots of hard junk (operational failures).
     push_n(
         &mut wa,
         50,
         Outcome {
             ok: false,
-            http_429: true,
-            junk: false,
-            hard_junk: false,
+            junk: true,
+            hard_junk: true,
             cost_units: 1,
             elapsed_ms: 100,
         },
@@ -35,7 +34,6 @@ fn select_mab_prefers_non_429_arm_when_window_is_429_heavy() {
         50,
         Outcome {
             ok: true,
-            http_429: false,
             junk: false,
             hard_junk: false,
             cost_units: 1,
@@ -49,7 +47,7 @@ fn select_mab_prefers_non_429_arm_when_window_is_429_heavy() {
     ]);
 
     let cfg = MabConfig {
-        max_http_429_rate: Some(0.2),
+        max_hard_junk_rate: Some(0.2),
         ..MabConfig::default()
     };
 
@@ -85,7 +83,6 @@ fn sticky_reduces_switching_under_alternating_small_advantages() {
             60,
             Outcome {
                 ok: true,
-                http_429: false,
                 junk: false,
                 hard_junk: false,
                 cost_units: 1,
@@ -97,7 +94,6 @@ fn sticky_reduces_switching_under_alternating_small_advantages() {
             60,
             Outcome {
                 ok: true,
-                http_429: false,
                 junk: false,
                 hard_junk: false,
                 cost_units: 1,

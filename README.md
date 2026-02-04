@@ -51,8 +51,8 @@ use std::collections::BTreeMap;
 
 let arms = vec!["a".to_string(), "b".to_string()];
 let mut summaries = BTreeMap::new();
-summaries.insert("a".to_string(), Summary { calls: 10, ok: 9, http_429: 0, junk: 0, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900 });
-summaries.insert("b".to_string(), Summary { calls: 10, ok: 9, http_429: 0, junk: 2, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900 });
+summaries.insert("a".to_string(), Summary { calls: 10, ok: 9, junk: 0, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900 });
+summaries.insert("b".to_string(), Summary { calls: 10, ok: 9, junk: 2, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900 });
 
 let sel = select_mab(&arms, &summaries, MabConfig::default());
 assert_eq!(sel.chosen, "a"); // lower junk when all else is equal

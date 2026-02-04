@@ -825,7 +825,6 @@ mod tests {
             Summary {
                 calls: 1,
                 ok: 1,
-                http_429: 0,
                 junk: 0,
                 hard_junk: 0,
                 cost_units: 0,
@@ -837,7 +836,6 @@ mod tests {
             Summary {
                 calls: 1,
                 ok: 1,
-                http_429: 0,
                 junk: 0,
                 hard_junk: 0,
                 cost_units: 0,
@@ -879,7 +877,6 @@ mod tests {
                 Summary {
                     calls: 1,
                     ok: 1,
-                    http_429: 0,
                     junk: 0,
                     hard_junk: 0,
                     cost_units: 0,
@@ -973,7 +970,6 @@ mod tests {
             hard_junk_weight: 0.0,
             max_junk_rate: None,
             max_hard_junk_rate: None,
-            max_http_429_rate: None,
             max_mean_cost_units: None,
         };
 
@@ -988,7 +984,6 @@ mod tests {
         let s = Summary {
             calls: 10,
             ok: 10,
-            http_429: 0,
             junk: 0,
             hard_junk: 0,
             cost_units: 0,

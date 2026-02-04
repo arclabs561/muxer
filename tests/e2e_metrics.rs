@@ -9,7 +9,6 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy)]
 struct ArmTruth {
     ok_p: f64,
-    http_429_p: f64,
     junk_p: f64,
     hard_junk_p: f64,
     cost_units: u64,
@@ -17,15 +16,13 @@ struct ArmTruth {
 }
 
 fn sample_outcome(rng: &mut StdRng, t: ArmTruth) -> (Outcome, bool, bool) {
-    let http_429 = rng.random::<f64>() < t.http_429_p;
-    let ok = !http_429 && (rng.random::<f64>() < t.ok_p);
+    let ok = rng.random::<f64>() < t.ok_p;
 
     let is_junk = ok && (rng.random::<f64>() < t.junk_p);
     let is_hard = is_junk && (rng.random::<f64>() < t.hard_junk_p);
 
     let o = Outcome {
         ok,
-        http_429,
         junk: false,
         hard_junk: false,
         cost_units: t.cost_units.saturating_add(rng.random_range(0..=1)),
@@ -47,7 +44,6 @@ fn sticky_bounds_switch_rate_in_stable_environment() {
             "cheap",
             ArmTruth {
                 ok_p: 0.90,
-                http_429_p: 0.03,
                 junk_p: 0.02,
                 hard_junk_p: 0.05,
                 cost_units: 1,
@@ -58,7 +54,6 @@ fn sticky_bounds_switch_rate_in_stable_environment() {
             "fast",
             ArmTruth {
                 ok_p: 0.92,
-                http_429_p: 0.01,
                 junk_p: 0.07,
                 hard_junk_p: 0.20,
                 cost_units: 2,
@@ -69,7 +64,6 @@ fn sticky_bounds_switch_rate_in_stable_environment() {
             "reliable",
             ArmTruth {
                 ok_p: 0.97,
-                http_429_p: 0.00,
                 junk_p: 0.01,
                 hard_junk_p: 0.05,
                 cost_units: 4,
@@ -79,7 +73,6 @@ fn sticky_bounds_switch_rate_in_stable_environment() {
     ]);
 
     let cfg = MabConfig {
-        max_http_429_rate: Some(0.20),
         max_hard_junk_rate: Some(0.10),
         cost_weight: 0.20,
         latency_weight: 0.001,
@@ -131,7 +124,7 @@ fn constraints_hold_in_windowed_summary_when_one_arm_is_bad() {
     let arms = vec!["bad".to_string(), "good".to_string()];
 
     let cfg = MabConfig {
-        max_http_429_rate: Some(0.2),
+        max_hard_junk_rate: Some(0.2),
         ..MabConfig::default()
     };
 
@@ -141,15 +134,13 @@ fn constraints_hold_in_windowed_summary_when_one_arm_is_bad() {
     for _ in 0..50 {
         w_bad.push(Outcome {
             ok: false,
-            http_429: true,
-            junk: false,
-            hard_junk: false,
+            junk: true,
+            hard_junk: true,
             cost_units: 1,
             elapsed_ms: 100,
         });
         w_good.push(Outcome {
             ok: true,
-            http_429: false,
             junk: false,
             hard_junk: false,
             cost_units: 1,

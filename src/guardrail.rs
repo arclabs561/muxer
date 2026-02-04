@@ -109,7 +109,6 @@ mod tests {
         Summary {
             calls,
             ok: calls,
-            http_429: 0,
             junk: 0,
             hard_junk: 0,
             cost_units: 0,
