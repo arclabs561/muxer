@@ -53,6 +53,18 @@ pub use contextual::*;
 mod sticky;
 pub use sticky::*;
 
+mod stable_hash;
+pub use stable_hash::*;
+
+mod novelty;
+pub use novelty::*;
+
+mod prior;
+pub use prior::*;
+
+mod worst_first;
+pub use worst_first::*;
+
 /// Per-round details for multi-pick MAB selection with an external latency guardrail.
 #[derive(Debug, Clone)]
 pub struct MabKRound {
