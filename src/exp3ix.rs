@@ -899,7 +899,10 @@ mod tests {
         );
 
         assert_eq!(ex.chosen.len(), 2);
-        assert_ne!(ex.chosen[0], ex.chosen[1], "multi-pick must not repeat arms");
+        assert_ne!(
+            ex.chosen[0], ex.chosen[1],
+            "multi-pick must not repeat arms"
+        );
         assert_eq!(ex.rounds.len(), 2);
 
         let logs = log_exp3ix_k_rounds_typed(&ex, 3);
