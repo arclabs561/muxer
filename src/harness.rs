@@ -80,6 +80,45 @@ where
     (eligible, false)
 }
 
+/// Like [`guardrail_filter_observed`], but **strict**: never falls back to the unguarded set.
+///
+/// Semantics:
+/// - If `guard.max_mean_ms` is `None`, returns `arms` unchanged.
+/// - Otherwise filters by `mean_ms <= max_mean_ms` (and, if `require_measured`, `calls > 0`).
+/// - If filtering yields an empty set, returns `(vec![], true)` regardless of `allow_fewer`.
+///
+/// This is useful when you want guardrails to be **hard constraints**, including for novelty/coverage
+/// pre-picks (see `*_guardrail_first_*` helpers below).
+pub fn guardrail_filter_observed_strict<F>(
+    seed: u64,
+    arms: &[String],
+    guard: LatencyGuardrail,
+    mut observed: F,
+) -> (Vec<String>, bool)
+where
+    F: FnMut(&str) -> (u64, f64),
+{
+    let Some(max_ms) = guard.max_mean_ms else {
+        return (arms.to_vec(), false);
+    };
+    let mut eligible: Vec<String> = arms
+        .iter()
+        .filter(|b| {
+            let (calls, mean_ms) = observed(b.as_str());
+            if guard.require_measured && calls == 0 {
+                return false;
+            }
+            mean_ms <= max_ms
+        })
+        .cloned()
+        .collect();
+    eligible.sort_by_key(|b| stable_hash64(seed ^ 0x4755_4152, b)); // "GUAR"
+    if eligible.is_empty() {
+        return (Vec::new(), true);
+    }
+    (eligible, false)
+}
+
 /// Like `guardrail_filter_observed`, but the observation function returns the raw elapsed-ms sum.
 ///
 /// This centralizes mean-latency calculation so callers only provide raw counters.
@@ -103,7 +142,34 @@ where
     })
 }
 
+/// Like [`guardrail_filter_observed_strict`], but the observation function returns raw elapsed-ms sum.
+pub fn guardrail_filter_observed_strict_elapsed<F>(
+    seed: u64,
+    arms: &[String],
+    guard: LatencyGuardrail,
+    mut observed: F,
+) -> (Vec<String>, bool)
+where
+    F: FnMut(&str) -> (u64, u64),
+{
+    guardrail_filter_observed_strict(seed, arms, guard, |b| {
+        let (calls, elapsed_ms_sum) = observed(b);
+        let mean_ms = if calls == 0 {
+            0.0
+        } else {
+            (elapsed_ms_sum as f64) / (calls as f64)
+        };
+        (calls, mean_ms)
+    })
+}
+
 /// Compute the policy plan: novelty pre-picks + observed latency guardrail.
+///
+/// Important semantics:
+/// - Novelty picks are computed **before** the guardrail filter (so they can include unmeasured arms
+///   even when `require_measured=true`, if novelty fills all \(k\)).
+/// - If you want the guardrail to apply as a **hard constraint** to novelty/coverage picks, use the
+///   `*_guardrail_first_*` helpers below.
 pub fn policy_plan_observed<F>(
     seed: u64,
     arms: &[String],
@@ -137,6 +203,12 @@ where
 /// to enforce minimum sampling quotas (useful for monitoring/change detection).
 ///
 /// Order: novelty (unseen) first, then coverage (under-sampled), then guardrail.
+///
+/// Important semantics:
+/// - Novelty/coverage picks are computed **before** the guardrail filter (so they can include
+///   unmeasured arms even when `require_measured=true`, if they fill all \(k\)).
+/// - If you want guardrails to be **hard constraints** on novelty/coverage picks, use the
+///   `*_guardrail_first_*` helpers below.
 pub fn policy_plan_observed_with_coverage<F>(
     seed: u64,
     arms: &[String],
@@ -190,6 +262,110 @@ where
         prechosen,
         eligible,
         stop_early,
+    }
+}
+
+/// Guardrail-first policy plan: apply observed guardrail first, then novelty pre-picks.
+///
+/// This uses **strict guardrail semantics** (no fallback): if guardrails filter out all arms,
+/// `stop_early=true` and both `prechosen` and `eligible` are empty.
+pub fn policy_plan_observed_guardrail_first<F>(
+    seed: u64,
+    arms: &[String],
+    k: usize,
+    novelty_enabled: bool,
+    guard: LatencyGuardrail,
+    mut observed: F,
+) -> PolicyPlan
+where
+    F: FnMut(&str) -> (u64, u64),
+{
+    let (guarded, stop_early) =
+        guardrail_filter_observed_strict_elapsed(seed ^ 0x504C_414E, arms, guard, &mut observed); // "PLAN"
+    if stop_early || guarded.is_empty() {
+        return PolicyPlan {
+            prechosen: Vec::new(),
+            eligible: Vec::new(),
+            stop_early: true,
+        };
+    }
+
+    let prechosen = novelty_pick_unseen(seed, &guarded, k, novelty_enabled, |b| observed(b).0);
+    let eligible: Vec<String> = guarded
+        .iter()
+        .filter(|b| !prechosen.contains(*b))
+        .cloned()
+        .collect();
+
+    PolicyPlan {
+        prechosen,
+        eligible,
+        stop_early: false,
+    }
+}
+
+/// Guardrail-first policy plan: apply observed guardrail first, then novelty+coverage pre-picks.
+///
+/// This uses **strict guardrail semantics** (no fallback). See [`policy_plan_observed_guardrail_first`].
+pub fn policy_plan_observed_guardrail_first_with_coverage<F>(
+    seed: u64,
+    arms: &[String],
+    k: usize,
+    novelty_enabled: bool,
+    coverage: CoverageConfig,
+    guard: LatencyGuardrail,
+    mut observed: F,
+) -> PolicyPlan
+where
+    F: FnMut(&str) -> (u64, u64),
+{
+    let (guarded, stop_early) =
+        guardrail_filter_observed_strict_elapsed(seed ^ 0x504C_414E, arms, guard, &mut observed); // "PLAN"
+    if stop_early || guarded.is_empty() {
+        return PolicyPlan {
+            prechosen: Vec::new(),
+            eligible: Vec::new(),
+            stop_early: true,
+        };
+    }
+
+    let pre_novel = novelty_pick_unseen(seed, &guarded, k, novelty_enabled, |b| observed(b).0);
+    let remaining_after_novel: Vec<String> = guarded
+        .iter()
+        .filter(|b| !pre_novel.contains(*b))
+        .cloned()
+        .collect();
+
+    let need_cov = k.saturating_sub(pre_novel.len());
+    let mut pre_cov = coverage_pick_under_sampled(
+        seed ^ 0x434F_5645, // "COVE"
+        &remaining_after_novel,
+        need_cov,
+        coverage,
+        |b| observed(b).0,
+    );
+
+    let mut prechosen = pre_novel;
+    for b in pre_cov.drain(..) {
+        if prechosen.len() >= k {
+            break;
+        }
+        if prechosen.contains(&b) {
+            continue;
+        }
+        prechosen.push(b);
+    }
+
+    let eligible: Vec<String> = guarded
+        .iter()
+        .filter(|b| !prechosen.contains(*b))
+        .cloned()
+        .collect();
+
+    PolicyPlan {
+        prechosen,
+        eligible,
+        stop_early: false,
     }
 }
 
@@ -298,6 +474,75 @@ where
     }
 }
 
+/// Guardrail-first variant of [`policy_fill_k_observed_with`].
+///
+/// - Applies the observed guardrail **first**, using strict semantics (no fallback).
+/// - Then does novelty pre-picks within the guarded set.
+/// - Then fills remaining picks using `pick_rest`.
+///
+/// This is useful when guardrails must be enforced as **hard constraints**, even for pre-picks.
+pub fn policy_fill_k_observed_guardrail_first_with<F, P>(
+    seed: u64,
+    arms: &[String],
+    k: usize,
+    novelty_enabled: bool,
+    guard: LatencyGuardrail,
+    mut observed: F,
+    mut pick_rest: P,
+) -> PolicyFill
+where
+    F: FnMut(&str) -> (u64, u64),
+    P: FnMut(&[String], usize) -> Vec<String>,
+{
+    let plan =
+        policy_plan_observed_guardrail_first(seed, arms, k, novelty_enabled, guard, &mut observed);
+    let mut chosen = plan.prechosen.clone();
+    if chosen.len() >= k {
+        return PolicyFill {
+            chosen,
+            plan,
+            eligible_used: Vec::new(),
+            fallback_used: false,
+            stopped_early: false,
+        };
+    }
+    if plan.stop_early {
+        return PolicyFill {
+            chosen,
+            plan,
+            eligible_used: Vec::new(),
+            fallback_used: false,
+            stopped_early: true,
+        };
+    }
+
+    let eligible_used = plan.eligible.clone();
+    let remaining_k = k.saturating_sub(chosen.len());
+    if remaining_k > 0 && !eligible_used.is_empty() {
+        let rest = pick_rest(&eligible_used, remaining_k);
+        for b in rest {
+            if chosen.len() >= k {
+                break;
+            }
+            if !eligible_used.contains(&b) {
+                continue;
+            }
+            if chosen.contains(&b) {
+                continue;
+            }
+            chosen.push(b);
+        }
+    }
+
+    PolicyFill {
+        chosen,
+        plan,
+        eligible_used,
+        fallback_used: false,
+        stopped_early: false,
+    }
+}
+
 /// Like `policy_fill_k_observed_with`, but includes an optional “coverage” pre-pick stage.
 #[allow(clippy::too_many_arguments)]
 pub fn policy_fill_k_observed_with_coverage<F, P>(
@@ -400,6 +645,81 @@ where
         eligible_used,
         fallback_used,
         stopped_early,
+    }
+}
+
+/// Guardrail-first variant of [`policy_fill_k_observed_with_coverage`].
+///
+/// - Applies the observed guardrail **first**, using strict semantics (no fallback).
+/// - Then does novelty+coverage pre-picks within the guarded set.
+/// - Then fills remaining picks using `pick_rest`.
+pub fn policy_fill_k_observed_guardrail_first_with_coverage<F, P>(
+    seed: u64,
+    arms: &[String],
+    k: usize,
+    novelty_enabled: bool,
+    coverage: CoverageConfig,
+    guard: LatencyGuardrail,
+    mut observed: F,
+    mut pick_rest: P,
+) -> PolicyFill
+where
+    F: FnMut(&str) -> (u64, u64),
+    P: FnMut(&[String], usize) -> Vec<String>,
+{
+    let plan = policy_plan_observed_guardrail_first_with_coverage(
+        seed,
+        arms,
+        k,
+        novelty_enabled,
+        coverage,
+        guard,
+        &mut observed,
+    );
+    let mut chosen = plan.prechosen.clone();
+    if chosen.len() >= k {
+        return PolicyFill {
+            chosen,
+            plan,
+            eligible_used: Vec::new(),
+            fallback_used: false,
+            stopped_early: false,
+        };
+    }
+    if plan.stop_early {
+        return PolicyFill {
+            chosen,
+            plan,
+            eligible_used: Vec::new(),
+            fallback_used: false,
+            stopped_early: true,
+        };
+    }
+
+    let eligible_used = plan.eligible.clone();
+    let remaining_k = k.saturating_sub(chosen.len());
+    if remaining_k > 0 && !eligible_used.is_empty() {
+        let rest = pick_rest(&eligible_used, remaining_k);
+        for b in rest {
+            if chosen.len() >= k {
+                break;
+            }
+            if !eligible_used.contains(&b) {
+                continue;
+            }
+            if chosen.contains(&b) {
+                continue;
+            }
+            chosen.push(b);
+        }
+    }
+
+    PolicyFill {
+        chosen,
+        plan,
+        eligible_used,
+        fallback_used: false,
+        stopped_early: false,
     }
 }
 

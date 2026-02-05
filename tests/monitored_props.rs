@@ -331,6 +331,162 @@ fn coverage_stage_can_force_sampling_of_under_sampled_arm() {
 }
 
 #[test]
+fn novelty_stage_can_bypass_require_measured_guardrail_when_it_fills_k() {
+    use muxer::policy_fill_k_observed_with_coverage;
+    use muxer::{CoverageConfig, LatencyGuardrailConfig};
+
+    // Key contract: novelty (unseen) pre-picks are *not* filtered by latency guardrails.
+    //
+    // Rationale: if `require_measured=true`, a guardrail would otherwise forbid sampling
+    // any unseen arm, making novelty exploration impossible. Callers that want “hard”
+    // guardrails should not use novelty pre-picks (or should implement a custom pipeline).
+    let arms = vec!["unseen".to_string(), "seen".to_string()];
+
+    // Observations: "unseen" has 0 calls (unmeasured), "seen" is slow (would be filtered anyway).
+    let observed_calls = |arm: &str| -> (u64, u64) {
+        match arm {
+            "unseen" => (0, 0),
+            "seen" => (10, 1_000_000), // mean=100_000ms
+            _ => (0, 0),
+        }
+    };
+
+    let fill = policy_fill_k_observed_with_coverage(
+        123,
+        &arms,
+        1,
+        true,                      // novelty enabled
+        CoverageConfig::default(), // coverage disabled (novelty should be decisive)
+        LatencyGuardrailConfig {
+            max_mean_ms: Some(1.0),
+            require_measured: true,
+            allow_fewer: true,
+        },
+        observed_calls,
+        |_eligible, _k| panic!("pick_rest should not be called when novelty fills k"),
+    );
+
+    assert_eq!(fill.chosen, vec!["unseen".to_string()]);
+}
+
+#[test]
+fn coverage_stage_can_bypass_require_measured_guardrail_when_it_fills_k() {
+    use muxer::policy_fill_k_observed_with_coverage;
+    use muxer::{CoverageConfig, LatencyGuardrailConfig};
+
+    // Key contract: coverage (under-sampled) pre-picks are *not* filtered by latency guardrails.
+    // This makes “maintenance sampling” possible even when guardrails require measurement.
+    let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+
+    // Observations: arm "c" is unmeasured (0 calls), others are measured.
+    let observed_calls = |arm: &str| -> (u64, u64) {
+        match arm {
+            "a" => (100, 10_000),
+            "b" => (100, 10_000),
+            "c" => (0, 0),
+            _ => (0, 0),
+        }
+    };
+
+    let fill = policy_fill_k_observed_with_coverage(
+        123,
+        &arms,
+        1,
+        false, // novelty disabled
+        CoverageConfig {
+            enabled: true,
+            min_fraction: 0.0,
+            min_calls_floor: 1,
+        },
+        LatencyGuardrailConfig {
+            max_mean_ms: Some(1.0),
+            require_measured: true,
+            allow_fewer: true,
+        },
+        observed_calls,
+        |_eligible, _k| panic!("pick_rest should not be called when coverage fills k"),
+    );
+
+    assert_eq!(fill.chosen, vec!["c".to_string()]);
+}
+
+#[test]
+fn novelty_guardrail_first_respects_require_measured() {
+    use muxer::policy_fill_k_observed_guardrail_first_with;
+    use muxer::LatencyGuardrailConfig;
+
+    // In guardrail-first mode, `require_measured=true` is a hard constraint for novelty:
+    // unseen (calls==0) arms are filtered out before novelty pre-picks run.
+    let arms = vec!["unseen".to_string(), "seen".to_string()];
+
+    let observed_calls = |arm: &str| -> (u64, u64) {
+        match arm {
+            "unseen" => (0, 0),
+            "seen" => (10, 0),
+            _ => (0, 0),
+        }
+    };
+
+    let fill = policy_fill_k_observed_guardrail_first_with(
+        123,
+        &arms,
+        1,
+        true, // novelty enabled
+        LatencyGuardrailConfig {
+            max_mean_ms: Some(1.0),
+            require_measured: true,
+            allow_fewer: true,
+        },
+        observed_calls,
+        |eligible, _k| vec![eligible[0].clone()],
+    );
+
+    assert_eq!(fill.chosen, vec!["seen".to_string()]);
+    assert!(!fill.stopped_early);
+}
+
+#[test]
+fn coverage_guardrail_first_respects_require_measured() {
+    use muxer::policy_fill_k_observed_guardrail_first_with_coverage;
+    use muxer::{CoverageConfig, LatencyGuardrailConfig};
+
+    // In guardrail-first mode, `require_measured=true` is a hard constraint for coverage:
+    // under-sampled (calls==0) arms are filtered out before coverage pre-picks run.
+    let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+
+    let observed_calls = |arm: &str| -> (u64, u64) {
+        match arm {
+            "a" => (10, 0),
+            "b" => (10, 1_000_000), // mean=100_000ms -> filtered by max_mean_ms
+            "c" => (0, 0),          // unmeasured -> filtered by require_measured
+            _ => (0, 0),
+        }
+    };
+
+    let fill = policy_fill_k_observed_guardrail_first_with_coverage(
+        123,
+        &arms,
+        1,
+        false, // novelty disabled
+        CoverageConfig {
+            enabled: true,
+            min_fraction: 0.5,
+            min_calls_floor: 1,
+        },
+        LatencyGuardrailConfig {
+            max_mean_ms: Some(1.0),
+            require_measured: true,
+            allow_fewer: true,
+        },
+        observed_calls,
+        |eligible, _k| vec![eligible[0].clone()],
+    );
+
+    assert_eq!(fill.chosen, vec!["a".to_string()]);
+    assert!(!fill.stopped_early);
+}
+
+#[test]
 fn drift_guard_filters_changed_arm_when_threshold_is_tight() {
     let arms = vec!["stable".to_string(), "changed".to_string()];
     let mut m: BTreeMap<String, MonitoredWindow> = BTreeMap::new();

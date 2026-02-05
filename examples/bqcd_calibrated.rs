@@ -343,10 +343,28 @@ fn main() {
         }
     }
 
-    fn fmt(x: Option<f64>) -> String {
-        match x {
-            Some(v) => format!("{v:7.1}"),
-            None => "  never".into(),
+    fn pctl_u64(xs: &[Option<u64>], q: f64) -> Option<u64> {
+        let mut ds: Vec<u64> = xs.iter().copied().flatten().collect();
+        if ds.is_empty() {
+            return None;
+        }
+        let q = if q.is_finite() {
+            q.clamp(0.0, 1.0)
+        } else {
+            0.5
+        };
+        ds.sort_unstable();
+        let idx = ((ds.len().saturating_sub(1) as f64) * q).round() as usize;
+        ds.get(idx).copied()
+    }
+
+    fn fmt_mean_p90(xs: &[Option<u64>]) -> String {
+        let mean = mean_opt(xs);
+        let p90 = pctl_u64(xs, 0.90);
+        match (mean, p90) {
+            (Some(m), Some(p)) => format!("{m:7.1}/{p:>6}"),
+            (Some(m), None) => format!("{m:7.1}/ never"),
+            (None, _) => "  never".into(),
         }
     }
 
@@ -484,6 +502,7 @@ fn main() {
     eprintln!(
         "\n== calibrated BQCD run: P_infty[tau < m] <= alpha (m={m}, alpha={alpha}) ==\n(cal_trials={cal_trials}, eval_trials={eval_trials}, cal_z={cal_z}, require_wilson={require_wilson})\npolicy | bank | thr fa hi ok | det_rate mean_wall mean_post_samp(chg) mean_frac_on_chg"
     );
+    eprintln!("(note: wall/post columns are mean/p90 over detected trials)");
 
     for bank in banks {
         for policy in policies {
@@ -541,14 +560,14 @@ fn main() {
 
             let fa_shift_rate = (fa_shift as f64) / (eval_trials as f64);
             let det_rate = (det_ok as f64) / (eval_trials as f64);
-            let mean_wall = mean_opt(&walls);
-            let mean_samp = mean_opt(&samps);
+            let wall = fmt_mean_p90(&walls);
+            let post = fmt_mean_p90(&samps);
             let mean_frac = fracs.iter().sum::<f64>() / (fracs.len() as f64).max(1.0);
             let eval_elapsed = eval_started.elapsed();
             let total_elapsed = cal_elapsed + eval_elapsed;
 
             eprintln!(
-                "{} | {} | thr={:>6.2} fa≈{:>6.4} hi≈{:>6.4} ok={} (shift_fa≈{:>6.4}) | det={:>5.3} wall={} post_samp={} frac={:>6.3}",
+                "{} | {} | thr={:>6.2} fa≈{:>6.4} hi≈{:>6.4} ok={} (shift_fa≈{:>6.4}) | det={:>5.3} wall={} post={} frac={:>6.3}",
                 policy.name(),
                 bank.name(),
                 thr,
@@ -557,8 +576,8 @@ fn main() {
                 cal.grid_satisfied,
                 fa_shift_rate,
                 det_rate,
-                fmt(mean_wall),
-                fmt(mean_samp),
+                wall,
+                post,
                 mean_frac,
             );
             eprintln!(

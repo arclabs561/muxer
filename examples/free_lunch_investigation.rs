@@ -149,6 +149,11 @@ fn main() {
         // detection delays for arm B (the one that changes); None => never detected.
         det_delay_b_catkl: Option<u64>,
         det_delay_b_cusum: Option<u64>,
+        // Detection rates and quantiles (filled in `summarize`; per-trial values are left as defaults).
+        det_rate_b_catkl: f64,
+        det_rate_b_cusum: f64,
+        det_p90_b_catkl: Option<u64>,
+        det_p90_b_cusum: Option<u64>,
         // crude estimation error: |p_hat(ok_clean for B before change) - p_true|
         // computed from the policy's internal estimate after warmup.
         est_abs_err_b_before: f64,
@@ -371,6 +376,10 @@ fn main() {
             mean_reward,
             det_delay_b_catkl,
             det_delay_b_cusum,
+            det_rate_b_catkl: 0.0,
+            det_rate_b_cusum: 0.0,
+            det_p90_b_catkl: None,
+            det_p90_b_cusum: None,
             est_abs_err_b_before,
             frac_pulls_b,
         }
@@ -381,6 +390,33 @@ fn main() {
         let mean_reward = trials.iter().map(|t| t.mean_reward).sum::<f64>() / n;
         let est_abs_err_b_before = trials.iter().map(|t| t.est_abs_err_b_before).sum::<f64>() / n;
         let frac_pulls_b = trials.iter().map(|t| t.frac_pulls_b).sum::<f64>() / n;
+
+        fn quantile_sorted(xs: &[u64], q: f64) -> Option<u64> {
+            if xs.is_empty() {
+                return None;
+            }
+            let q = if q.is_finite() {
+                q.clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            let idx = ((xs.len().saturating_sub(1) as f64) * q).round() as usize;
+            xs.get(idx).copied()
+        }
+
+        fn rate_and_p90(
+            xs: &[TrialMetrics],
+            f: fn(&TrialMetrics) -> Option<u64>,
+        ) -> (f64, Option<u64>) {
+            if xs.is_empty() {
+                return (0.0, None);
+            }
+            let mut ds: Vec<u64> = xs.iter().filter_map(|t| f(t)).collect();
+            let rate = (ds.len() as f64) / (xs.len() as f64);
+            ds.sort_unstable();
+            let p90 = quantile_sorted(&ds, 0.90);
+            (rate, p90)
+        }
 
         fn avg_delay(xs: &[TrialMetrics], f: fn(&TrialMetrics) -> Option<u64>) -> Option<u64> {
             let mut sum = 0.0;
@@ -400,18 +436,29 @@ fn main() {
 
         let det_delay_b_catkl = avg_delay(trials, |t| t.det_delay_b_catkl);
         let det_delay_b_cusum = avg_delay(trials, |t| t.det_delay_b_cusum);
+        let (det_rate_b_catkl, det_p90_b_catkl) = rate_and_p90(trials, |t| t.det_delay_b_catkl);
+        let (det_rate_b_cusum, det_p90_b_cusum) = rate_and_p90(trials, |t| t.det_delay_b_cusum);
 
         TrialMetrics {
             mean_reward,
             det_delay_b_catkl,
             det_delay_b_cusum,
+            det_rate_b_catkl,
+            det_rate_b_cusum,
+            det_p90_b_catkl,
+            det_p90_b_cusum,
             est_abs_err_b_before,
             frac_pulls_b,
         }
     }
 
-    fn delay_str(x: Option<u64>) -> String {
-        x.map(|v| v.to_string()).unwrap_or_else(|| "never".into())
+    fn det_compact(mean: Option<u64>, p90: Option<u64>, rate: f64) -> String {
+        if mean.is_none() || !(rate.is_finite() && rate > 0.0) {
+            return "never".into();
+        }
+        let mean = mean.unwrap_or(0);
+        let p90 = p90.unwrap_or(mean);
+        format!("{mean}/{p90}@{rate:.2}")
     }
 
     // ------------------------------------------------------------
@@ -532,11 +579,11 @@ fn main() {
         rows.sort_by(|a, b| b.0.mean_reward.total_cmp(&a.0.mean_reward));
         for (m, name) in &rows {
             eprintln!(
-                "{:<28} reward={:.4} cusum={:<6} catkl={:<6} frac_B={:.3} est_err_b0={:.3}",
+                "{:<28} reward={:.4} cusum={:<14} catkl={:<14} frac_B={:.3} est_err_b0={:.3}",
                 name,
                 m.mean_reward,
-                delay_str(m.det_delay_b_cusum),
-                delay_str(m.det_delay_b_catkl),
+                det_compact(m.det_delay_b_cusum, m.det_p90_b_cusum, m.det_rate_b_cusum),
+                det_compact(m.det_delay_b_catkl, m.det_p90_b_catkl, m.det_rate_b_catkl),
                 m.frac_pulls_b,
                 m.est_abs_err_b_before
             );

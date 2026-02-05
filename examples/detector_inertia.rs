@@ -154,6 +154,20 @@ fn main() {
     let thr_catkl = 8.0;
     let min_n_cusum = 20;
     let thr_cusum = 4.0;
+    let kl = logp::kl_divergence(&p1, &p0, tol).unwrap_or(f64::NAN);
+    let pred_catkl = if kl.is_finite() && kl > 0.0 {
+        thr_catkl / kl
+    } else {
+        f64::NAN
+    };
+    let pred_cusum = if kl.is_finite() && kl > 0.0 {
+        thr_cusum / kl
+    } else {
+        f64::NAN
+    };
+    eprintln!(
+        "theory (very rough): KL(p1||p0)={kl:.4} => catkl_samp≈thr/kl={pred_catkl:.1}, cusum_samp≈thr/kl={pred_cusum:.1}"
+    );
     let det = DetectorCfg {
         alpha_smooth: alpha,
         min_n_catkl,

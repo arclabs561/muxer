@@ -192,6 +192,8 @@ If you want runnable “research probes” that make tradeoffs/failure modes exp
 
 - `muxer/examples/EXPERIMENTS.md`
 - Examples:
+  - `cargo run --example guardrail_semantics`
+  - `cargo run --example coverage_autotune --features stochastic`
   - `cargo run --example free_lunch_investigation --features stochastic`
   - `cargo run --example detector_inertia --features stochastic`
   - `cargo run --example detector_calibration --features stochastic`

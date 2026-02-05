@@ -277,10 +277,28 @@ fn main() {
         }
     }
 
-    fn fmt(x: Option<f64>) -> String {
-        match x {
-            Some(v) => format!("{v:7.1}"),
-            None => "  never".into(),
+    fn pctl_u64(xs: &[Option<u64>], q: f64) -> Option<u64> {
+        let mut ds: Vec<u64> = xs.iter().copied().flatten().collect();
+        if ds.is_empty() {
+            return None;
+        }
+        let q = if q.is_finite() {
+            q.clamp(0.0, 1.0)
+        } else {
+            0.5
+        };
+        ds.sort_unstable();
+        let idx = ((ds.len().saturating_sub(1) as f64) * q).round() as usize;
+        ds.get(idx).copied()
+    }
+
+    fn fmt_mean_p90(xs: &[Option<u64>]) -> String {
+        let mean = mean_opt(xs);
+        let p90 = pctl_u64(xs, 0.90);
+        match (mean, p90) {
+            (Some(m), Some(p)) => format!("{m:7.1}/{p:>6}"),
+            (Some(m), None) => format!("{m:7.1}/ never"),
+            (None, _) => "  never".into(),
         }
     }
 
@@ -342,7 +360,7 @@ fn main() {
         "\nnu={nu} horizon={horizon} alarm=CUSUM(min_n={min_n},thr={cusum_threshold}) alt={:?}",
         cusum_alt_p
     );
-    eprintln!("policy                              | fa_rate det_rate  mean_wall  mean_post_samp(chg)  mean_frac_on_chg");
+    eprintln!("policy                              | fa_rate det_rate  wall(mean/p90)  post(mean/p90)  mean_frac_on_chg");
 
     for p in policies {
         let mut fa_ok = 0u64;
@@ -363,17 +381,17 @@ fn main() {
 
         let fa_rate = (fa_ok as f64) / (trials as f64);
         let det_rate = (det_ok as f64) / (trials as f64);
-        let mean_wall = mean_opt(&walls);
-        let mean_samp = mean_opt(&samps);
+        let wall = fmt_mean_p90(&walls);
+        let post = fmt_mean_p90(&samps);
         let mean_frac = fracs.iter().sum::<f64>() / (fracs.len() as f64).max(1.0);
 
         eprintln!(
-            "{:<35} |  {:5.3}  {:5.3}  {}   {}              {:7.3}",
+            "{:<35} |  {:5.3}  {:5.3}  {}   {}          {:7.3}",
             p.name(),
             fa_rate,
             det_rate,
-            fmt(mean_wall),
-            fmt(mean_samp),
+            wall,
+            post,
             mean_frac
         );
     }
