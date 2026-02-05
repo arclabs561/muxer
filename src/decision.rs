@@ -48,6 +48,76 @@ pub enum DecisionNote {
         fallback_used: bool,
     },
 
+    /// Drift guardrail (change-monitoring) filtered arms before selection.
+    ///
+    /// If it filtered all arms, `fallback_used=true` and `eligible_arms` is set to the
+    /// original arm list (never empty).
+    DriftGuard {
+        eligible_arms: Vec<String>,
+        fallback_used: bool,
+        metric: crate::monitor::DriftMetric,
+        max_drift: f64,
+    },
+
+    /// Categorical KL guard filtered arms before selection.
+    ///
+    /// This guard uses the statistic `S = n_recent * KL(q_recent || p0_baseline)`.
+    CatKlGuard {
+        eligible_arms: Vec<String>,
+        fallback_used: bool,
+        max_catkl: f64,
+        alpha: f64,
+        min_baseline: u64,
+        min_recent: u64,
+    },
+
+    /// Categorical CUSUM guard filtered arms before selection.
+    ///
+    /// This guard uses a CUSUM score over log-likelihood ratios between `p1` and `p0`.
+    CusumGuard {
+        eligible_arms: Vec<String>,
+        fallback_used: bool,
+        max_cusum: f64,
+        alpha: f64,
+        min_baseline: u64,
+        min_recent: u64,
+        alt_p: [f64; 4],
+    },
+
+    /// Monitoring/uncertainty diagnostics for the chosen arm (when available).
+    Diagnostics {
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        drift_score: Option<f64>,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        catkl_score: Option<f64>,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        cusum_score: Option<f64>,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        ok_half_width: Option<f64>,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        junk_half_width: Option<f64>,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        hard_junk_half_width: Option<f64>,
+    },
+
     /// Numerical / CDF fallthrough required choosing the last arm as a safe fallback.
     NumericalFallbackToLastArm,
 

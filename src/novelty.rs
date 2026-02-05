@@ -6,7 +6,13 @@ use crate::stable_hash64;
 ///
 /// If `enabled` is false, this returns an empty list.
 #[must_use]
-pub fn novelty_pick_unseen<F>(seed: u64, arms: &[String], k: usize, enabled: bool, mut observed_calls: F) -> Vec<String>
+pub fn novelty_pick_unseen<F>(
+    seed: u64,
+    arms: &[String],
+    k: usize,
+    enabled: bool,
+    mut observed_calls: F,
+) -> Vec<String>
 where
     F: FnMut(&str) -> u64,
 {
@@ -34,8 +40,12 @@ pub fn pick_random_subset(seed: u64, items: &[String], k: usize) -> Vec<String> 
     if k == 0 || items.is_empty() {
         return Vec::new();
     }
-    let mut scored: Vec<(u64, &String)> = items.iter().map(|s| (stable_hash64(seed, s), s)).collect();
+    let mut scored: Vec<(u64, &String)> =
+        items.iter().map(|s| (stable_hash64(seed, s), s)).collect();
     scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
-    scored.into_iter().take(k.min(items.len())).map(|(_, s)| s.clone()).collect()
+    scored
+        .into_iter()
+        .take(k.min(items.len()))
+        .map(|(_, s)| s.clone())
+        .collect()
 }
-

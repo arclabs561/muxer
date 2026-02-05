@@ -96,12 +96,19 @@ pub fn mab_scalar_score(c: &CandidateDebug, cfg: MabConfig) -> f64 {
     let lat_w = f64_or0(cfg.latency_weight);
     let junk_w = f64_or0(cfg.junk_weight);
     let hard_w = f64_or0(cfg.hard_junk_weight);
+    let drift_w = f64_or0(cfg.drift_weight);
+    let catkl_w = f64_or0(cfg.catkl_weight);
+    let cusum_w = f64_or0(cfg.cusum_weight);
 
     f64_or0(c.objective_success)
         - cost_w * f64_or0(c.mean_cost_units)
         - lat_w * f64_or0(c.mean_elapsed_ms)
-        - junk_w * f64_or0(c.junk_rate)
+        // Match `select_mab` semantics: soft junk weight should not double-count hard junk.
+        - junk_w * f64_or0(c.soft_junk_rate)
         - hard_w * f64_or0(c.hard_junk_rate)
+        - drift_w * f64_or0(c.drift_score.unwrap_or(0.0))
+        - catkl_w * f64_or0(c.catkl_score.unwrap_or(0.0))
+        - cusum_w * f64_or0(c.cusum_score.unwrap_or(0.0))
 }
 
 /// Stateful stickiness wrapper for deterministic `select_mab`.
@@ -460,6 +467,12 @@ mod tests {
                     mean_elapsed_ms: 0.0,
                     ucb: 0.0,
                     objective_success: if previous == "a" { 1.0 } else { 2.0 },
+                    drift_score: None,
+                    catkl_score: None,
+                    cusum_score: None,
+                    ok_half_width: None,
+                    junk_half_width: None,
+                    hard_junk_half_width: None,
                 },
                 CandidateDebug {
                     name: "b".to_string(),
@@ -475,6 +488,12 @@ mod tests {
                     mean_elapsed_ms: 0.0,
                     ucb: 0.0,
                     objective_success: if previous == "a" { 2.0 } else { 1.0 },
+                    drift_score: None,
+                    catkl_score: None,
+                    cusum_score: None,
+                    ok_half_width: None,
+                    junk_half_width: None,
+                    hard_junk_half_width: None,
                 },
             ],
             config: cfg,
@@ -510,6 +529,12 @@ mod tests {
                 mean_elapsed_ms: 0.0,
                 ucb: 0.0,
                 objective_success: 0.0,
+                drift_score: None,
+                catkl_score: None,
+                cusum_score: None,
+                ok_half_width: None,
+                junk_half_width: None,
+                hard_junk_half_width: None,
             }],
             config: cfg,
         };

@@ -36,4 +36,3 @@ pub fn apply_prior_counts_to_summary(out: &mut Summary, prior: Summary, target_c
     out.junk = out.junk.min(out.calls);
     out.hard_junk = out.hard_junk.min(out.calls);
 }
-

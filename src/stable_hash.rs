@@ -15,7 +15,15 @@ pub fn stable_hash64(seed: u64, s: &str) -> u64 {
         h ^= *b as u64;
         h = h.wrapping_mul(1099511628211u64);
     }
-    splitmix64(seed ^ h)
+    stable_hash64_u64(seed, h)
+}
+
+/// Deterministic (non-crypto) stable hash for a 64-bit value.
+///
+/// Useful for tie-breaks where the “key” is already numeric (e.g. arm index).
+#[must_use]
+pub fn stable_hash64_u64(seed: u64, x: u64) -> u64 {
+    splitmix64(seed ^ x)
 }
 
 #[inline]
@@ -26,4 +34,3 @@ fn splitmix64(mut x: u64) -> u64 {
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
 }
-

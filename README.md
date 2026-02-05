@@ -68,6 +68,15 @@ cargo run --example deterministic_router
 
 Note: this example simulates an environment and therefore requires `--features stochastic` if you disabled default features.
 
+### Monitored selection (baseline vs recent drift + uncertainty-aware rates)
+
+If you maintain a baseline and recent window per arm for change monitoring, use `MonitoredWindow`
+plus `select_mab_monitored_*`:
+
+```bash
+cargo run --example monitored_router --features stochastic
+```
+
 ### End-to-end router demo (Window + constraints + stickiness + delayed junk)
 
 This combines multiple production patterns in one loop: window ingestion, constraints+weights, stickiness reasons, and delayed junk labeling.
@@ -177,6 +186,23 @@ If you want to reduce “flapping” between arms, wrap deterministic selection 
 cargo run --example sticky_mab_router
 ```
 
+### Mini-experiments (bandits × monitoring × false alarms)
+
+If you want runnable “research probes” that make tradeoffs/failure modes explicit, see:
+
+- `muxer/examples/EXPERIMENTS.md`
+- Examples:
+  - `cargo run --example free_lunch_investigation --features stochastic`
+  - `cargo run --example detector_inertia --features stochastic`
+  - `cargo run --example detector_calibration --features stochastic`
+  - `cargo run --example bqcd_sampling --features stochastic`
+  - `cargo run --release --example bqcd_calibrated --features stochastic`
+
+Reusable bits extracted from these experiments live in `muxer::monitor`, notably:
+
+- `CusumCatBank`: “GLR-lite” robustification via a small bank of CUSUM alternatives.
+- `calibrate_threshold_from_max_scores`: threshold calibration from null max-score samples (supports Wilson-conservative mode).
+
 ## Usage
 
 ```toml
@@ -196,6 +222,10 @@ muxer = { version = "0.1.0", default-features = false }
 ```bash
 # If you are in a larger Cargo workspace, scope to this package:
 cargo test -p muxer
+
+# Microbenches (criterion):
+cargo bench -p muxer --bench coverage
+cargo bench -p muxer --bench monitor
 
 # (Optional) Match CI checks:
 cargo fmt -p muxer --check

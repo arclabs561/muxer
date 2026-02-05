@@ -35,6 +35,11 @@ pub use alloc::*;
 mod guardrail;
 pub use guardrail::*;
 
+pub mod monitor;
+
+mod coverage;
+pub use coverage::*;
+
 #[cfg(feature = "stochastic")]
 mod exp3ix;
 #[cfg(feature = "stochastic")]
@@ -67,6 +72,10 @@ pub use worst_first::*;
 
 mod harness;
 pub use harness::*;
+
+pub use monitor::{
+    DriftConfig, DriftDecision, DriftMetric, MonitoredWindow, RateBoundMode, UncertaintyConfig,
+};
 
 /// Per-round details for multi-pick MAB selection with an external latency guardrail.
 #[derive(Debug, Clone)]
@@ -197,11 +206,17 @@ pub fn log_top_candidates_mab(decision: &MabSelectionDecision, top: usize) -> Ve
         .candidates
         .iter()
         .map(|c| {
+            let drift = c.drift_score.unwrap_or(0.0);
+            let catkl = c.catkl_score.unwrap_or(0.0);
+            let cusum = c.cusum_score.unwrap_or(0.0);
             let score = c.objective_success
                 - cfg.cost_weight * c.mean_cost_units
                 - cfg.latency_weight * c.mean_elapsed_ms
                 - cfg.hard_junk_weight * c.hard_junk_rate
-                - cfg.junk_weight * c.soft_junk_rate;
+                - cfg.junk_weight * c.soft_junk_rate
+                - cfg.drift_weight * drift
+                - cfg.catkl_weight * catkl
+                - cfg.cusum_weight * cusum;
             (score, c)
         })
         .collect();
@@ -304,6 +319,11 @@ impl Window {
     /// Whether the window has no outcomes.
     pub fn is_empty(&self) -> bool {
         self.buf.is_empty()
+    }
+
+    /// Iterate over outcomes in the window (oldest to newest).
+    pub fn iter(&self) -> impl Iterator<Item = &Outcome> + '_ {
+        self.buf.iter()
     }
 
     /// Push a new outcome, evicting the oldest if at capacity.
@@ -456,6 +476,86 @@ pub struct MabConfig {
     pub max_hard_junk_rate: Option<f64>,
     /// Optional constraint: discard arms whose windowed mean_cost_units exceeds this.
     pub max_mean_cost_units: Option<f64>,
+
+    /// Optional drift guard: discard arms whose drift score exceeds this.
+    ///
+    /// Only applies in monitored selection APIs (e.g. `select_mab_monitored_*`).
+    pub max_drift: Option<f64>,
+
+    /// Drift metric used when applying `max_drift`.
+    ///
+    /// Only applies in monitored selection APIs.
+    pub drift_metric: DriftMetric,
+
+    /// Penalty weight for drift (0 disables). Larger means "avoid arms that recently changed."
+    ///
+    /// Only applies in monitored selection APIs.
+    pub drift_weight: f64,
+
+    /// Rate uncertainty configuration for Wilson bounds.
+    ///
+    /// Only applies in monitored selection APIs.
+    pub uncertainty: UncertaintyConfig,
+
+    /// Optional categorical KL guard: discard arms whose `S = n_recent * KL(q_recent || p0_baseline)`
+    /// exceeds this threshold.
+    ///
+    /// Only applies in monitored selection APIs.
+    pub max_catkl: Option<f64>,
+
+    /// Dirichlet smoothing pseudo-count (alpha) used for categorical KL monitoring.
+    ///
+    /// Only applies in monitored selection APIs.
+    pub catkl_alpha: f64,
+
+    /// Minimum baseline samples required before categorical KL monitoring applies.
+    ///
+    /// Only applies in monitored selection APIs.
+    pub catkl_min_baseline: u64,
+
+    /// Minimum recent samples required before categorical KL monitoring applies.
+    ///
+    /// Only applies in monitored selection APIs.
+    pub catkl_min_recent: u64,
+
+    /// Penalty weight for categorical KL score (0 disables).
+    ///
+    /// Only applies in monitored selection APIs.
+    pub catkl_weight: f64,
+
+    /// Optional categorical CUSUM guard: discard arms whose CUSUM score over the recent window
+    /// exceeds this threshold.
+    ///
+    /// Only applies in monitored selection APIs.
+    pub max_cusum: Option<f64>,
+
+    /// Dirichlet smoothing pseudo-count (alpha) used when building categorical CUSUM `p0/p1`.
+    ///
+    /// Only applies in monitored selection APIs.
+    pub cusum_alpha: f64,
+
+    /// Minimum baseline samples required before categorical CUSUM monitoring applies.
+    ///
+    /// Only applies in monitored selection APIs.
+    pub cusum_min_baseline: u64,
+
+    /// Minimum recent samples required before categorical CUSUM monitoring applies.
+    ///
+    /// Only applies in monitored selection APIs.
+    pub cusum_min_recent: u64,
+
+    /// Alternative distribution `p1` for categorical CUSUM over `muxer`'s 4 outcome-categories:
+    /// `[ok_clean, ok_soft_junk, ok_hard_junk, fail]`.
+    ///
+    /// If `None`, a conservative default is used that biases toward `hard_junk`/`fail`.
+    ///
+    /// Only applies in monitored selection APIs.
+    pub cusum_alt_p: Option<[f64; 4]>,
+
+    /// Penalty weight for categorical CUSUM score (0 disables).
+    ///
+    /// Only applies in monitored selection APIs.
+    pub cusum_weight: f64,
 }
 
 impl Default for MabConfig {
@@ -469,6 +569,21 @@ impl Default for MabConfig {
             max_junk_rate: None,
             max_hard_junk_rate: None,
             max_mean_cost_units: None,
+            max_drift: None,
+            drift_metric: DriftMetric::default(),
+            drift_weight: 0.0,
+            uncertainty: UncertaintyConfig::default(),
+            max_catkl: None,
+            catkl_alpha: 1e-3,
+            catkl_min_baseline: 40,
+            catkl_min_recent: 20,
+            catkl_weight: 0.0,
+            max_cusum: None,
+            cusum_alpha: 1e-3,
+            cusum_min_baseline: 40,
+            cusum_min_recent: 20,
+            cusum_alt_p: None,
+            cusum_weight: 0.0,
         }
     }
 }
@@ -503,6 +618,48 @@ pub struct CandidateDebug {
     pub ucb: f64,
     /// Scalar objective used for the frontier’s success dimension (junk is a separate objective).
     pub objective_success: f64,
+
+    /// Optional drift score for this arm (present for monitored selection).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub drift_score: Option<f64>,
+
+    /// Optional categorical KL score for this arm (present for monitored selection).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub catkl_score: Option<f64>,
+
+    /// Optional categorical CUSUM score for this arm (present for monitored selection).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub cusum_score: Option<f64>,
+
+    /// Wilson half-width for ok_rate (present when uncertainty bounds are enabled).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub ok_half_width: Option<f64>,
+
+    /// Wilson half-width for junk_rate (present when uncertainty bounds are enabled).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub junk_half_width: Option<f64>,
+
+    /// Wilson half-width for hard_junk_rate (present when uncertainty bounds are enabled).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub hard_junk_half_width: Option<f64>,
 }
 
 /// Output of `select_mab` (chosen arm + debugging context).
@@ -537,6 +694,79 @@ pub struct MabSelectionDecision {
     pub constraints_fallback_used: bool,
     /// True if the selector chose an arm due to explore-first (some arm had `calls == 0`).
     pub explore_first: bool,
+
+    /// Drift guard outcome (only present for monitored selection).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub drift_guard: Option<DriftGuardDecision>,
+
+    /// Categorical KL guard outcome (only present for monitored selection).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub catkl_guard: Option<CatKlGuardDecision>,
+
+    /// Categorical CUSUM guard outcome (only present for monitored selection).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub cusum_guard: Option<CusumGuardDecision>,
+}
+
+/// Output of applying a drift guard to a candidate set.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DriftGuardDecision {
+    /// Arms eligible after applying drift guard.
+    pub eligible_arms: Vec<String>,
+    /// Whether we fell back to the full input set because drift guard would have eliminated all arms.
+    pub fallback_used: bool,
+    /// Drift metric used.
+    pub metric: DriftMetric,
+    /// The max drift threshold used.
+    pub max_drift: f64,
+}
+
+/// Output of applying a categorical KL guard to a candidate set.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CatKlGuardDecision {
+    /// Arms eligible after applying catKL guard.
+    pub eligible_arms: Vec<String>,
+    /// Whether we fell back to the full input set because the guard would have eliminated all arms.
+    pub fallback_used: bool,
+    /// The threshold on `n_recent * KL(q_recent || p0_baseline)`.
+    pub max_catkl: f64,
+    /// Dirichlet smoothing pseudo-count.
+    pub alpha: f64,
+    /// Minimum baseline samples required.
+    pub min_baseline: u64,
+    /// Minimum recent samples required.
+    pub min_recent: u64,
+}
+
+/// Output of applying a categorical CUSUM guard to a candidate set.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CusumGuardDecision {
+    /// Arms eligible after applying CUSUM guard.
+    pub eligible_arms: Vec<String>,
+    /// Whether we fell back to the full input set because the guard would have eliminated all arms.
+    pub fallback_used: bool,
+    /// CUSUM threshold used.
+    pub max_cusum: f64,
+    /// Dirichlet smoothing pseudo-count.
+    pub alpha: f64,
+    /// Minimum baseline samples required.
+    pub min_baseline: u64,
+    /// Minimum recent samples required.
+    pub min_recent: u64,
+    /// Alternative distribution used for CUSUM.
+    pub alt_p: [f64; 4],
 }
 
 /// Deterministic selection:
@@ -636,6 +866,12 @@ pub fn select_mab_explain(
                     mean_elapsed_ms: 0.0,
                     ucb: 0.0,
                     objective_success: 0.0,
+                    drift_score: None,
+                    catkl_score: None,
+                    cusum_score: None,
+                    ok_half_width: None,
+                    junk_half_width: None,
+                    hard_junk_half_width: None,
                 }],
                 config: cfg,
             };
@@ -644,6 +880,9 @@ pub fn select_mab_explain(
                 eligible_arms,
                 constraints_fallback_used,
                 explore_first: true,
+                drift_guard: None,
+                catkl_guard: None,
+                cusum_guard: None,
             };
         }
     }
@@ -694,6 +933,12 @@ pub fn select_mab_explain(
             mean_elapsed_ms: mean_lat,
             ucb,
             objective_success,
+            drift_score: None,
+            catkl_score: None,
+            cusum_score: None,
+            ok_half_width: None,
+            junk_half_width: None,
+            hard_junk_half_width: None,
         });
 
         frontier_points.push(vec![
@@ -764,6 +1009,896 @@ pub fn select_mab_explain(
         eligible_arms,
         constraints_fallback_used,
         explore_first: false,
+        drift_guard: None,
+        catkl_guard: None,
+        cusum_guard: None,
+    }
+}
+
+/// Monitored deterministic selection (baseline vs recent drift + uncertainty-aware rates).
+///
+/// This is intended for production routers that already maintain `MonitoredWindow`s per arm.
+///
+/// Semantics:
+/// - Uses `monitored[*].recent_summary()` for the base stats (ok/junk/cost/latency).
+/// - Optionally applies a drift guardrail (`cfg.max_drift`) against baseline-vs-recent drift.
+/// - Optionally penalizes drift (`cfg.drift_weight`) as an additional objective.
+/// - Optionally applies categorical KL monitoring as an objective/guard (`cfg.max_catkl`, `cfg.catkl_weight`).
+/// - Optionally adjusts rates using Wilson bounds (`cfg.uncertainty`).
+///
+/// Like `select_mab_explain`, this never returns an empty choice set: if drift filtering would
+/// eliminate all arms, it falls back to the unfiltered eligible set.
+pub fn select_mab_monitored_explain(
+    arms_in_order: &[String],
+    monitored: &BTreeMap<String, MonitoredWindow>,
+    drift_cfg: DriftConfig,
+    cfg: MabConfig,
+) -> MabSelectionDecision {
+    // Build summaries from recent windows.
+    let summaries: BTreeMap<String, Summary> = monitored
+        .iter()
+        .map(|(k, w)| (k.clone(), w.recent_summary()))
+        .collect();
+
+    // Apply base hard constraints first (same semantics as `select_mab_explain`).
+    let mut eligible: Vec<String> = Vec::new();
+    for a in arms_in_order {
+        let s = summaries.get(a).copied().unwrap_or_default();
+        let ok = cfg
+            .max_junk_rate
+            .map(|thr| s.junk_rate() <= thr)
+            .unwrap_or(true)
+            && cfg
+                .max_hard_junk_rate
+                .map(|thr| s.hard_junk_rate() <= thr)
+                .unwrap_or(true)
+            && cfg
+                .max_mean_cost_units
+                .map(|thr| s.mean_cost_units() <= thr)
+                .unwrap_or(true);
+        if ok {
+            eligible.push(a.clone());
+        }
+    }
+    let constraints_fallback_used = eligible.is_empty();
+    let eligible_arms: Vec<String> = if constraints_fallback_used {
+        arms_in_order.to_vec()
+    } else {
+        eligible.clone()
+    };
+    let arms_in_order: &[String] = if constraints_fallback_used {
+        arms_in_order
+    } else {
+        &eligible
+    };
+
+    // Explore first (stable order).
+    for a in arms_in_order {
+        if summaries.get(a).copied().unwrap_or_default().calls == 0 {
+            let sel = Selection {
+                chosen: a.clone(),
+                frontier: vec![a.clone()],
+                candidates: vec![CandidateDebug {
+                    name: a.clone(),
+                    calls: 0,
+                    ok: 0,
+                    junk: 0,
+                    hard_junk: 0,
+                    ok_rate: 0.0,
+                    junk_rate: 0.0,
+                    hard_junk_rate: 0.0,
+                    soft_junk_rate: 0.0,
+                    mean_cost_units: 0.0,
+                    mean_elapsed_ms: 0.0,
+                    ucb: 0.0,
+                    objective_success: 0.0,
+                    drift_score: None,
+                    catkl_score: None,
+                    cusum_score: None,
+                    ok_half_width: None,
+                    junk_half_width: None,
+                    hard_junk_half_width: None,
+                }],
+                config: cfg,
+            };
+            return MabSelectionDecision {
+                selection: sel,
+                eligible_arms,
+                constraints_fallback_used,
+                explore_first: true,
+                drift_guard: None,
+                catkl_guard: None,
+                cusum_guard: None,
+            };
+        }
+    }
+
+    // Apply drift guard (optional) over the constraint-eligible set.
+    let max_drift = cfg
+        .max_drift
+        .and_then(|x| (x.is_finite() && x >= 0.0).then_some(x));
+    let mut eligible_after_drift = arms_in_order.to_vec();
+    let mut drift_guard: Option<DriftGuardDecision> = None;
+    if let Some(thr) = max_drift {
+        let mut kept: Vec<String> = Vec::new();
+        for a in arms_in_order {
+            let Some(w) = monitored.get(a) else {
+                kept.push(a.clone());
+                continue;
+            };
+            let d = monitor::drift_between_windows(
+                w.baseline(),
+                w.recent(),
+                DriftConfig {
+                    metric: cfg.drift_metric,
+                    ..drift_cfg
+                },
+            );
+            let violates = d.as_ref().map(|x| x.score > thr).unwrap_or(false);
+            if !violates {
+                kept.push(a.clone());
+            }
+        }
+        let fallback_used = kept.is_empty();
+        let eligible_arms = if fallback_used {
+            arms_in_order.to_vec()
+        } else {
+            kept
+        };
+        drift_guard = Some(DriftGuardDecision {
+            eligible_arms: eligible_arms.clone(),
+            fallback_used,
+            metric: cfg.drift_metric,
+            max_drift: thr,
+        });
+        eligible_after_drift = eligible_arms;
+    }
+
+    // Apply categorical KL guard (optional) over the drift-eligible set.
+    let max_catkl = cfg
+        .max_catkl
+        .and_then(|x| (x.is_finite() && x >= 0.0).then_some(x));
+    let catkl_alpha = if cfg.catkl_alpha.is_finite() && cfg.catkl_alpha > 0.0 {
+        cfg.catkl_alpha
+    } else {
+        1e-3
+    };
+    let mut eligible_after_catkl = eligible_after_drift.clone();
+    let mut catkl_guard: Option<CatKlGuardDecision> = None;
+    if let Some(thr) = max_catkl {
+        let mut kept: Vec<String> = Vec::new();
+        for a in &eligible_after_drift {
+            let Some(w) = monitored.get(a) else {
+                kept.push(a.clone());
+                continue;
+            };
+            let s = monitor::catkl_score_between_windows(
+                w.baseline(),
+                w.recent(),
+                catkl_alpha,
+                drift_cfg.tol,
+                cfg.catkl_min_baseline,
+                cfg.catkl_min_recent,
+            );
+            let violates = s.map(|x| x > thr).unwrap_or(false);
+            if !violates {
+                kept.push(a.clone());
+            }
+        }
+        let fallback_used = kept.is_empty();
+        let eligible_arms = if fallback_used {
+            eligible_after_drift.clone()
+        } else {
+            kept
+        };
+        catkl_guard = Some(CatKlGuardDecision {
+            eligible_arms: eligible_arms.clone(),
+            fallback_used,
+            max_catkl: thr,
+            alpha: catkl_alpha,
+            min_baseline: cfg.catkl_min_baseline,
+            min_recent: cfg.catkl_min_recent,
+        });
+        eligible_after_catkl = eligible_arms;
+    }
+
+    // Apply categorical CUSUM guard (optional) over the catKL-eligible set.
+    let max_cusum = cfg
+        .max_cusum
+        .and_then(|x| (x.is_finite() && x >= 0.0).then_some(x));
+    let cusum_alpha = if cfg.cusum_alpha.is_finite() && cfg.cusum_alpha > 0.0 {
+        cfg.cusum_alpha
+    } else {
+        1e-3
+    };
+    let cusum_alt_p = cfg.cusum_alt_p.unwrap_or([0.05, 0.05, 0.45, 0.45]);
+    let mut eligible_after_cusum = eligible_after_catkl.clone();
+    let mut cusum_guard: Option<CusumGuardDecision> = None;
+    if let Some(thr) = max_cusum {
+        let mut kept: Vec<String> = Vec::new();
+        for a in &eligible_after_catkl {
+            let Some(w) = monitored.get(a) else {
+                kept.push(a.clone());
+                continue;
+            };
+            let s = monitor::cusum_score_between_windows(
+                w.baseline(),
+                w.recent(),
+                cusum_alpha,
+                drift_cfg.tol,
+                cfg.cusum_min_baseline,
+                cfg.cusum_min_recent,
+                Some(cusum_alt_p),
+            );
+            let violates = s.map(|x| x > thr).unwrap_or(false);
+            if !violates {
+                kept.push(a.clone());
+            }
+        }
+        let fallback_used = kept.is_empty();
+        let eligible_arms = if fallback_used {
+            eligible_after_catkl.clone()
+        } else {
+            kept
+        };
+        cusum_guard = Some(CusumGuardDecision {
+            eligible_arms: eligible_arms.clone(),
+            fallback_used,
+            max_cusum: thr,
+            alpha: cusum_alpha,
+            min_baseline: cfg.cusum_min_baseline,
+            min_recent: cfg.cusum_min_recent,
+            alt_p: cusum_alt_p,
+        });
+        eligible_after_cusum = eligible_arms;
+    }
+
+    // Only count calls for the arms actually being considered.
+    let total_calls: f64 = eligible_after_cusum
+        .iter()
+        .map(|a| summaries.get(a).copied().unwrap_or_default().calls as f64)
+        .sum::<f64>()
+        .max(1.0);
+
+    // Monitored Pareto frontier includes drift + catKL + CUSUM as extra objectives (minimize each).
+    let mut frontier_points: Vec<Vec<f64>> = Vec::new();
+    let mut frontier_names_in_order: Vec<String> = Vec::new();
+    let mut candidates: Vec<CandidateDebug> = Vec::new();
+
+    for a in &eligible_after_cusum {
+        let s = summaries.get(a).copied().unwrap_or_default();
+        let n = (s.calls as f64).max(1.0);
+
+        // Uncertainty-aware rates (Wilson).
+        let z = cfg.uncertainty.z;
+        let soft = s.junk.saturating_sub(s.hard_junk);
+        let (ok_rate_used, ok_half) =
+            monitor::apply_rate_bound(s.ok, s.calls, z, cfg.uncertainty.ok_mode);
+        let (hard_used, hard_half) =
+            monitor::apply_rate_bound(s.hard_junk, s.calls, z, cfg.uncertainty.hard_junk_mode);
+        let (soft_used, soft_half) =
+            monitor::apply_rate_bound(soft, s.calls, z, cfg.uncertainty.junk_mode);
+
+        let junk_total_used = (soft_used + hard_used).clamp(0.0, 1.0);
+
+        // Drift score (optional).
+        let drift_score = monitored.get(a).and_then(|w| {
+            monitor::drift_between_windows(
+                w.baseline(),
+                w.recent(),
+                DriftConfig {
+                    metric: cfg.drift_metric,
+                    ..drift_cfg
+                },
+            )
+            .map(|x| x.score)
+        });
+        let drift_used = drift_score.unwrap_or(0.0);
+
+        let catkl_score = monitored.get(a).and_then(|w| {
+            monitor::catkl_score_between_windows(
+                w.baseline(),
+                w.recent(),
+                catkl_alpha,
+                drift_cfg.tol,
+                cfg.catkl_min_baseline,
+                cfg.catkl_min_recent,
+            )
+        });
+        let catkl_used = catkl_score.unwrap_or(0.0);
+
+        let cusum_score = monitored.get(a).and_then(|w| {
+            monitor::cusum_score_between_windows(
+                w.baseline(),
+                w.recent(),
+                cusum_alpha,
+                drift_cfg.tol,
+                cfg.cusum_min_baseline,
+                cfg.cusum_min_recent,
+                Some(cusum_alt_p),
+            )
+        });
+        let cusum_used = cusum_score.unwrap_or(0.0);
+
+        let ucb = cfg.exploration_c * ((total_calls.ln() / n).sqrt());
+        let objective_success = ok_rate_used + ucb;
+
+        let mean_cost = s.mean_cost_units();
+        let mean_lat = s.mean_elapsed_ms();
+
+        candidates.push(CandidateDebug {
+            name: a.clone(),
+            calls: s.calls,
+            ok: s.ok,
+            junk: s.junk,
+            hard_junk: s.hard_junk,
+            ok_rate: ok_rate_used,
+            junk_rate: junk_total_used,
+            hard_junk_rate: hard_used,
+            soft_junk_rate: soft_used,
+            mean_cost_units: mean_cost,
+            mean_elapsed_ms: mean_lat,
+            ucb,
+            objective_success,
+            drift_score,
+            catkl_score,
+            cusum_score,
+            ok_half_width: Some(ok_half),
+            junk_half_width: Some(soft_half),
+            hard_junk_half_width: Some(hard_half),
+        });
+
+        frontier_points.push(vec![
+            objective_success,
+            -mean_cost,
+            -mean_lat,
+            -hard_used,
+            -soft_used,
+            -drift_used,
+            -catkl_used,
+            -cusum_used,
+        ]);
+        frontier_names_in_order.push(a.clone());
+    }
+
+    let mut frontier = ParetoFrontier::new(vec![Direction::Maximize; 8]);
+    for (i, vals) in frontier_points.iter().enumerate() {
+        frontier.push(vals.clone(), i);
+    }
+    let mut frontier_indices: Vec<usize> = if frontier.is_empty() {
+        (0..frontier_points.len()).collect()
+    } else {
+        frontier.points().iter().map(|p| p.data).collect()
+    };
+    frontier_indices.sort_unstable();
+
+    let frontier_names: Vec<String> = frontier_indices
+        .iter()
+        .filter_map(|&i| frontier_names_in_order.get(i).cloned())
+        .collect();
+
+    // Deterministic scalarization among frontier points (include drift + catKL + CUSUM penalties).
+    let weights: [f64; 8] = [
+        1.0,
+        cfg.cost_weight.max(0.0),
+        cfg.latency_weight.max(0.0),
+        cfg.hard_junk_weight.max(0.0),
+        cfg.junk_weight.max(0.0),
+        cfg.drift_weight.max(0.0),
+        cfg.catkl_weight.max(0.0),
+        cfg.cusum_weight.max(0.0),
+    ];
+    let mut best_name = frontier_names
+        .first()
+        .cloned()
+        .unwrap_or_else(|| eligible_after_drift.first().cloned().unwrap_or_default());
+    let mut best_score = f64::NEG_INFINITY;
+    for &idx in &frontier_indices {
+        let Some(c) = candidates.get(idx) else {
+            continue;
+        };
+        let drift = c.drift_score.unwrap_or(0.0);
+        let catkl = c.catkl_score.unwrap_or(0.0);
+        let cusum = c.cusum_score.unwrap_or(0.0);
+        let s = c.objective_success
+            - weights[1] * c.mean_cost_units
+            - weights[2] * c.mean_elapsed_ms
+            - weights[3] * c.hard_junk_rate
+            - weights[4] * c.soft_junk_rate
+            - weights[5] * drift
+            - weights[6] * catkl
+            - weights[7] * cusum;
+        if s > best_score || ((s - best_score).abs() <= 1e-12 && c.name < best_name) {
+            best_score = s;
+            best_name = c.name.clone();
+        }
+    }
+
+    let sel = Selection {
+        chosen: best_name,
+        frontier: frontier_names,
+        candidates,
+        config: cfg,
+    };
+    MabSelectionDecision {
+        selection: sel,
+        eligible_arms,
+        constraints_fallback_used,
+        explore_first: false,
+        drift_guard,
+        catkl_guard,
+        cusum_guard,
+    }
+}
+
+/// Like `select_mab_monitored_explain`, but uses caller-provided summaries for the base objectives
+/// (e.g. prior-smoothed rates), while still computing monitoring scores from `monitored`.
+///
+/// This is useful for harnesses that want:
+/// - selection on a smoothed/aggregated summary, but
+/// - drift/catKL/CUSUM computed from raw baseline/recent windows.
+pub fn select_mab_monitored_explain_with_summaries(
+    arms_in_order: &[String],
+    summaries: &BTreeMap<String, Summary>,
+    monitored: &BTreeMap<String, MonitoredWindow>,
+    drift_cfg: DriftConfig,
+    cfg: MabConfig,
+) -> MabSelectionDecision {
+    // Apply base hard constraints first (same semantics as `select_mab_explain`).
+    let mut eligible: Vec<String> = Vec::new();
+    for a in arms_in_order {
+        let s = summaries.get(a).copied().unwrap_or_default();
+        let ok = cfg
+            .max_junk_rate
+            .map(|thr| s.junk_rate() <= thr)
+            .unwrap_or(true)
+            && cfg
+                .max_hard_junk_rate
+                .map(|thr| s.hard_junk_rate() <= thr)
+                .unwrap_or(true)
+            && cfg
+                .max_mean_cost_units
+                .map(|thr| s.mean_cost_units() <= thr)
+                .unwrap_or(true);
+        if ok {
+            eligible.push(a.clone());
+        }
+    }
+    let constraints_fallback_used = eligible.is_empty();
+    let eligible_arms: Vec<String> = if constraints_fallback_used {
+        arms_in_order.to_vec()
+    } else {
+        eligible.clone()
+    };
+    let arms_in_order: &[String] = if constraints_fallback_used {
+        arms_in_order
+    } else {
+        &eligible
+    };
+
+    // Explore first (stable order).
+    for a in arms_in_order {
+        if summaries.get(a).copied().unwrap_or_default().calls == 0 {
+            let sel = Selection {
+                chosen: a.clone(),
+                frontier: vec![a.clone()],
+                candidates: vec![CandidateDebug {
+                    name: a.clone(),
+                    calls: 0,
+                    ok: 0,
+                    junk: 0,
+                    hard_junk: 0,
+                    ok_rate: 0.0,
+                    junk_rate: 0.0,
+                    hard_junk_rate: 0.0,
+                    soft_junk_rate: 0.0,
+                    mean_cost_units: 0.0,
+                    mean_elapsed_ms: 0.0,
+                    ucb: 0.0,
+                    objective_success: 0.0,
+                    drift_score: None,
+                    catkl_score: None,
+                    cusum_score: None,
+                    ok_half_width: None,
+                    junk_half_width: None,
+                    hard_junk_half_width: None,
+                }],
+                config: cfg,
+            };
+            return MabSelectionDecision {
+                selection: sel,
+                eligible_arms,
+                constraints_fallback_used,
+                explore_first: true,
+                drift_guard: None,
+                catkl_guard: None,
+                cusum_guard: None,
+            };
+        }
+    }
+
+    // Apply drift guard (optional) over the constraint-eligible set.
+    let max_drift = cfg
+        .max_drift
+        .and_then(|x| (x.is_finite() && x >= 0.0).then_some(x));
+    let mut eligible_after_drift = arms_in_order.to_vec();
+    let mut drift_guard: Option<DriftGuardDecision> = None;
+    if let Some(thr) = max_drift {
+        let mut kept: Vec<String> = Vec::new();
+        for a in arms_in_order {
+            let Some(w) = monitored.get(a) else {
+                kept.push(a.clone());
+                continue;
+            };
+            let d = monitor::drift_between_windows(
+                w.baseline(),
+                w.recent(),
+                DriftConfig {
+                    metric: cfg.drift_metric,
+                    ..drift_cfg
+                },
+            );
+            let violates = d.as_ref().map(|x| x.score > thr).unwrap_or(false);
+            if !violates {
+                kept.push(a.clone());
+            }
+        }
+        let fallback_used = kept.is_empty();
+        let eligible_arms = if fallback_used {
+            arms_in_order.to_vec()
+        } else {
+            kept
+        };
+        drift_guard = Some(DriftGuardDecision {
+            eligible_arms: eligible_arms.clone(),
+            fallback_used,
+            metric: cfg.drift_metric,
+            max_drift: thr,
+        });
+        eligible_after_drift = eligible_arms;
+    }
+
+    // Apply categorical KL guard (optional) over the drift-eligible set.
+    let max_catkl = cfg
+        .max_catkl
+        .and_then(|x| (x.is_finite() && x >= 0.0).then_some(x));
+    let catkl_alpha = if cfg.catkl_alpha.is_finite() && cfg.catkl_alpha > 0.0 {
+        cfg.catkl_alpha
+    } else {
+        1e-3
+    };
+    let mut eligible_after_catkl = eligible_after_drift.clone();
+    let mut catkl_guard: Option<CatKlGuardDecision> = None;
+    if let Some(thr) = max_catkl {
+        let mut kept: Vec<String> = Vec::new();
+        for a in &eligible_after_drift {
+            let Some(w) = monitored.get(a) else {
+                kept.push(a.clone());
+                continue;
+            };
+            let s = monitor::catkl_score_between_windows(
+                w.baseline(),
+                w.recent(),
+                catkl_alpha,
+                drift_cfg.tol,
+                cfg.catkl_min_baseline,
+                cfg.catkl_min_recent,
+            );
+            let violates = s.map(|x| x > thr).unwrap_or(false);
+            if !violates {
+                kept.push(a.clone());
+            }
+        }
+        let fallback_used = kept.is_empty();
+        let eligible_arms = if fallback_used {
+            eligible_after_drift.clone()
+        } else {
+            kept
+        };
+        catkl_guard = Some(CatKlGuardDecision {
+            eligible_arms: eligible_arms.clone(),
+            fallback_used,
+            max_catkl: thr,
+            alpha: catkl_alpha,
+            min_baseline: cfg.catkl_min_baseline,
+            min_recent: cfg.catkl_min_recent,
+        });
+        eligible_after_catkl = eligible_arms;
+    }
+
+    // Apply categorical CUSUM guard (optional) over the catKL-eligible set.
+    let max_cusum = cfg
+        .max_cusum
+        .and_then(|x| (x.is_finite() && x >= 0.0).then_some(x));
+    let cusum_alpha = if cfg.cusum_alpha.is_finite() && cfg.cusum_alpha > 0.0 {
+        cfg.cusum_alpha
+    } else {
+        1e-3
+    };
+    let cusum_alt_p = cfg.cusum_alt_p.unwrap_or([0.05, 0.05, 0.45, 0.45]);
+    let mut eligible_after_cusum = eligible_after_catkl.clone();
+    let mut cusum_guard: Option<CusumGuardDecision> = None;
+    if let Some(thr) = max_cusum {
+        let mut kept: Vec<String> = Vec::new();
+        for a in &eligible_after_catkl {
+            let Some(w) = monitored.get(a) else {
+                kept.push(a.clone());
+                continue;
+            };
+            let s = monitor::cusum_score_between_windows(
+                w.baseline(),
+                w.recent(),
+                cusum_alpha,
+                drift_cfg.tol,
+                cfg.cusum_min_baseline,
+                cfg.cusum_min_recent,
+                Some(cusum_alt_p),
+            );
+            let violates = s.map(|x| x > thr).unwrap_or(false);
+            if !violates {
+                kept.push(a.clone());
+            }
+        }
+        let fallback_used = kept.is_empty();
+        let eligible_arms = if fallback_used {
+            eligible_after_catkl.clone()
+        } else {
+            kept
+        };
+        cusum_guard = Some(CusumGuardDecision {
+            eligible_arms: eligible_arms.clone(),
+            fallback_used,
+            max_cusum: thr,
+            alpha: cusum_alpha,
+            min_baseline: cfg.cusum_min_baseline,
+            min_recent: cfg.cusum_min_recent,
+            alt_p: cusum_alt_p,
+        });
+        eligible_after_cusum = eligible_arms;
+    }
+
+    // Only count calls for the arms actually being considered.
+    let total_calls: f64 = eligible_after_cusum
+        .iter()
+        .map(|a| summaries.get(a).copied().unwrap_or_default().calls as f64)
+        .sum::<f64>()
+        .max(1.0);
+
+    // Monitored Pareto frontier includes drift + catKL + CUSUM as extra objectives (minimize each).
+    let mut frontier_points: Vec<Vec<f64>> = Vec::new();
+    let mut frontier_names_in_order: Vec<String> = Vec::new();
+    let mut candidates: Vec<CandidateDebug> = Vec::new();
+
+    for a in &eligible_after_cusum {
+        let s = summaries.get(a).copied().unwrap_or_default();
+        let n = (s.calls as f64).max(1.0);
+
+        // Uncertainty-aware rates (Wilson).
+        let z = cfg.uncertainty.z;
+        let soft = s.junk.saturating_sub(s.hard_junk);
+        let (ok_rate_used, ok_half) =
+            monitor::apply_rate_bound(s.ok, s.calls, z, cfg.uncertainty.ok_mode);
+        let (hard_used, hard_half) =
+            monitor::apply_rate_bound(s.hard_junk, s.calls, z, cfg.uncertainty.hard_junk_mode);
+        let (soft_used, soft_half) =
+            monitor::apply_rate_bound(soft, s.calls, z, cfg.uncertainty.junk_mode);
+
+        let junk_total_used = (soft_used + hard_used).clamp(0.0, 1.0);
+
+        // Monitoring scores from raw windows (optional).
+        let drift_score = monitored.get(a).and_then(|w| {
+            monitor::drift_between_windows(
+                w.baseline(),
+                w.recent(),
+                DriftConfig {
+                    metric: cfg.drift_metric,
+                    ..drift_cfg
+                },
+            )
+            .map(|x| x.score)
+        });
+        let drift_used = drift_score.unwrap_or(0.0);
+
+        let catkl_score = monitored.get(a).and_then(|w| {
+            monitor::catkl_score_between_windows(
+                w.baseline(),
+                w.recent(),
+                catkl_alpha,
+                drift_cfg.tol,
+                cfg.catkl_min_baseline,
+                cfg.catkl_min_recent,
+            )
+        });
+        let catkl_used = catkl_score.unwrap_or(0.0);
+
+        let cusum_score = monitored.get(a).and_then(|w| {
+            monitor::cusum_score_between_windows(
+                w.baseline(),
+                w.recent(),
+                cusum_alpha,
+                drift_cfg.tol,
+                cfg.cusum_min_baseline,
+                cfg.cusum_min_recent,
+                Some(cusum_alt_p),
+            )
+        });
+        let cusum_used = cusum_score.unwrap_or(0.0);
+
+        let ucb = cfg.exploration_c * ((total_calls.ln() / n).sqrt());
+        let objective_success = ok_rate_used + ucb;
+
+        let mean_cost = s.mean_cost_units();
+        let mean_lat = s.mean_elapsed_ms();
+
+        candidates.push(CandidateDebug {
+            name: a.clone(),
+            calls: s.calls,
+            ok: s.ok,
+            junk: s.junk,
+            hard_junk: s.hard_junk,
+            ok_rate: ok_rate_used,
+            junk_rate: junk_total_used,
+            hard_junk_rate: hard_used,
+            soft_junk_rate: soft_used,
+            mean_cost_units: mean_cost,
+            mean_elapsed_ms: mean_lat,
+            ucb,
+            objective_success,
+            drift_score,
+            catkl_score,
+            cusum_score,
+            ok_half_width: Some(ok_half),
+            junk_half_width: Some(soft_half),
+            hard_junk_half_width: Some(hard_half),
+        });
+
+        frontier_points.push(vec![
+            objective_success,
+            -mean_cost,
+            -mean_lat,
+            -hard_used,
+            -soft_used,
+            -drift_used,
+            -catkl_used,
+            -cusum_used,
+        ]);
+        frontier_names_in_order.push(a.clone());
+    }
+
+    let mut frontier = ParetoFrontier::new(vec![Direction::Maximize; 8]);
+    for (i, vals) in frontier_points.iter().enumerate() {
+        frontier.push(vals.clone(), i);
+    }
+    let mut frontier_indices: Vec<usize> = if frontier.is_empty() {
+        (0..frontier_points.len()).collect()
+    } else {
+        frontier.points().iter().map(|p| p.data).collect()
+    };
+    frontier_indices.sort_unstable();
+
+    let frontier_names: Vec<String> = frontier_indices
+        .iter()
+        .filter_map(|&i| frontier_names_in_order.get(i).cloned())
+        .collect();
+
+    let weights: [f64; 8] = [
+        1.0,
+        cfg.cost_weight.max(0.0),
+        cfg.latency_weight.max(0.0),
+        cfg.hard_junk_weight.max(0.0),
+        cfg.junk_weight.max(0.0),
+        cfg.drift_weight.max(0.0),
+        cfg.catkl_weight.max(0.0),
+        cfg.cusum_weight.max(0.0),
+    ];
+
+    let mut best_name = frontier_names
+        .first()
+        .cloned()
+        .unwrap_or_else(|| eligible_after_cusum.first().cloned().unwrap_or_default());
+    let mut best_score = f64::NEG_INFINITY;
+    for &idx in &frontier_indices {
+        let Some(c) = candidates.get(idx) else {
+            continue;
+        };
+        let drift = c.drift_score.unwrap_or(0.0);
+        let catkl = c.catkl_score.unwrap_or(0.0);
+        let cusum = c.cusum_score.unwrap_or(0.0);
+        let s = c.objective_success
+            - weights[1] * c.mean_cost_units
+            - weights[2] * c.mean_elapsed_ms
+            - weights[3] * c.hard_junk_rate
+            - weights[4] * c.soft_junk_rate
+            - weights[5] * drift
+            - weights[6] * catkl
+            - weights[7] * cusum;
+        if s > best_score || ((s - best_score).abs() <= 1e-12 && c.name < best_name) {
+            best_score = s;
+            best_name = c.name.clone();
+        }
+    }
+
+    let sel = Selection {
+        chosen: best_name,
+        frontier: frontier_names,
+        candidates,
+        config: cfg,
+    };
+
+    MabSelectionDecision {
+        selection: sel,
+        eligible_arms,
+        constraints_fallback_used,
+        explore_first: false,
+        drift_guard,
+        catkl_guard,
+        cusum_guard,
+    }
+}
+
+/// Multi-pick variant of monitored selection using caller-provided summaries and monitored windows.
+pub fn select_mab_k_guardrailed_monitored_explain_full<FS, FM>(
+    arms_in_order: &[String],
+    mut summaries_for: FS,
+    mut monitored_for: FM,
+    drift_cfg: DriftConfig,
+    cfg: MabConfig,
+    guardrail: LatencyGuardrailConfig,
+    k: usize,
+) -> MabKExplain
+where
+    FS: FnMut(&[String]) -> BTreeMap<String, Summary>,
+    FM: FnMut(&[String]) -> BTreeMap<String, MonitoredWindow>,
+{
+    if arms_in_order.is_empty() || k == 0 {
+        return MabKExplain {
+            chosen: Vec::new(),
+            rounds: Vec::new(),
+            stop: None,
+        };
+    }
+
+    let mut remaining: Vec<String> = arms_in_order.to_vec();
+    let mut chosen: Vec<String> = Vec::new();
+    let mut rounds: Vec<MabKRound> = Vec::new();
+    let mut stop: Option<MabKStop> = None;
+
+    for _round in 0..k.min(remaining.len()) {
+        let remaining_in = remaining.clone();
+        let summaries = summaries_for(&remaining_in);
+        let monitored = monitored_for(&remaining_in);
+
+        let gd = apply_latency_guardrail(&remaining_in, &summaries, guardrail, chosen.len());
+        if gd.stop_early || gd.eligible.is_empty() {
+            stop = Some(MabKStop {
+                remaining: remaining_in,
+                guardrail: gd,
+            });
+            break;
+        }
+
+        let d = select_mab_monitored_explain_with_summaries(
+            &gd.eligible,
+            &summaries,
+            &monitored,
+            drift_cfg,
+            cfg,
+        );
+        let pick = d.selection.chosen.clone();
+        chosen.push(pick.clone());
+        remaining.retain(|b| b != &pick);
+
+        rounds.push(MabKRound {
+            remaining: remaining_in,
+            guardrail: gd,
+            mab: d,
+        });
+    }
+
+    MabKExplain {
+        chosen,
+        rounds,
+        stop,
     }
 }
 
@@ -786,6 +1921,79 @@ pub fn select_mab_decide(
     } else {
         notes.push(DecisionNote::DeterministicChoice);
     }
+    Decision {
+        policy: DecisionPolicy::Mab,
+        chosen: d.selection.chosen.clone(),
+        probs: None,
+        notes,
+    }
+}
+
+/// Unified decision envelope for monitored deterministic MAB selection.
+pub fn select_mab_monitored_decide(
+    arms_in_order: &[String],
+    monitored: &BTreeMap<String, MonitoredWindow>,
+    drift_cfg: DriftConfig,
+    cfg: MabConfig,
+) -> Decision {
+    let d = select_mab_monitored_explain(arms_in_order, monitored, drift_cfg, cfg);
+
+    let mut notes = vec![DecisionNote::Constraints {
+        eligible_arms: d.eligible_arms.clone(),
+        fallback_used: d.constraints_fallback_used,
+    }];
+    if let Some(ref dg) = d.drift_guard {
+        notes.push(DecisionNote::DriftGuard {
+            eligible_arms: dg.eligible_arms.clone(),
+            fallback_used: dg.fallback_used,
+            metric: dg.metric,
+            max_drift: dg.max_drift,
+        });
+    }
+    if let Some(ref cg) = d.catkl_guard {
+        notes.push(DecisionNote::CatKlGuard {
+            eligible_arms: cg.eligible_arms.clone(),
+            fallback_used: cg.fallback_used,
+            max_catkl: cg.max_catkl,
+            alpha: cg.alpha,
+            min_baseline: cg.min_baseline,
+            min_recent: cg.min_recent,
+        });
+    }
+    if let Some(ref ug) = d.cusum_guard {
+        notes.push(DecisionNote::CusumGuard {
+            eligible_arms: ug.eligible_arms.clone(),
+            fallback_used: ug.fallback_used,
+            max_cusum: ug.max_cusum,
+            alpha: ug.alpha,
+            min_baseline: ug.min_baseline,
+            min_recent: ug.min_recent,
+            alt_p: ug.alt_p,
+        });
+    }
+    if d.explore_first {
+        notes.push(DecisionNote::ExploreFirst);
+    } else {
+        notes.push(DecisionNote::DeterministicChoice);
+    }
+
+    // Attach chosen-arm diagnostics (if present).
+    let chosen_row = d
+        .selection
+        .candidates
+        .iter()
+        .find(|c| c.name == d.selection.chosen);
+    if let Some(c) = chosen_row {
+        notes.push(DecisionNote::Diagnostics {
+            drift_score: c.drift_score,
+            catkl_score: c.catkl_score,
+            cusum_score: c.cusum_score,
+            ok_half_width: c.ok_half_width,
+            junk_half_width: c.junk_half_width,
+            hard_junk_half_width: c.hard_junk_half_width,
+        });
+    }
+
     Decision {
         policy: DecisionPolicy::Mab,
         chosen: d.selection.chosen.clone(),
@@ -1110,13 +2318,7 @@ mod tests {
 
             let cfg = MabConfig {
                 exploration_c: 0.7,
-                cost_weight: 0.0,
-                latency_weight: 0.0,
-                junk_weight: 0.0,
-                hard_junk_weight: 0.0,
-                max_junk_rate: None,
-                max_hard_junk_rate: None,
-                max_mean_cost_units: None,
+                ..MabConfig::default()
             };
 
             let sel = select_mab(&arms, &m, cfg);
@@ -1282,6 +2484,12 @@ mod tests {
                             mean_elapsed_ms: 0.0,
                             ucb: 0.0,
                             objective_success: a_score,
+                            drift_score: None,
+                            catkl_score: None,
+                            cusum_score: None,
+                            ok_half_width: None,
+                            junk_half_width: None,
+                            hard_junk_half_width: None,
                         },
                         CandidateDebug {
                             name: "b".to_string(),
@@ -1297,6 +2505,12 @@ mod tests {
                             mean_elapsed_ms: 0.0,
                             ucb: 0.0,
                             objective_success: b_score,
+                            drift_score: None,
+                            catkl_score: None,
+                            cusum_score: None,
+                            ok_half_width: None,
+                            junk_half_width: None,
+                            hard_junk_half_width: None,
                         },
                     ],
                     config: cfg,
@@ -1304,6 +2518,9 @@ mod tests {
                 eligible_arms: vec!["a".to_string(), "b".to_string()],
                 constraints_fallback_used: false,
                 explore_first: false,
+                drift_guard: None,
+                catkl_guard: None,
+                cusum_guard: None,
             }
         };
 
@@ -1349,12 +2566,21 @@ mod tests {
                     mean_elapsed_ms: 0.0,
                     ucb: 0.0,
                     objective_success: 0.0,
+                    drift_score: None,
+                    catkl_score: None,
+                    cusum_score: None,
+                    ok_half_width: None,
+                    junk_half_width: None,
+                    hard_junk_half_width: None,
                 }],
                 config: cfg,
             },
             eligible_arms: vec!["old".to_string()],
             constraints_fallback_used: false,
             explore_first: true,
+            drift_guard: None,
+            catkl_guard: None,
+            cusum_guard: None,
         });
         assert_eq!(sticky.previous(), Some("old"));
 
@@ -1376,6 +2602,12 @@ mod tests {
                 mean_elapsed_ms: 0.0,
                 ucb: 0.0,
                 objective_success: 0.0,
+                drift_score: None,
+                catkl_score: None,
+                cusum_score: None,
+                ok_half_width: None,
+                junk_half_width: None,
+                hard_junk_half_width: None,
             }],
             config: cfg,
         };
@@ -1384,6 +2616,9 @@ mod tests {
             eligible_arms: vec!["a".to_string()],
             constraints_fallback_used: false,
             explore_first: false,
+            drift_guard: None,
+            catkl_guard: None,
+            cusum_guard: None,
         });
         assert_eq!(e.selection.chosen, "a");
         assert_eq!(sticky.previous(), Some("a"));

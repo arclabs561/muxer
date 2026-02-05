@@ -4,6 +4,7 @@
 //! external harnesses and CLIs can share *exact* deterministic selection semantics without
 //! re-implementing “glue” logic (novelty → guardrail → pick-rest).
 
+use crate::{coverage_pick_under_sampled, CoverageConfig};
 use crate::{novelty_pick_unseen, stable_hash64, LatencyGuardrailConfig};
 
 /// Re-export `LatencyGuardrailConfig` under the harness-friendly name used by some routers.
@@ -132,6 +133,66 @@ where
     }
 }
 
+/// Like `policy_plan_observed`, but also adds a deterministic “coverage” pre-pick stage
+/// to enforce minimum sampling quotas (useful for monitoring/change detection).
+///
+/// Order: novelty (unseen) first, then coverage (under-sampled), then guardrail.
+pub fn policy_plan_observed_with_coverage<F>(
+    seed: u64,
+    arms: &[String],
+    k: usize,
+    novelty_enabled: bool,
+    coverage: CoverageConfig,
+    guard: LatencyGuardrail,
+    mut observed: F,
+) -> PolicyPlan
+where
+    F: FnMut(&str) -> (u64, u64),
+{
+    let pre_novel = novelty_pick_unseen(seed, arms, k, novelty_enabled, |b| observed(b).0);
+    let remaining_after_novel: Vec<String> = arms
+        .iter()
+        .filter(|b| !pre_novel.contains(*b))
+        .cloned()
+        .collect();
+
+    let need_cov = k.saturating_sub(pre_novel.len());
+    let mut pre_cov = coverage_pick_under_sampled(
+        seed ^ 0x434F_5645, // "COVE"
+        &remaining_after_novel,
+        need_cov,
+        coverage,
+        |b| observed(b).0,
+    );
+
+    // Preserve deterministic order: novelty picks first, then coverage picks.
+    let mut prechosen = pre_novel;
+    for b in pre_cov.drain(..) {
+        if prechosen.len() >= k {
+            break;
+        }
+        if prechosen.contains(&b) {
+            continue;
+        }
+        prechosen.push(b);
+    }
+
+    let remaining: Vec<String> = arms
+        .iter()
+        .filter(|b| !prechosen.contains(*b))
+        .cloned()
+        .collect();
+
+    let (eligible, stop_early) =
+        guardrail_filter_observed_elapsed(seed ^ 0x504C_414E, &remaining, guard, observed); // "PLAN"
+
+    PolicyPlan {
+        prechosen,
+        eligible,
+        stop_early,
+    }
+}
+
 /// Shared muxer “policy pipeline”: novelty → observed guardrail → fill the remaining \(k\).
 ///
 /// Semantics note:
@@ -237,6 +298,111 @@ where
     }
 }
 
+/// Like `policy_fill_k_observed_with`, but includes an optional “coverage” pre-pick stage.
+#[allow(clippy::too_many_arguments)]
+pub fn policy_fill_k_observed_with_coverage<F, P>(
+    seed: u64,
+    arms: &[String],
+    k: usize,
+    novelty_enabled: bool,
+    coverage: CoverageConfig,
+    guard: LatencyGuardrail,
+    mut observed: F,
+    mut pick_rest: P,
+) -> PolicyFill
+where
+    F: FnMut(&str) -> (u64, u64),
+    P: FnMut(&[String], usize) -> Vec<String>,
+{
+    let plan = policy_plan_observed_with_coverage(
+        seed,
+        arms,
+        k,
+        novelty_enabled,
+        coverage,
+        guard,
+        &mut observed,
+    );
+    let mut chosen = plan.prechosen.clone();
+
+    if chosen.len() >= k {
+        return PolicyFill {
+            chosen,
+            plan,
+            eligible_used: Vec::new(),
+            fallback_used: false,
+            stopped_early: false,
+        };
+    }
+
+    if plan.stop_early && !chosen.is_empty() {
+        return PolicyFill {
+            chosen,
+            eligible_used: Vec::new(),
+            plan,
+            fallback_used: false,
+            stopped_early: true,
+        };
+    }
+
+    let mut eligible_used = plan.eligible.clone();
+    let mut fallback_used = false;
+    let mut stopped_early = false;
+    if eligible_used.is_empty() {
+        if guard.require_measured {
+            stopped_early = true;
+            return PolicyFill {
+                chosen,
+                eligible_used,
+                plan,
+                fallback_used,
+                stopped_early,
+            };
+        }
+        if guard.allow_fewer && !chosen.is_empty() {
+            stopped_early = true;
+            return PolicyFill {
+                chosen,
+                eligible_used,
+                plan,
+                fallback_used,
+                stopped_early,
+            };
+        }
+        eligible_used = arms
+            .iter()
+            .filter(|b| !chosen.contains(*b))
+            .cloned()
+            .collect();
+        fallback_used = true;
+    }
+
+    let remaining_k = k.saturating_sub(chosen.len());
+    if remaining_k > 0 && !eligible_used.is_empty() {
+        let rest = pick_rest(&eligible_used, remaining_k);
+        for b in rest {
+            if chosen.len() >= k {
+                break;
+            }
+            if !eligible_used.contains(&b) {
+                continue;
+            }
+            if chosen.contains(&b) {
+                continue;
+            }
+            chosen.push(b);
+        }
+    }
+
+    PolicyFill {
+        chosen,
+        plan,
+        eligible_used,
+        fallback_used,
+        stopped_early,
+    }
+}
+
 /// Shared “select K without replacement” driver.
 ///
 /// Callers provide a picker that can return up to `k_remaining` candidates for the current
@@ -286,7 +452,12 @@ where
 
 /// Convenience wrapper over `select_k_without_replacement_by_with_meta` when no meta is needed.
 #[must_use]
-pub fn select_k_without_replacement_by<F>(seed: u64, items: &[String], k: usize, mut pick: F) -> Vec<String>
+pub fn select_k_without_replacement_by<F>(
+    seed: u64,
+    items: &[String],
+    k: usize,
+    mut pick: F,
+) -> Vec<String>
 where
     F: FnMut(u64, &[String], usize) -> Vec<String>,
 {
@@ -297,4 +468,3 @@ where
     .map(|(b, _)| b)
     .collect()
 }
-

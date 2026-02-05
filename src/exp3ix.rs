@@ -964,13 +964,7 @@ mod tests {
         // MAB config with only success dimension (no penalties).
         let cfg = MabConfig {
             exploration_c: 0.8,
-            cost_weight: 0.0,
-            latency_weight: 0.0,
-            junk_weight: 0.0,
-            hard_junk_weight: 0.0,
-            max_junk_rate: None,
-            max_hard_junk_rate: None,
-            max_mean_cost_units: None,
+            ..MabConfig::default()
         };
 
         let mut ex = Exp3Ix::new(Exp3IxConfig {
