@@ -1,3 +1,5 @@
 target/
 **/target/
+target-*/
+proptest-regressions/
 .DS_Store
