@@ -13,7 +13,6 @@ documentation = "https://docs.rs/muxer"
 features = ["serde", "contextual"]
 
 [dependencies]
-infgeom = "0.1.0"
 logp = "0.1.0"
 pare = "0.1.0"
 rand = { version = "0.9", optional = true }

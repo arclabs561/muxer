@@ -163,16 +163,38 @@ pub fn drift_simplex(
     tol: f64,
 ) -> Result<f64, logp::Error> {
     match metric {
-        DriftMetric::Rao => infgeom::rao_distance_categorical(p, q, tol).map_err(|e| match e {
-            infgeom::Error::Logp(le) => le,
-            infgeom::Error::Domain(msg) => logp::Error::Domain(msg),
-        }),
+        DriftMetric::Rao => rao_distance_categorical(p, q, tol),
         DriftMetric::JensenShannon => logp::jensen_shannon_divergence(p, q, tol),
-        DriftMetric::Hellinger => infgeom::hellinger(p, q, tol).map_err(|e| match e {
-            infgeom::Error::Logp(le) => le,
-            infgeom::Error::Domain(msg) => logp::Error::Domain(msg),
-        }),
+        DriftMetric::Hellinger => hellinger_categorical(p, q, tol),
     }
+}
+
+fn bhattacharyya_coefficient(p: &[f64], q: &[f64], tol: f64) -> Result<f64, logp::Error> {
+    if p.len() != q.len() {
+        return Err(logp::Error::LengthMismatch(p.len(), q.len()));
+    }
+    logp::validate_simplex(p, tol)?;
+    logp::validate_simplex(q, tol)?;
+
+    let mut bc = 0.0_f64;
+    for (&pi, &qi) in p.iter().zip(q.iter()) {
+        bc += (pi * qi).sqrt();
+    }
+
+    // Clamp to guard against tiny floating error (e.g. 1 + 1e-16).
+    Ok(bc.clamp(0.0, 1.0))
+}
+
+fn hellinger_categorical(p: &[f64], q: &[f64], tol: f64) -> Result<f64, logp::Error> {
+    // Standard Hellinger distance: H(p,q) ∈ [0,1].
+    let bc = bhattacharyya_coefficient(p, q, tol)?;
+    Ok((1.0 - bc).max(0.0).sqrt())
+}
+
+fn rao_distance_categorical(p: &[f64], q: &[f64], tol: f64) -> Result<f64, logp::Error> {
+    // Fisher–Rao distance on the categorical simplex: d(p,q) = 2 arccos( Σ_i √(p_i q_i) ) ∈ [0,π].
+    let bc = bhattacharyya_coefficient(p, q, tol)?;
+    Ok(2.0 * bc.acos())
 }
 
 // ============================================================================
@@ -583,9 +605,9 @@ pub fn drift_between_windows(
     let q = categorical_probs(recent);
 
     let score = match cfg.metric {
-        DriftMetric::Rao => infgeom::rao_distance_categorical(&p, &q, cfg.tol).ok()?,
+        DriftMetric::Rao => rao_distance_categorical(&p, &q, cfg.tol).ok()?,
         DriftMetric::JensenShannon => logp::jensen_shannon_divergence(&p, &q, cfg.tol).ok()?,
-        DriftMetric::Hellinger => infgeom::hellinger(&p, &q, cfg.tol).ok()?,
+        DriftMetric::Hellinger => hellinger_categorical(&p, &q, cfg.tol).ok()?,
     };
 
     Some(DriftDecision {
