@@ -26,8 +26,20 @@ pub fn stable_hash64_u64(seed: u64, x: u64) -> u64 {
     splitmix64(seed ^ x)
 }
 
+/// Deterministic u64-to-`[0,1)` mapping (53-bit mantissa precision).
+///
+/// Useful for seeded sampling from probability distributions without persisting RNG state.
+#[cfg(feature = "stochastic")]
+#[must_use]
+pub(crate) fn u01_from_seed(seed: u64) -> f64 {
+    let x = splitmix64(seed);
+    let top = x >> 11; // 53 bits
+    (top as f64) / ((1u64 << 53) as f64)
+}
+
 #[inline]
-fn splitmix64(mut x: u64) -> u64 {
+#[cfg_attr(not(feature = "stochastic"), allow(dead_code))]
+pub(crate) fn splitmix64(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = x;
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);

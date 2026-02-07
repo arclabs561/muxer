@@ -1,5 +1,8 @@
 use muxer::monitor::{DriftConfig, DriftMetric};
-use muxer::{select_mab_monitored_explain, MabConfig, MonitoredWindow, Outcome};
+use muxer::{
+    select_mab_monitored_explain, select_mab_monitored_explain_with_summaries, MabConfig,
+    MonitoredWindow, Outcome, Summary,
+};
 use proptest::prelude::*;
 use std::collections::BTreeMap;
 
@@ -545,4 +548,118 @@ fn drift_guard_filters_changed_arm_when_threshold_is_tight() {
     let dg = d.drift_guard.expect("drift guard present");
     assert!(dg.eligible_arms.iter().any(|a| a == "stable"));
     assert!(!dg.eligible_arms.is_empty());
+}
+
+// ============================================================================
+// Seam rule: delegation preserves semantics
+// ============================================================================
+//
+// `select_mab_monitored_explain` is now a thin wrapper that builds summaries from
+// `monitored[*].recent_summary()` and delegates to `_with_summaries`.  This test
+// verifies the delegation produces bit-identical results by running both paths on
+// the same inputs.
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 128, .. ProptestConfig::default() })]
+    #[test]
+    fn monitored_explain_delegation_is_identity(
+        k in 1usize..=5,
+        baseline_len in 40usize..=120,
+        recent_len in 20usize..=80,
+        seqs in prop::collection::vec(prop::collection::vec(outcome_strategy(), 0..200), 1..=5),
+        max_drift in prop_oneof![Just(None), (0.0f64..1.0f64).prop_map(Some)],
+        max_catkl in prop_oneof![Just(None), (0.0f64..200.0f64).prop_map(Some)],
+        max_cusum in prop_oneof![Just(None), (0.0f64..30.0f64).prop_map(Some)],
+        drift_weight in 0.0f64..3.0f64,
+        catkl_weight in 0.0f64..3.0f64,
+        cusum_weight in 0.0f64..3.0f64,
+    ) {
+        let k = k.min(seqs.len()).max(1);
+        let arms: Vec<String> = (0..k).map(|i| format!("arm{}", i)).collect();
+
+        let mut m: BTreeMap<String, MonitoredWindow> = BTreeMap::new();
+        for i in 0..k {
+            let mut w = MonitoredWindow::new(2_000, 200);
+            let s = &seqs[i];
+            let need = baseline_len + recent_len;
+            let mut v: Vec<Outcome> = Vec::new();
+            v.extend_from_slice(s);
+            while v.len() < need {
+                v.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100 });
+            }
+            fill_monitored(&mut w, &v[..need]);
+            m.insert(arms[i].clone(), w);
+        }
+
+        let drift_cfg = DriftConfig {
+            metric: DriftMetric::Hellinger,
+            tol: 1e-9,
+            min_baseline: 20,
+            min_recent: 10,
+        };
+
+        let cfg = MabConfig {
+            max_drift,
+            drift_metric: DriftMetric::Hellinger,
+            drift_weight,
+            max_catkl,
+            catkl_weight,
+            max_cusum,
+            cusum_weight,
+            max_junk_rate: None,
+            max_hard_junk_rate: None,
+            max_mean_cost_units: None,
+            ..MabConfig::default()
+        };
+
+        // Path A: the convenience wrapper (builds summaries internally).
+        let d_a = select_mab_monitored_explain(&arms, &m, drift_cfg, cfg);
+
+        // Path B: build summaries manually, call the inner function directly.
+        let summaries: BTreeMap<String, Summary> = m
+            .iter()
+            .map(|(k, w)| (k.clone(), w.recent_summary()))
+            .collect();
+        let d_b = select_mab_monitored_explain_with_summaries(
+            &arms, &summaries, &m, drift_cfg, cfg,
+        );
+
+        // Must be bit-identical.
+        prop_assert_eq!(d_a.selection.chosen, d_b.selection.chosen);
+        prop_assert_eq!(d_a.explore_first, d_b.explore_first);
+        prop_assert_eq!(d_a.constraints_fallback_used, d_b.constraints_fallback_used);
+        prop_assert_eq!(d_a.eligible_arms, d_b.eligible_arms);
+        prop_assert_eq!(d_a.selection.frontier.len(), d_b.selection.frontier.len());
+        prop_assert_eq!(d_a.selection.candidates.len(), d_b.selection.candidates.len());
+
+        // Drift guard eligibility must match.
+        match (&d_a.drift_guard, &d_b.drift_guard) {
+            (Some(ga), Some(gb)) => {
+                prop_assert_eq!(&ga.eligible_arms, &gb.eligible_arms);
+                prop_assert_eq!(ga.fallback_used, gb.fallback_used);
+            }
+            (None, None) => {}
+            _ => prop_assert!(false, "drift_guard presence mismatch"),
+        }
+
+        // CatKL guard eligibility must match.
+        match (&d_a.catkl_guard, &d_b.catkl_guard) {
+            (Some(ga), Some(gb)) => {
+                prop_assert_eq!(&ga.eligible_arms, &gb.eligible_arms);
+                prop_assert_eq!(ga.fallback_used, gb.fallback_used);
+            }
+            (None, None) => {}
+            _ => prop_assert!(false, "catkl_guard presence mismatch"),
+        }
+
+        // CUSUM guard eligibility must match.
+        match (&d_a.cusum_guard, &d_b.cusum_guard) {
+            (Some(ga), Some(gb)) => {
+                prop_assert_eq!(&ga.eligible_arms, &gb.eligible_arms);
+                prop_assert_eq!(ga.fallback_used, gb.fallback_used);
+            }
+            (None, None) => {}
+            _ => prop_assert!(false, "cusum_guard presence mismatch"),
+        }
+    }
 }

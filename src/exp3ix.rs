@@ -429,6 +429,15 @@ impl Exp3Ix {
         self.gamma = 0.5 * lr;
     }
 
+    /// Ensure internal state is aligned with `arms_in_order`.
+    ///
+    /// **Important**: if the arm set has changed (different names, different order, or different
+    /// length), all learned state is **silently reset** (cumulative losses zeroed, probabilities
+    /// reset to uniform). This is by design: EXP3-IX's per-arm loss estimates are indexed by
+    /// position, so a change in the arm vector invalidates them.
+    ///
+    /// If you need to add/remove arms without losing state, use [`snapshot`](Self::snapshot)
+    /// and [`restore`](Self::restore) to migrate explicitly.
     fn ensure_arms(&mut self, arms_in_order: &[String]) {
         if self.arms == arms_in_order {
             return;
@@ -506,19 +515,8 @@ impl Exp3Ix {
         }
     }
 
-    fn splitmix64(mut x: u64) -> u64 {
-        x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = x;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
     fn u01(seed: u64) -> f64 {
-        // Map a u64 to [0,1) with ~53 bits of mantissa precision.
-        let x = Self::splitmix64(seed);
-        let top = x >> 11; // 53 bits
-        (top as f64) / ((1u64 << 53) as f64)
+        crate::stable_hash::u01_from_seed(seed)
     }
 
     fn filtered_probs(&self, eligible_in_order: &[String]) -> BTreeMap<String, f64> {
@@ -811,6 +809,72 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_restore_round_trip() {
+        let cfg = Exp3IxConfig {
+            horizon: 200,
+            confidence_delta: None,
+            seed: 7,
+            decay: 0.98,
+        };
+        let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let mut ex = Exp3Ix::new(cfg);
+
+        // Train for a while.
+        for _ in 0..30 {
+            let chosen = ex.select(&arms).unwrap().clone();
+            let r = if chosen == "a" { 0.9 } else { 0.2 };
+            ex.update_reward(&chosen, r);
+        }
+
+        let snap = ex.snapshot();
+        assert_eq!(snap.arms.len(), 3);
+        assert_eq!(snap.uses.len(), 3);
+        assert_eq!(snap.cum_loss_hat.len(), 3);
+        assert_eq!(snap.probs.len(), 3);
+
+        // Restore into a fresh instance.
+        let mut ex2 = Exp3Ix::new(cfg);
+        ex2.restore(snap);
+
+        // Probabilities must match.
+        let p1 = ex.probabilities(&arms);
+        let p2 = ex2.probabilities(&arms);
+        for a in &arms {
+            assert!(
+                (p1[a] - p2[a]).abs() < 1e-12,
+                "prob mismatch for {a}: {} vs {}",
+                p1[a],
+                p2[a]
+            );
+        }
+
+        // Deterministic decision must match (same seed, same state).
+        let d1 = ex.decide_deterministic_filtered(&arms, &arms, 999);
+        let d2 = ex2.decide_deterministic_filtered(&arms, &arms, 999);
+        assert_eq!(
+            d1.as_ref().map(|d| &d.chosen),
+            d2.as_ref().map(|d| &d.chosen)
+        );
+    }
+
+    #[test]
+    fn snapshot_restore_handles_corrupted_state() {
+        let cfg = Exp3IxConfig::default();
+        let mut ex = Exp3Ix::new(cfg);
+
+        // Restore with mismatched lengths -> should reset.
+        let bad = Exp3IxState {
+            arms: vec!["a".to_string(), "b".to_string()],
+            uses: vec![1], // wrong length
+            cum_loss_hat: vec![0.0, 0.0],
+            probs: vec![0.5, 0.5],
+        };
+        ex.restore(bad);
+        // After restoring bad state, arms should be empty (reset).
+        assert!(ex.probabilities(&["x".to_string()]).contains_key("x"));
+    }
+
+    #[test]
     fn exp3ix_guardrailed_log_row_is_well_formed() {
         let cfg = Exp3IxConfig {
             horizon: 100,
@@ -908,6 +972,48 @@ mod tests {
         assert_eq!(logs[1].round, 2);
         assert!(logs[0].chosen.as_ref().is_some());
         assert!(logs[0].prob_used.unwrap_or(0.0).is_finite());
+    }
+
+    #[test]
+    fn ensure_arms_resets_state_on_arm_set_change() {
+        let cfg = Exp3IxConfig {
+            horizon: 200,
+            confidence_delta: None,
+            seed: 0,
+            decay: 1.0,
+        };
+        let arms_v1 = vec!["a".to_string(), "b".to_string()];
+        let arms_v2 = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+
+        let mut ex = Exp3Ix::new(cfg);
+
+        // Train on v1.
+        for _ in 0..20 {
+            let chosen = ex.select(&arms_v1).unwrap().clone();
+            ex.update_reward(&chosen, if chosen == "a" { 0.9 } else { 0.1 });
+        }
+
+        // After training, probabilities should be non-uniform.
+        let probs_before = ex.probabilities(&arms_v1);
+        let p_a_before = probs_before["a"];
+        assert!(
+            (p_a_before - 0.5).abs() > 0.01,
+            "probs should be non-uniform after training: {probs_before:?}"
+        );
+
+        // Change arm set: this must reset state.
+        let probs_after = ex.probabilities(&arms_v2);
+        let p_a_after = probs_after["a"];
+        let p_c_after = probs_after["c"];
+        let expected_uniform = 1.0 / 3.0;
+        assert!(
+            (p_a_after - expected_uniform).abs() < 1e-9,
+            "arm set change should reset to uniform: {probs_after:?}"
+        );
+        assert!(
+            (p_c_after - expected_uniform).abs() < 1e-9,
+            "new arm should start uniform: {probs_after:?}"
+        );
     }
 
     #[test]

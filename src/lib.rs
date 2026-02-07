@@ -2,7 +2,6 @@
 //!
 //! This crate is designed for “provider routing” style problems:
 //! you have a small set of arms (providers) and repeated calls that produce
-//! outcomes (ok/fail, rate limit, cost, latency, “junk”).
 //! outcomes (ok/fail, cost, latency, “junk”).
 //!
 //! Goals:
@@ -20,6 +19,141 @@
 //! Non-goals:
 //! - This is not a full bandit “platform” (no storage, OPE pipelines, dashboards, etc.).
 //! - The `contextual` feature is intentionally a small, pragmatic policy module, not a full framework.
+
+//!
+//! # The Three Objectives and the Objective Manifold
+//!
+//! Every routing decision simultaneously serves three purposes:
+//!
+//! 1. **Exploitation** (regret minimization): route to the best arm now.
+//! 2. **Estimation** (learning): understand how each arm performs across conditions.
+//! 3. **Detection/triage** (monitoring): notice when an arm breaks, then investigate.
+//!
+//! These map to the modules of this crate:
+//!
+//! - **Selection** (`select_mab`, `Exp3Ix`, `ThompsonSampling`): objectives 1+2.
+//! - **Monitoring** (`monitor`): objective 3 -- drift/catKL/CUSUM are the detection
+//!   surface of the design measure.
+//! - **Triage** (`worst_first`): active investigation after detection fires --
+//!   prioritize historically broken arms to characterize the change.
+//!
+//! ## The non-contextual collapse (static schedules)
+//!
+//! For **fixed (non-adaptive) allocation schedules** with K arms and Gaussian rewards,
+//! estimation error (MSE ~ 1/n) and **average** detection delay
+//! (D_avg ~ C*T / (n * delta^2)) are both monotone-decreasing in the suboptimal-arm
+//! pull count n, with proportional gradients everywhere:
+//!
+//! ```text
+//!   D_avg = (2 * C * sigma^2 * ln(1/alpha) / delta^2) * MSE
+//! ```
+//!
+//! This proportionality is structural, not approximate: both functionals care only
+//! about "how many observations at this cell", and their sensitivity functions are
+//! scalar multiples of each other.  The three-way Pareto surface collapses to a
+//! **one-dimensional curve** parameterized by n.  This yields the product identity
+//! `R_T * D_avg = C * Delta * T / delta^2` for the restricted class of uniform
+//! schedules.
+//!
+//! **Caveat: adaptive policies.** This clean proportionality holds exactly only for
+//! static (non-adaptive) schedules.  Adaptive policies (UCB, Thompson Sampling) break
+//! it in at least two ways: (1) they allocate the suboptimal arm in bursts during
+//! exploration phases rather than uniformly, worsening worst-case detection delay
+//! relative to uniform spacing without changing total n; and (2) data-dependent
+//! allocation introduces selection bias, so the effective sample size for estimation
+//! is no longer simply n.  For adaptive policies, the product identity becomes a
+//! **lower bound** (with constants that absorb regularity conditions), not an equality.
+//!
+//! Practically, `muxer` operates at small K (2-10 arms) and moderate T (hundreds to
+//! low thousands of windowed observations).  At these scales, the asymptotic
+//! impossibility results may not bind: all three objectives can often be simultaneously
+//! satisfied at acceptable levels.  The sliding-window design further blunts the
+//! static/adaptive distinction, since the effective horizon is the window size, not T.
+//!
+//! ## The contextual revival -- and its subtlety
+//!
+//! In the **contextual** regime (per-request feature vectors via `LinUcb`), the design
+//! measure gains spatial dimensions, but objectives do **not** automatically diverge.
+//! The mechanism controlling collapse vs. revival is **average-case vs. worst-case
+//! aggregation**, not "contextual vs. non-contextual" per se:
+//!
+//! - **Average detection delay** has sensitivity `s(x) ~ -1/p_a(x)^2`, which is
+//!   proportional to nonparametric IMSE sensitivity everywhere.  Average detection
+//!   is **structurally redundant with estimation** even in contextual settings.
+//!   Adding contexts does not break this proportionality.
+//!
+//! - **Worst-case detection delay** (`D_max = max_j D_j`) concentrates its sensitivity
+//!   on the **bottleneck cell** -- the (arm, covariate) pair with the fewest observations.
+//!   This is a point mass, linearly independent from both the regret sensitivity (a
+//!   ramp near decision boundaries) and the estimation sensitivity (D-optimal / extremal).
+//!   Worst-case detection is genuinely independent from regret and estimation.
+//!
+//! In the non-contextual case (one cell), average and worst-case are identical, so the
+//! distinction is moot.  In the contextual case (many cells), they diverge: average
+//! detection remains redundant with estimation, but worst-case detection introduces a
+//! genuinely new objective axis.
+//!
+//! Concretely, each objective wants a different sampling distribution:
+//!
+//! - **Regret-optimal**: concentrate near decision boundaries.
+//! - **Estimation-optimal**: spread to extremes (D-optimal experimental design).
+//! - **Detection-optimal (worst-case)**: ensure no cell is starved (space-filling).
+//!
+//! `LinUcb` exists to break the non-contextual collapse: it learns per-request routing
+//! without maintaining separate per-facet histories, at the cost of requiring explicit
+//! monitoring budget beyond what regret-optimal sampling provides.
+//!
+//! ## Saturation principle
+//!
+//! The number of genuinely independent objectives is bounded by the effective dimension
+//! of the design space:
+//!
+//! ```text
+//!   dim(Pareto front) <= min(m - 1, D_eff)
+//! ```
+//!
+//! where `m` is the number of named objectives and `D_eff` is the design dimension
+//! (K-1 for non-contextual, ~K*M for M covariate cells, infinite for continuous
+//! covariates).  Adding objectives beyond `D_eff + 1` cannot create new tradeoffs.
+//!
+//! The formal algebraic rank can overstate the practical number of tradeoffs.  The
+//! **effective Pareto dimension** is better measured by the singular value spectrum of
+//! the Jacobian of objectives with respect to design variables: a K=3, M=9 setup with
+//! 8 named objectives achieves formal rank 8 but effective dimension ~3-4 (the top 2
+//! singular values carry >99% of the Frobenius norm).  See `pare::sensitivity` for
+//! computational tools.
+//!
+//! ## Design measure perspective
+//!
+//! The fundamental object is not "which objectives matter" but the **design measure**:
+//! the joint distribution over (arm, covariate, time) that the policy induces.  Given
+//! the design measure, every objective is computable.
+//!
+//! Note: the design measure in an adaptive setting is a random object (it depends on
+//! the realized trajectory), not a fixed distribution.  Reasoning about it requires
+//! either working with the expected design measure (which loses adaptivity) or a
+//! conditional analysis that respects the filtration (which is harder and may break
+//! clean proportionality results).  See Hadad et al. 2021 for the observed vs.
+//! expected Fisher information distinction in adaptive experiments.
+//!
+//! ## Related multi-objective bandit frameworks
+//!
+//! The multi-objective routing problem has connections to several existing literatures
+//! that `muxer` does not attempt to fully implement but that inform its design:
+//!
+//! - **Constrained / safe bandits** handle multiple objectives via Lagrangian
+//!   relaxation (hard constraints on secondary objectives).  `muxer`'s `max_junk_rate`,
+//!   `max_drift`, etc. are BwK-style anytime constraints in this spirit.
+//! - **Pareto bandits** (Drugan & Nowe) aim to identify the Pareto front of arms
+//!   when each arm has a vector-valued reward.  `muxer`'s `pare`-based frontier
+//!   computation is the selection-time analogue.
+//! - **Information-Directed Sampling** (Russo & Van Roy) scalarizes the regret/information
+//!   tradeoff via the information ratio.  Extending this to three objectives (adding
+//!   detection power) is an open problem; the objective manifold framework suggests the
+//!   extension is non-trivial only in the contextual case with worst-case detection.
+//! - **Multi-objective RL** explores scalarization and Pareto-based approaches in the
+//!   sequential decision setting.  `muxer`'s deterministic scalarization (after Pareto
+//!   filtering) is a pragmatic instance of this.
 
 #![forbid(unsafe_code)]
 
@@ -1028,407 +1162,20 @@ pub fn select_mab_explain(
 ///
 /// Like `select_mab_explain`, this never returns an empty choice set: if drift filtering would
 /// eliminate all arms, it falls back to the unfiltered eligible set.
+///
+/// This is a convenience wrapper: it builds summaries from `monitored[*].recent_summary()` and
+/// delegates to [`select_mab_monitored_explain_with_summaries`].
 pub fn select_mab_monitored_explain(
     arms_in_order: &[String],
     monitored: &BTreeMap<String, MonitoredWindow>,
     drift_cfg: DriftConfig,
     cfg: MabConfig,
 ) -> MabSelectionDecision {
-    // Build summaries from recent windows.
     let summaries: BTreeMap<String, Summary> = monitored
         .iter()
         .map(|(k, w)| (k.clone(), w.recent_summary()))
         .collect();
-
-    // Apply base hard constraints first (same semantics as `select_mab_explain`).
-    let mut eligible: Vec<String> = Vec::new();
-    for a in arms_in_order {
-        let s = summaries.get(a).copied().unwrap_or_default();
-        let ok = cfg
-            .max_junk_rate
-            .map(|thr| s.junk_rate() <= thr)
-            .unwrap_or(true)
-            && cfg
-                .max_hard_junk_rate
-                .map(|thr| s.hard_junk_rate() <= thr)
-                .unwrap_or(true)
-            && cfg
-                .max_mean_cost_units
-                .map(|thr| s.mean_cost_units() <= thr)
-                .unwrap_or(true);
-        if ok {
-            eligible.push(a.clone());
-        }
-    }
-    let constraints_fallback_used = eligible.is_empty();
-    let eligible_arms: Vec<String> = if constraints_fallback_used {
-        arms_in_order.to_vec()
-    } else {
-        eligible.clone()
-    };
-    let arms_in_order: &[String] = if constraints_fallback_used {
-        arms_in_order
-    } else {
-        &eligible
-    };
-
-    // Explore first (stable order).
-    for a in arms_in_order {
-        if summaries.get(a).copied().unwrap_or_default().calls == 0 {
-            let sel = Selection {
-                chosen: a.clone(),
-                frontier: vec![a.clone()],
-                candidates: vec![CandidateDebug {
-                    name: a.clone(),
-                    calls: 0,
-                    ok: 0,
-                    junk: 0,
-                    hard_junk: 0,
-                    ok_rate: 0.0,
-                    junk_rate: 0.0,
-                    hard_junk_rate: 0.0,
-                    soft_junk_rate: 0.0,
-                    mean_cost_units: 0.0,
-                    mean_elapsed_ms: 0.0,
-                    ucb: 0.0,
-                    objective_success: 0.0,
-                    drift_score: None,
-                    catkl_score: None,
-                    cusum_score: None,
-                    ok_half_width: None,
-                    junk_half_width: None,
-                    hard_junk_half_width: None,
-                }],
-                config: cfg,
-            };
-            return MabSelectionDecision {
-                selection: sel,
-                eligible_arms,
-                constraints_fallback_used,
-                explore_first: true,
-                drift_guard: None,
-                catkl_guard: None,
-                cusum_guard: None,
-            };
-        }
-    }
-
-    // Apply drift guard (optional) over the constraint-eligible set.
-    let max_drift = cfg
-        .max_drift
-        .and_then(|x| (x.is_finite() && x >= 0.0).then_some(x));
-    let mut eligible_after_drift = arms_in_order.to_vec();
-    let mut drift_guard: Option<DriftGuardDecision> = None;
-    if let Some(thr) = max_drift {
-        let mut kept: Vec<String> = Vec::new();
-        for a in arms_in_order {
-            let Some(w) = monitored.get(a) else {
-                kept.push(a.clone());
-                continue;
-            };
-            let d = monitor::drift_between_windows(
-                w.baseline(),
-                w.recent(),
-                DriftConfig {
-                    metric: cfg.drift_metric,
-                    ..drift_cfg
-                },
-            );
-            let violates = d.as_ref().map(|x| x.score > thr).unwrap_or(false);
-            if !violates {
-                kept.push(a.clone());
-            }
-        }
-        let fallback_used = kept.is_empty();
-        let eligible_arms = if fallback_used {
-            arms_in_order.to_vec()
-        } else {
-            kept
-        };
-        drift_guard = Some(DriftGuardDecision {
-            eligible_arms: eligible_arms.clone(),
-            fallback_used,
-            metric: cfg.drift_metric,
-            max_drift: thr,
-        });
-        eligible_after_drift = eligible_arms;
-    }
-
-    // Apply categorical KL guard (optional) over the drift-eligible set.
-    let max_catkl = cfg
-        .max_catkl
-        .and_then(|x| (x.is_finite() && x >= 0.0).then_some(x));
-    let catkl_alpha = if cfg.catkl_alpha.is_finite() && cfg.catkl_alpha > 0.0 {
-        cfg.catkl_alpha
-    } else {
-        1e-3
-    };
-    let mut eligible_after_catkl = eligible_after_drift.clone();
-    let mut catkl_guard: Option<CatKlGuardDecision> = None;
-    if let Some(thr) = max_catkl {
-        let mut kept: Vec<String> = Vec::new();
-        for a in &eligible_after_drift {
-            let Some(w) = monitored.get(a) else {
-                kept.push(a.clone());
-                continue;
-            };
-            let s = monitor::catkl_score_between_windows(
-                w.baseline(),
-                w.recent(),
-                catkl_alpha,
-                drift_cfg.tol,
-                cfg.catkl_min_baseline,
-                cfg.catkl_min_recent,
-            );
-            let violates = s.map(|x| x > thr).unwrap_or(false);
-            if !violates {
-                kept.push(a.clone());
-            }
-        }
-        let fallback_used = kept.is_empty();
-        let eligible_arms = if fallback_used {
-            eligible_after_drift.clone()
-        } else {
-            kept
-        };
-        catkl_guard = Some(CatKlGuardDecision {
-            eligible_arms: eligible_arms.clone(),
-            fallback_used,
-            max_catkl: thr,
-            alpha: catkl_alpha,
-            min_baseline: cfg.catkl_min_baseline,
-            min_recent: cfg.catkl_min_recent,
-        });
-        eligible_after_catkl = eligible_arms;
-    }
-
-    // Apply categorical CUSUM guard (optional) over the catKL-eligible set.
-    let max_cusum = cfg
-        .max_cusum
-        .and_then(|x| (x.is_finite() && x >= 0.0).then_some(x));
-    let cusum_alpha = if cfg.cusum_alpha.is_finite() && cfg.cusum_alpha > 0.0 {
-        cfg.cusum_alpha
-    } else {
-        1e-3
-    };
-    let cusum_alt_p = cfg.cusum_alt_p.unwrap_or([0.05, 0.05, 0.45, 0.45]);
-    let mut eligible_after_cusum = eligible_after_catkl.clone();
-    let mut cusum_guard: Option<CusumGuardDecision> = None;
-    if let Some(thr) = max_cusum {
-        let mut kept: Vec<String> = Vec::new();
-        for a in &eligible_after_catkl {
-            let Some(w) = monitored.get(a) else {
-                kept.push(a.clone());
-                continue;
-            };
-            let s = monitor::cusum_score_between_windows(
-                w.baseline(),
-                w.recent(),
-                cusum_alpha,
-                drift_cfg.tol,
-                cfg.cusum_min_baseline,
-                cfg.cusum_min_recent,
-                Some(cusum_alt_p),
-            );
-            let violates = s.map(|x| x > thr).unwrap_or(false);
-            if !violates {
-                kept.push(a.clone());
-            }
-        }
-        let fallback_used = kept.is_empty();
-        let eligible_arms = if fallback_used {
-            eligible_after_catkl.clone()
-        } else {
-            kept
-        };
-        cusum_guard = Some(CusumGuardDecision {
-            eligible_arms: eligible_arms.clone(),
-            fallback_used,
-            max_cusum: thr,
-            alpha: cusum_alpha,
-            min_baseline: cfg.cusum_min_baseline,
-            min_recent: cfg.cusum_min_recent,
-            alt_p: cusum_alt_p,
-        });
-        eligible_after_cusum = eligible_arms;
-    }
-
-    // Only count calls for the arms actually being considered.
-    let total_calls: f64 = eligible_after_cusum
-        .iter()
-        .map(|a| summaries.get(a).copied().unwrap_or_default().calls as f64)
-        .sum::<f64>()
-        .max(1.0);
-
-    // Monitored Pareto frontier includes drift + catKL + CUSUM as extra objectives (minimize each).
-    let mut frontier_points: Vec<Vec<f64>> = Vec::new();
-    let mut frontier_names_in_order: Vec<String> = Vec::new();
-    let mut candidates: Vec<CandidateDebug> = Vec::new();
-
-    for a in &eligible_after_cusum {
-        let s = summaries.get(a).copied().unwrap_or_default();
-        let n = (s.calls as f64).max(1.0);
-
-        // Uncertainty-aware rates (Wilson).
-        let z = cfg.uncertainty.z;
-        let soft = s.junk.saturating_sub(s.hard_junk);
-        let (ok_rate_used, ok_half) =
-            monitor::apply_rate_bound(s.ok, s.calls, z, cfg.uncertainty.ok_mode);
-        let (hard_used, hard_half) =
-            monitor::apply_rate_bound(s.hard_junk, s.calls, z, cfg.uncertainty.hard_junk_mode);
-        let (soft_used, soft_half) =
-            monitor::apply_rate_bound(soft, s.calls, z, cfg.uncertainty.junk_mode);
-
-        let junk_total_used = (soft_used + hard_used).clamp(0.0, 1.0);
-
-        // Drift score (optional).
-        let drift_score = monitored.get(a).and_then(|w| {
-            monitor::drift_between_windows(
-                w.baseline(),
-                w.recent(),
-                DriftConfig {
-                    metric: cfg.drift_metric,
-                    ..drift_cfg
-                },
-            )
-            .map(|x| x.score)
-        });
-        let drift_used = drift_score.unwrap_or(0.0);
-
-        let catkl_score = monitored.get(a).and_then(|w| {
-            monitor::catkl_score_between_windows(
-                w.baseline(),
-                w.recent(),
-                catkl_alpha,
-                drift_cfg.tol,
-                cfg.catkl_min_baseline,
-                cfg.catkl_min_recent,
-            )
-        });
-        let catkl_used = catkl_score.unwrap_or(0.0);
-
-        let cusum_score = monitored.get(a).and_then(|w| {
-            monitor::cusum_score_between_windows(
-                w.baseline(),
-                w.recent(),
-                cusum_alpha,
-                drift_cfg.tol,
-                cfg.cusum_min_baseline,
-                cfg.cusum_min_recent,
-                Some(cusum_alt_p),
-            )
-        });
-        let cusum_used = cusum_score.unwrap_or(0.0);
-
-        let ucb = cfg.exploration_c * ((total_calls.ln() / n).sqrt());
-        let objective_success = ok_rate_used + ucb;
-
-        let mean_cost = s.mean_cost_units();
-        let mean_lat = s.mean_elapsed_ms();
-
-        candidates.push(CandidateDebug {
-            name: a.clone(),
-            calls: s.calls,
-            ok: s.ok,
-            junk: s.junk,
-            hard_junk: s.hard_junk,
-            ok_rate: ok_rate_used,
-            junk_rate: junk_total_used,
-            hard_junk_rate: hard_used,
-            soft_junk_rate: soft_used,
-            mean_cost_units: mean_cost,
-            mean_elapsed_ms: mean_lat,
-            ucb,
-            objective_success,
-            drift_score,
-            catkl_score,
-            cusum_score,
-            ok_half_width: Some(ok_half),
-            junk_half_width: Some(soft_half),
-            hard_junk_half_width: Some(hard_half),
-        });
-
-        frontier_points.push(vec![
-            objective_success,
-            -mean_cost,
-            -mean_lat,
-            -hard_used,
-            -soft_used,
-            -drift_used,
-            -catkl_used,
-            -cusum_used,
-        ]);
-        frontier_names_in_order.push(a.clone());
-    }
-
-    let mut frontier = ParetoFrontier::new(vec![Direction::Maximize; 8]);
-    for (i, vals) in frontier_points.iter().enumerate() {
-        frontier.push(vals.clone(), i);
-    }
-    let mut frontier_indices: Vec<usize> = if frontier.is_empty() {
-        (0..frontier_points.len()).collect()
-    } else {
-        frontier.points().iter().map(|p| p.data).collect()
-    };
-    frontier_indices.sort_unstable();
-
-    let frontier_names: Vec<String> = frontier_indices
-        .iter()
-        .filter_map(|&i| frontier_names_in_order.get(i).cloned())
-        .collect();
-
-    // Deterministic scalarization among frontier points (include drift + catKL + CUSUM penalties).
-    let weights: [f64; 8] = [
-        1.0,
-        cfg.cost_weight.max(0.0),
-        cfg.latency_weight.max(0.0),
-        cfg.hard_junk_weight.max(0.0),
-        cfg.junk_weight.max(0.0),
-        cfg.drift_weight.max(0.0),
-        cfg.catkl_weight.max(0.0),
-        cfg.cusum_weight.max(0.0),
-    ];
-    let mut best_name = frontier_names
-        .first()
-        .cloned()
-        .unwrap_or_else(|| eligible_after_drift.first().cloned().unwrap_or_default());
-    let mut best_score = f64::NEG_INFINITY;
-    for &idx in &frontier_indices {
-        let Some(c) = candidates.get(idx) else {
-            continue;
-        };
-        let drift = c.drift_score.unwrap_or(0.0);
-        let catkl = c.catkl_score.unwrap_or(0.0);
-        let cusum = c.cusum_score.unwrap_or(0.0);
-        let s = c.objective_success
-            - weights[1] * c.mean_cost_units
-            - weights[2] * c.mean_elapsed_ms
-            - weights[3] * c.hard_junk_rate
-            - weights[4] * c.soft_junk_rate
-            - weights[5] * drift
-            - weights[6] * catkl
-            - weights[7] * cusum;
-        if s > best_score || ((s - best_score).abs() <= 1e-12 && c.name < best_name) {
-            best_score = s;
-            best_name = c.name.clone();
-        }
-    }
-
-    let sel = Selection {
-        chosen: best_name,
-        frontier: frontier_names,
-        candidates,
-        config: cfg,
-    };
-    MabSelectionDecision {
-        selection: sel,
-        eligible_arms,
-        constraints_fallback_used,
-        explore_first: false,
-        drift_guard,
-        catkl_guard,
-        cusum_guard,
-    }
+    select_mab_monitored_explain_with_summaries(arms_in_order, &summaries, monitored, drift_cfg, cfg)
 }
 
 /// Like `select_mab_monitored_explain`, but uses caller-provided summaries for the base objectives

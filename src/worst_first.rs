@@ -1,4 +1,29 @@
-//! Worst-first selection helpers (for regression hunting / triage).
+//! Worst-first selection helpers (regression hunting / active triage).
+//!
+//! This is the **investigation phase** that follows detection (the `monitor` module).
+//! After monitoring flags a change in an arm's behavior, worst-first prioritizes that
+//! arm to characterize the change: what broke, by how much, and (in the contextual
+//! regime) where in the covariate space.
+//!
+//! The scoring is intentionally inverted from normal MAB selection: higher badness score
+//! = more interesting to investigate.  The UCB exploration term ensures under-sampled
+//! arms (including newly-flagged ones) get priority.
+//!
+//! ## The meta-inference problem
+//!
+//! The real open problem in post-detection investigation is not "how to switch modes"
+//! (normal -> investigation -> back) but **when a detected change invalidates the
+//! current objective weighting**.  A level shift in one arm might require only
+//! re-estimation; a structural change (the arm's response function changed shape)
+//! might require re-evaluating which objectives matter.  This is a meta-level
+//! inference problem -- deciding whether to continue optimizing the current objective
+//! tuple or revise it -- that existing bandit/RL theory does not address.
+//!
+//! For practical purposes, `muxer` implements the simpler version: after detection,
+//! route extra traffic to the flagged arm (via badness scoring + exploration bonus)
+//! until the monitoring signal decays or the arm is manually reset.  The mode
+//! transition is implicit (via the guard thresholds in `MabConfig`), not an explicit
+//! POMDP policy over objective states.
 
 use crate::stable_hash64;
 

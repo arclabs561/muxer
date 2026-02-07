@@ -1,7 +1,93 @@
-//! Monitoring primitives: drift (change detection-ish) + uncertainty summaries.
+//! Monitoring primitives: drift detection + uncertainty summaries.
 //!
-//! This module is policy-light: it provides numerical signals that selection policies can use
-//! as constraints or additional objectives.
+//! This module implements **Objective 3 (detection/triage)** of the routing framework.
+//! It provides numerical signals (drift scores, catKL, CUSUM) that selection policies
+//! can use as constraints or additional objectives.
+//!
+//! ## Relationship to the objective manifold
+//!
+//! For **static (non-adaptive) schedules**, **average** detection delay D_avg and
+//! estimation MSE are exactly proportional:
+//!
+//! ```text
+//!   D_avg = (2 * C * sigma^2 * ln(1/alpha) / delta^2) * MSE
+//! ```
+//!
+//! Both functionals have sensitivity `s(a,x) ~ -1/p_a(x)^2` with respect to the
+//! design measure -- they both care about "how many observations at this cell" and
+//! are indifferent to *which* cells those observations come from.  Their gradients
+//! are proportional everywhere, so they trace the same direction in design space.
+//! Detection monitoring "comes for free" with any exploration schedule that reduces
+//! estimation error.  The three named objectives span a rank-2 sensitivity space;
+//! the Pareto front is a one-dimensional curve.
+//!
+//! **This proportionality holds even in contextual settings** when detection is
+//! measured as an average over cells.  The collapse breaks only when detection is
+//! measured as a **worst-case** (minimax) over cells: worst-case delay concentrates
+//! sensitivity on the bottleneck (arm, cell) pair, producing a point-mass sensitivity
+//! function that is linearly independent from both regret and estimation sensitivity.
+//!
+//! The practical consequence for `muxer`: since monitoring is currently per-arm
+//! (not per-arm-per-cell), the detectors (catKL, CUSUM, drift) operate in the
+//! average-case regime and are structurally coupled with estimation quality.
+//! To get genuinely independent monitoring in the contextual regime, one would need
+//! per-cell monitoring that flags the weakest link, not just aggregate per-arm scores.
+//!
+//! **For adaptive policies** (which `muxer`'s selection functions produce), the clean
+//! proportionality is approximate, not exact.  Adaptive policies allocate the
+//! suboptimal arm in bursts (exploration phases) rather than uniformly; this temporal
+//! clustering worsens worst-case detection delay without changing total n.  The
+//! practical consequence: `muxer`'s CUSUM and catKL detectors are sensitive to
+//! observation ordering, not just counts.  This is why `MonitoredWindow` maintains
+//! a time-ordered sequence (not just aggregate counts) and why `CusumCatDetector`
+//! processes observations sequentially rather than from summary statistics.
+//!
+//! ## CUSUM detection delay and sensitivity
+//!
+//! For a CUSUM monitoring arm `a` at covariate cell `j` with allocation probability
+//! `p_a(x_j)`, the expected detection delay for a level shift of magnitude `delta`
+//! with false alarm rate `alpha` is:
+//!
+//! ```text
+//!   D_{a,j} ~ ln(1/alpha) / ((T/M) * p_a(x_j) * delta^2 / (2*sigma^2))
+//! ```
+//!
+//! The sensitivity with respect to the design variable `p_a(x_j)` is:
+//!
+//! ```text
+//!   s_D(a,j) = -ln(1/alpha) / ((T/M) * p_a(x_j)^2 * delta^2 / (2*sigma^2))
+//! ```
+//!
+//! - **Average delay** `D_avg = (1/KM) * sum D_{a,j}`: sensitivity `~ 1/p^2`
+//!   everywhere, proportional to nonparametric IMSE.  Redundant with estimation.
+//! - **Worst-case delay** `D_max = max D_{a,j}`: sensitivity is a point mass at the
+//!   binding constraint `(a*, j*) = argmax D_{a,j}`.  Independent from estimation.
+//!
+//! This is the precise mechanism controlling the collapse-vs-revival transition.
+//!
+//! ## Connection to profile monitoring / SPC
+//!
+//! Detecting that an arm's response function f_a has changed shape (not just level)
+//! is essentially the **profile monitoring** problem from statistical process control.
+//! SPC practitioners have long understood that Phase I (model estimation) and Phase II
+//! (monitoring) are coupled: poor Phase I estimation inflates Phase II false alarm
+//! rates.  The `muxer` monitoring primitives (catKL, CUSUM) implement Phase II;
+//! the quality of Phase I depends on the exploration budget the selection policy
+//! allocates.  This coupling is what the objective manifold framework formalizes.
+//!
+//! In the **contextual** regime, detection requires sampling where the regret-optimal
+//! policy does not go (uniformly across covariate space, rather than near decision
+//! boundaries).  Monitoring has a real cost that the routing policy must explicitly
+//! budget for.
+//!
+//! ## Post-detection investigation
+//!
+//! The `worst_first` module is the **triage/investigation** complement to detection:
+//! after this module flags a change (high drift score), worst-first prioritizes the
+//! flagged arm to characterize the change.  The real open problem is not "how to
+//! switch modes" but **when a detected change invalidates the current objective
+//! weighting** -- a meta-level inference problem about whether the system's goals
+//! need to shift (e.g., from exploitation to characterization).
 
 use crate::{Outcome, Summary, Window};
 
@@ -728,6 +814,31 @@ fn default_cusum_alt_p() -> [f64; 4] {
 /// - `p0`: baseline empirical distribution (with optional smoothing)
 /// - `p1`: alternative distribution (fixed, with optional smoothing)
 ///
+/// ## Detection sensitivity (concrete)
+///
+/// For this categorical CUSUM, the expected detection delay given a shift from
+/// p0 to the true post-change distribution q is approximately:
+///
+/// ```text
+/// E[delay] ~ threshold / KL(q || p0)
+/// ```
+///
+/// where threshold is the alarm boundary (here: infinity, so we report the score
+/// rather than alarming) and KL is the per-observation log-likelihood ratio.
+///
+/// The sensitivity function (how detection delay changes with sampling at a
+/// context point x in the contextual regime) is:
+///
+/// ```text
+/// s_detection(a, x) = -1 / (n_recent(a, x) * KL(q_a(x) || p0_a(x)))
+/// ```
+///
+/// This is generically different from `s_regret(a, x) = gap_a(x)` and
+/// `s_estimation(a, x) = -leverage_a(x)`, because KL depends on the distribution
+/// shape rather than the mean.  In the non-contextual case, `n_recent(a, x) = n_a`
+/// for all x, so `s_detection` is proportional to `s_estimation` (both ~ 1/n_a).
+/// In the contextual case, they diverge.
+///
 /// Returns `None` if either side is under-sampled.
 pub fn cusum_score_between_windows(
     baseline: &Window,
@@ -1385,5 +1496,207 @@ mod tests {
             }
         }
         assert!(alarmed, "expected alarm");
+    }
+
+    // ========================================================================
+    // CUSUM detection delay / sensitivity formula verification
+    //
+    // These tests connect muxer's CusumCatDetector to the theoretical detection
+    // delay formulas from the objective manifold research program.
+    //
+    // Background: Page's CUSUM (1954) maintains a running sum
+    //   S_t = max(0, S_{t-1} + log(p1(X_t) / p0(X_t)))
+    // and alarms when S_t >= threshold h.
+    //
+    // Under the alternative (all observations from p1), the expected per-step
+    // increment is KL(p1 || p0) > 0, so the expected number of samples to
+    // alarm is approximately h / KL(p1 || p0).  This is Lorden's (1971) bound.
+    //
+    // When observations arrive at rate r (fraction of time steps where the arm
+    // is sampled), the wall-clock delay is:
+    //   E[wall_delay] ~ E[sample_delay] / r = h / (r * KL(p1 || p0))
+    //
+    // For a deterministic observation sequence (always the same category),
+    // the per-step LLR is fixed at log(p1[cat] / p0[cat]), and the delay
+    // is exactly ceil(h / per_step_llr).
+    // ========================================================================
+
+    /// Verify E[delay_samples] ~ h / per_step_llr for a deterministic post-change
+    /// observation stream.
+    ///
+    /// We feed the CUSUM the category with the highest likelihood ratio (p1 >> p0),
+    /// so each observation contributes a large positive LLR increment.  The CUSUM
+    /// should alarm after approximately h / llr observations.
+    ///
+    /// The tolerance is intentionally wide (0.5x-2.5x) because the CusumCatDetector
+    /// constructor applies Dirichlet smoothing (alpha=1e-6), which slightly shifts
+    /// the effective p0/p1 from the nominal values.
+    #[test]
+    fn cusum_detection_delay_matches_formula() {
+        let p0 = [0.90, 0.03, 0.02, 0.05];
+        let p1 = [0.05, 0.05, 0.45, 0.45];
+        let alpha = 1e-6;
+        let tol = 1e-12;
+
+        // Category 2 has the largest positive LLR:
+        //   ln(p1[2]/p0[2]) = ln(0.45/0.02) = ln(22.5) ~ 3.11
+        // Categories 0 and 1 have negative LLR (p1 < p0 for those).
+        let best_cat = 2;
+
+        for &h in &[2.0, 5.0, 10.0] {
+            let mut d = CusumCatDetector::new(&p0, &p1, alpha, 1, h, tol).unwrap();
+
+            let per_step_llr = (p1[best_cat] / p0[best_cat]).ln();
+            assert!(per_step_llr > 0.0);
+
+            let predicted_delay = (h / per_step_llr).ceil() as u64;
+
+            let mut actual_delay = 0u64;
+            for step in 0..10_000u64 {
+                if d.update(best_cat).is_some() {
+                    actual_delay = step + 1;
+                    break;
+                }
+            }
+
+            assert!(actual_delay > 0, "CUSUM should eventually alarm at h={h}");
+            let ratio = actual_delay as f64 / predicted_delay as f64;
+            assert!(
+                (0.5..2.5).contains(&ratio),
+                "h={h}: actual={actual_delay}, predicted={predicted_delay}, ratio={ratio:.3}"
+            );
+        }
+    }
+
+    /// CUSUM score is monotone non-decreasing when fed only positive-LLR observations.
+    ///
+    /// This is a basic sanity check: if every observation has p1[cat] > p0[cat],
+    /// then the log-likelihood ratio is always positive, and the CUSUM sum
+    /// S_t = max(0, S_{t-1} + llr) is strictly increasing (since S_{t-1} >= 0
+    /// and llr > 0).
+    #[test]
+    fn cusum_score_monotone_under_positive_llr() {
+        let p0 = [0.90, 0.03, 0.02, 0.05];
+        let p1 = [0.05, 0.05, 0.45, 0.45];
+        let alpha = 1e-6;
+        let tol = 1e-12;
+
+        // Use "never alarm" threshold so we can observe the full score trajectory.
+        let mut d = CusumCatDetector::new(&p0, &p1, alpha, 1, f64::INFINITY, tol).unwrap();
+
+        let best_cat = 2; // positive LLR
+        let mut prev_score = 0.0;
+        for _ in 0..100 {
+            let _ = d.update(best_cat);
+            let s = d.score();
+            assert!(s >= prev_score - 1e-12, "score decreased: {prev_score} -> {s}");
+            prev_score = s;
+        }
+        assert!(prev_score > 0.0, "score should be positive after 100 positive-LLR obs");
+    }
+
+    /// Wall-clock delay scales inversely with sampling rate.
+    ///
+    /// If the CUSUM needs N post-change samples to alarm, and arm observations
+    /// arrive at rate r (fraction of wall-clock steps), then:
+    ///   wall_delay = N / r
+    ///
+    /// Doubling the sampling rate halves the wall delay (for fixed sample delay).
+    /// This is the "two clocks" concept from EXPERIMENTS.md: wall time vs sample time.
+    #[test]
+    fn cusum_delay_scales_inversely_with_sampling_rate() {
+        let p0 = [0.90, 0.03, 0.02, 0.05];
+        let p1 = [0.30, 0.10, 0.30, 0.30];
+        let h = 5.0;
+        let alpha = 1e-6;
+        let tol = 1e-12;
+
+        let mut d = CusumCatDetector::new(&p0, &p1, alpha, 1, h, tol).unwrap();
+        let mut sample_delay = 0u64;
+        let best_cat = 2; // p1[2]/p0[2] = 0.30/0.02 = 15 (highest ratio)
+        for step in 0..10_000 {
+            if d.update(best_cat).is_some() {
+                sample_delay = step + 1;
+                break;
+            }
+        }
+        assert!(sample_delay > 0, "should alarm");
+
+        // Two sampling rates: fast (50%) and slow (5%).
+        let rate_fast = 0.5;
+        let rate_slow = 0.05;
+        let wall_fast = sample_delay as f64 / rate_fast;
+        let wall_slow = sample_delay as f64 / rate_slow;
+
+        assert!(wall_fast < wall_slow);
+        // Ratio of wall delays should equal ratio of rates (inverted).
+        let ratio = wall_slow / wall_fast;
+        assert!(
+            (ratio - (rate_fast / rate_slow)).abs() < 1e-9,
+            "wall delay ratio = {ratio}, expected {}", rate_fast / rate_slow
+        );
+    }
+
+    // ========================================================================
+    // Product bound and proportionality tests (analytical)
+    //
+    // These verify the core identities from the objective manifold framework
+    // using closed-form formulas (no simulation, no approximation).
+    // ========================================================================
+
+    /// R_T * D_avg = 2*b*Delta*T / delta^2 for all n_2.
+    ///
+    /// This is Theorem 1 from the research program.  The product depends only on
+    /// the problem parameters (gap Delta, change magnitude delta, threshold b,
+    /// horizon T), not on the allocation n_2.  This means the regret-detection
+    /// tradeoff is a hyperbola: you slide along it by changing n_2, but you
+    /// cannot escape it.
+    #[test]
+    fn product_bound_regret_times_delay_is_constant() {
+        let delta = 0.5_f64;
+        let delta_det = 0.3_f64;
+        let t = 1000.0_f64;
+        let b = 1.0_f64;
+
+        let expected = 2.0 * b * delta * t / (delta_det * delta_det);
+
+        for n2 in [5, 10, 50, 100, 250, 500, 800] {
+            let n2f = n2 as f64;
+            let r = delta * n2f;
+            let d = 2.0 * b * t / (delta_det * delta_det * n2f);
+            let product = r * d;
+            let err = ((product - expected) / expected).abs();
+            assert!(err < 1e-12, "n2={n2}: product={product}, expected={expected}");
+        }
+    }
+
+    /// D_avg / MSE = constant (independent of n).
+    ///
+    /// Both D_avg and MSE are O(1/n), so their ratio is a constant that depends
+    /// on the change parameters, the false alarm constraint, and the horizon:
+    ///
+    ///   D_avg / MSE = 2 * ln(1/alpha) * T / delta^2
+    ///                 (when sigma^2 = 1)
+    ///
+    /// This is the proportionality that makes average detection structurally
+    /// redundant with estimation in the non-contextual case.
+    #[test]
+    fn detection_mse_ratio_is_constant() {
+        let sigma2 = 1.0_f64;
+        let alpha = 0.05_f64;
+        let delta = 0.3_f64;
+        let t = 500.0_f64;
+
+        let c = 2.0 * sigma2 * (1.0 / alpha).ln() / (delta * delta);
+
+        for n in [10, 30, 60, 120, 300] {
+            let n = n as f64;
+            let mse = sigma2 / n;
+            let delay = c * t / n;
+            let ratio = delay / mse;
+            let expected = c * t / sigma2;
+            let err = ((ratio - expected) / expected).abs();
+            assert!(err < 1e-12, "n={n}: ratio={ratio}, expected={expected}");
+        }
     }
 }

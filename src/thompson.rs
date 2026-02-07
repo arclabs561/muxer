@@ -324,6 +324,84 @@ impl ThompsonSampling {
     }
 }
 
+/// Serializable Thompson-sampling state snapshot (for persistence across process restarts).
+///
+/// Mirrors `Exp3IxState` and `LinUcbState` in design: intentionally excludes RNG state
+/// (callers manage seeds externally) and stores only the sufficient statistics needed to
+/// resume learning.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ThompsonState {
+    /// Per-arm Beta posterior parameters.
+    pub arms: BTreeMap<String, BetaStats>,
+}
+
+impl ThompsonSampling {
+    /// Capture a persistence snapshot of the current Thompson-sampling state.
+    ///
+    /// This includes per-arm Beta parameters (alpha, beta, uses) so that a caller
+    /// can serialize, store, and later restore the policy state across process restarts.
+    /// RNG state is excluded; callers manage seeds externally.
+    pub fn snapshot(&self) -> ThompsonState {
+        ThompsonState {
+            arms: self.stats.clone(),
+        }
+    }
+
+    /// Restore a previously snapshotted Thompson-sampling state.
+    ///
+    /// Arms not present in the snapshot are initialized fresh on next use.
+    /// Arms in the snapshot with non-finite or non-positive parameters are skipped.
+    pub fn restore(&mut self, st: ThompsonState) {
+        for (name, bs) in st.arms {
+            if bs.alpha.is_finite() && bs.alpha > 0.0 && bs.beta.is_finite() && bs.beta > 0.0 {
+                self.stats.insert(name, bs);
+            }
+        }
+    }
+}
+
+/// Persistence-aware Thompson-sampling decision helper.
+///
+/// Mirrors `exp3ix_decide_persisted`: restores state (if present), makes a decision,
+/// and returns the updated persistence snapshot.
+///
+/// The `decision_seed` controls the RNG for the current decision (via `with_seed`).
+#[cfg(feature = "stochastic")]
+pub fn thompson_decide_persisted(
+    cfg: ThompsonConfig,
+    state: Option<ThompsonState>,
+    arms_in_order: &[String],
+    temperature: f64,
+    decision_seed: u64,
+) -> Option<(crate::Decision, ThompsonState)> {
+    let mut ts = ThompsonSampling::with_seed(cfg, decision_seed);
+    if let Some(st) = state {
+        ts.restore(st);
+    }
+    let d = ts.decide_softmax_mean(arms_in_order, temperature)?;
+    let st = ts.snapshot();
+    Some((d, st))
+}
+
+/// Persistence-aware Thompson-sampling update helper.
+///
+/// Mirrors `exp3ix_update_persisted`: restores state, applies a reward update,
+/// and returns the updated snapshot.
+#[cfg(feature = "stochastic")]
+pub fn thompson_update_persisted(
+    cfg: ThompsonConfig,
+    state: ThompsonState,
+    chosen: &str,
+    reward01: f64,
+    update_seed: u64,
+) -> ThompsonState {
+    let mut ts = ThompsonSampling::with_seed(cfg, update_seed);
+    ts.restore(state);
+    ts.update_reward(chosen, reward01);
+    ts.snapshot()
+}
+
 impl Default for ThompsonSampling {
     fn default() -> Self {
         Self::new(ThompsonConfig::default())
@@ -344,6 +422,83 @@ mod tests {
         assert_eq!(ts.select(&arms).unwrap(), "b");
         ts.update_reward("b", 1.0);
         assert_eq!(ts.select(&arms).unwrap(), "c");
+    }
+
+    #[test]
+    fn snapshot_restore_round_trip() {
+        let cfg = ThompsonConfig {
+            decay: 0.98,
+            ..ThompsonConfig::default()
+        };
+        let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let mut ts = ThompsonSampling::with_seed(cfg.clone(), 42);
+
+        // Train for a while.
+        for _ in 0..30 {
+            let chosen = ts.select(&arms).unwrap().clone();
+            let r = if chosen == "a" { 0.9 } else { 0.2 };
+            ts.update_reward(&chosen, r);
+        }
+
+        let snap = ts.snapshot();
+        assert_eq!(snap.arms.len(), 3);
+
+        // Restore into a fresh instance (same seed for RNG consistency).
+        let mut ts2 = ThompsonSampling::with_seed(cfg, 42);
+        ts2.restore(snap);
+
+        // Beta stats must match.
+        for a in &arms {
+            let s1 = ts.stats().get(a).unwrap();
+            let s2 = ts2.stats().get(a).unwrap();
+            assert!(
+                (s1.alpha - s2.alpha).abs() < 1e-12,
+                "alpha mismatch for {a}"
+            );
+            assert!((s1.beta - s2.beta).abs() < 1e-12, "beta mismatch for {a}");
+            assert_eq!(s1.uses, s2.uses);
+        }
+
+        // Mean-softmax allocation must match.
+        let p1 = ts.allocation_mean_softmax(&arms, 0.3);
+        let p2 = ts2.allocation_mean_softmax(&arms, 0.3);
+        for a in &arms {
+            assert!(
+                (p1[a] - p2[a]).abs() < 1e-12,
+                "allocation mismatch for {a}"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_restore_skips_corrupted_arms() {
+        let cfg = ThompsonConfig::default();
+        let mut ts = ThompsonSampling::with_seed(cfg, 0);
+
+        // Restore with one bad arm (negative alpha).
+        let mut bad_state = ThompsonState {
+            arms: BTreeMap::new(),
+        };
+        bad_state.arms.insert(
+            "good".to_string(),
+            BetaStats {
+                alpha: 5.0,
+                beta: 3.0,
+                uses: 8,
+            },
+        );
+        bad_state.arms.insert(
+            "bad".to_string(),
+            BetaStats {
+                alpha: -1.0,
+                beta: 3.0,
+                uses: 4,
+            },
+        );
+        ts.restore(bad_state);
+
+        assert!(ts.stats().contains_key("good"));
+        assert!(!ts.stats().contains_key("bad"));
     }
 
     #[test]

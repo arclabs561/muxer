@@ -153,12 +153,10 @@ impl StickyMab {
         out
     }
 
-    /// Apply stickiness to a base `Selection`.
-    pub fn apply(&mut self, mut sel: Selection) -> ExplainedSelection {
+    /// Shared stickiness logic: given a selection, explore_first flag, apply dwell + margin gates.
+    fn apply_inner(&mut self, mut sel: Selection, explore_first: bool) -> ExplainedSelection {
         let mut reasons: Vec<DecisionReason> = Vec::new();
 
-        // Back-compat heuristic for explore-first (prefer `apply_mab` when possible).
-        let explore_first = sel.candidates.len() == 1 && sel.candidates[0].calls == 0;
         if explore_first {
             let chosen = sel.chosen.clone();
             self.previous = Some(chosen.clone());
@@ -181,7 +179,7 @@ impl StickyMab {
             };
         };
 
-        // If previous is not even among the considered candidates, we must follow base choice.
+        // If previous is not among the considered candidates, follow the base choice.
         let scores = Self::scores_by_arm(&sel);
         let Some(prev_score) = scores.get(prev.as_str()).copied() else {
             self.previous = Some(candidate.clone());
@@ -259,108 +257,22 @@ impl StickyMab {
         }
     }
 
+    /// Apply stickiness to a base `Selection`.
+    ///
+    /// Uses a heuristic for explore-first detection: `candidates.len() == 1 && calls == 0`.
+    /// Prefer [`apply_mab`](Self::apply_mab) when `MabSelectionDecision` is available, since
+    /// it uses the explicit `explore_first` flag.
+    pub fn apply(&mut self, sel: Selection) -> ExplainedSelection {
+        let explore_first = sel.candidates.len() == 1 && sel.candidates[0].calls == 0;
+        self.apply_inner(sel, explore_first)
+    }
+
     /// Apply stickiness using `select_mab_explain` output (recommended).
     ///
     /// This avoids heuristics for detecting explore-first and also provides callers access
     /// to constraint-fallback metadata via `decision.constraints_fallback_used`.
     pub fn apply_mab(&mut self, decision: MabSelectionDecision) -> ExplainedSelection {
-        let mut sel = decision.selection;
-        let mut reasons: Vec<DecisionReason> = Vec::new();
-
-        if decision.explore_first {
-            let chosen = sel.chosen.clone();
-            self.previous = Some(chosen.clone());
-            self.dwell = 1;
-            reasons.push(DecisionReason::ExploreFirst { chosen });
-            return ExplainedSelection {
-                selection: sel,
-                reasons,
-            };
-        }
-
-        // Reuse the legacy logic for all other cases.
-        let candidate = sel.chosen.clone();
-        let Some(prev) = self.previous.clone() else {
-            self.previous = Some(candidate.clone());
-            self.dwell = 1;
-            reasons.push(DecisionReason::BaseChoice { chosen: candidate });
-            return ExplainedSelection {
-                selection: sel,
-                reasons,
-            };
-        };
-
-        let scores = Self::scores_by_arm(&sel);
-        let Some(prev_score) = scores.get(prev.as_str()).copied() else {
-            self.previous = Some(candidate.clone());
-            self.dwell = 1;
-            reasons.push(DecisionReason::BaseChoice { chosen: candidate });
-            return ExplainedSelection {
-                selection: sel,
-                reasons,
-            };
-        };
-
-        if candidate == prev {
-            self.dwell = self.dwell.saturating_add(1);
-            reasons.push(DecisionReason::BaseChoice { chosen: candidate });
-            return ExplainedSelection {
-                selection: sel,
-                reasons,
-            };
-        }
-
-        if self.cfg.min_dwell > 0 && self.dwell < self.cfg.min_dwell {
-            reasons.push(DecisionReason::KeptPreviousDwell {
-                previous: prev.clone(),
-                candidate: candidate.clone(),
-                dwell: self.dwell,
-                min_dwell: self.cfg.min_dwell,
-            });
-            sel.chosen = prev.clone();
-            self.dwell = self.dwell.saturating_add(1);
-            return ExplainedSelection {
-                selection: sel,
-                reasons,
-            };
-        }
-
-        let cand_score = scores
-            .get(candidate.as_str())
-            .copied()
-            .unwrap_or(f64::NEG_INFINITY);
-        let margin = cand_score - prev_score;
-        let min_margin = f64_or0(self.cfg.min_switch_margin);
-        if min_margin > 0.0 && !(margin.is_finite() && margin >= min_margin) {
-            reasons.push(DecisionReason::KeptPreviousMargin {
-                previous: prev.clone(),
-                candidate: candidate.clone(),
-                previous_score: prev_score,
-                candidate_score: cand_score,
-                margin,
-                min_margin,
-            });
-            sel.chosen = prev.clone();
-            self.dwell = self.dwell.saturating_add(1);
-            return ExplainedSelection {
-                selection: sel,
-                reasons,
-            };
-        }
-
-        reasons.push(DecisionReason::Switched {
-            previous: prev.clone(),
-            candidate: candidate.clone(),
-            previous_score: prev_score,
-            candidate_score: cand_score,
-            margin,
-        });
-        self.previous = Some(candidate.clone());
-        self.dwell = 1;
-        ExplainedSelection {
-            selection: sel,
-            reasons,
-        }
+        self.apply_inner(decision.selection, decision.explore_first)
     }
 
     /// Apply stickiness and return a unified `Decision` (recommended for logging/replay).

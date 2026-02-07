@@ -411,7 +411,7 @@ fn main() {
             if xs.is_empty() {
                 return (0.0, None);
             }
-            let mut ds: Vec<u64> = xs.iter().filter_map(|t| f(t)).collect();
+            let mut ds: Vec<u64> = xs.iter().filter_map(f).collect();
             let rate = (ds.len() as f64) / (xs.len() as f64);
             ds.sort_unstable();
             let p90 = quantile_sorted(&ds, 0.90);

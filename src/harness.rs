@@ -3,9 +3,37 @@
 //! These helpers are intentionally lightweight and dependency-free; they exist so that
 //! external harnesses and CLIs can share *exact* deterministic selection semantics without
 //! re-implementing “glue” logic (novelty → guardrail → pick-rest).
+//!
+//! ## Pipeline ordering
+//!
+//! The policy pipeline has two valid orderings, controlled by [`PipelineOrder`]:
+//!
+//! - **`NoveltyFirst`** (default): novelty/coverage pre-picks run *before* the guardrail,
+//!   so unseen arms can bypass `require_measured`.  The guardrail applies only to the
+//!   remaining arms after pre-picks.  Fallback-on-empty uses the unguarded set.
+//!
+//! - **`GuardrailFirst`**: the guardrail applies as a hard constraint *before*
+//!   novelty/coverage, so `require_measured` blocks all unmeasured arms including unseen
+//!   ones.  No fallback: if the guardrail empties the set, `stop_early=true`.
 
 use crate::{coverage_pick_under_sampled, CoverageConfig};
 use crate::{novelty_pick_unseen, stable_hash64, LatencyGuardrailConfig};
+
+/// Pipeline ordering: whether novelty/coverage pre-picks run before or after the guardrail.
+///
+/// - **`NoveltyFirst`** (default): novelty/coverage pre-picks run *before* the guardrail.
+/// - **`GuardrailFirst`**: the guardrail applies as a hard constraint *before* novelty/coverage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum PipelineOrder {
+    /// Novelty/coverage pre-picks run first; guardrail applies to the remainder.
+    /// Unseen arms can bypass `require_measured` if novelty fills all k.
+    #[default]
+    NoveltyFirst,
+    /// Guardrail applies first as a hard constraint (no fallback); novelty/coverage
+    /// run only within the guarded set.
+    GuardrailFirst,
+}
 
 /// Re-export `LatencyGuardrailConfig` under the harness-friendly name used by some routers.
 pub type LatencyGuardrail = LatencyGuardrailConfig;
@@ -163,65 +191,93 @@ where
     })
 }
 
-/// Compute the policy plan: novelty pre-picks + observed latency guardrail.
+/// Generic policy plan: compute pre-picks (novelty + optional coverage) and guardrail
+/// filtering, with ordering controlled by `order`.
 ///
-/// Important semantics:
-/// - Novelty picks are computed **before** the guardrail filter (so they can include unmeasured arms
-///   even when `require_measured=true`, if novelty fills all \(k\)).
-/// - If you want the guardrail to apply as a **hard constraint** to novelty/coverage picks, use the
-///   `*_guardrail_first_*` helpers below.
-pub fn policy_plan_observed<F>(
-    seed: u64,
-    arms: &[String],
-    k: usize,
-    novelty_enabled: bool,
-    guard: LatencyGuardrail,
-    mut observed: F,
-) -> PolicyPlan
-where
-    F: FnMut(&str) -> (u64, u64),
-{
-    let prechosen = novelty_pick_unseen(seed, arms, k, novelty_enabled, |b| observed(b).0);
-
-    let remaining: Vec<String> = arms
-        .iter()
-        .filter(|b| !prechosen.contains(*b))
-        .cloned()
-        .collect();
-
-    let (eligible, stop_early) =
-        guardrail_filter_observed_elapsed(seed ^ 0x504C_414E, &remaining, guard, observed); // "PLAN"
-
-    PolicyPlan {
-        prechosen,
-        eligible,
-        stop_early,
-    }
-}
-
-/// Like `policy_plan_observed`, but also adds a deterministic “coverage” pre-pick stage
-/// to enforce minimum sampling quotas (useful for monitoring/change detection).
-///
-/// Order: novelty (unseen) first, then coverage (under-sampled), then guardrail.
-///
-/// Important semantics:
-/// - Novelty/coverage picks are computed **before** the guardrail filter (so they can include
-///   unmeasured arms even when `require_measured=true`, if they fill all \(k\)).
-/// - If you want guardrails to be **hard constraints** on novelty/coverage picks, use the
-///   `*_guardrail_first_*` helpers below.
-pub fn policy_plan_observed_with_coverage<F>(
+/// This is the canonical implementation that all `policy_plan_observed*` functions delegate to.
+#[allow(clippy::too_many_arguments)]
+pub fn policy_plan_generic<F>(
     seed: u64,
     arms: &[String],
     k: usize,
     novelty_enabled: bool,
     coverage: CoverageConfig,
     guard: LatencyGuardrail,
+    order: PipelineOrder,
     mut observed: F,
 ) -> PolicyPlan
 where
     F: FnMut(&str) -> (u64, u64),
 {
+    match order {
+        PipelineOrder::GuardrailFirst => {
+            let (guarded, stop_early) = guardrail_filter_observed_strict_elapsed(
+                seed ^ 0x504C_414E,
+                arms,
+                guard,
+                &mut observed,
+            );
+            if stop_early || guarded.is_empty() {
+                return PolicyPlan {
+                    prechosen: Vec::new(),
+                    eligible: Vec::new(),
+                    stop_early: true,
+                };
+            }
+            let prechosen =
+                prepick_novelty_coverage(seed, &guarded, k, novelty_enabled, coverage, &mut observed);
+            let eligible: Vec<String> = guarded
+                .iter()
+                .filter(|b| !prechosen.contains(*b))
+                .cloned()
+                .collect();
+            PolicyPlan {
+                prechosen,
+                eligible,
+                stop_early: false,
+            }
+        }
+        PipelineOrder::NoveltyFirst => {
+            let prechosen =
+                prepick_novelty_coverage(seed, arms, k, novelty_enabled, coverage, &mut observed);
+            let remaining: Vec<String> = arms
+                .iter()
+                .filter(|b| !prechosen.contains(*b))
+                .cloned()
+                .collect();
+            let (eligible, stop_early) = guardrail_filter_observed_elapsed(
+                seed ^ 0x504C_414E,
+                &remaining,
+                guard,
+                observed,
+            );
+            PolicyPlan {
+                prechosen,
+                eligible,
+                stop_early,
+            }
+        }
+    }
+}
+
+/// Shared novelty + coverage pre-pick logic.
+fn prepick_novelty_coverage<F>(
+    seed: u64,
+    arms: &[String],
+    k: usize,
+    novelty_enabled: bool,
+    coverage: CoverageConfig,
+    observed: &mut F,
+) -> Vec<String>
+where
+    F: FnMut(&str) -> (u64, u64),
+{
     let pre_novel = novelty_pick_unseen(seed, arms, k, novelty_enabled, |b| observed(b).0);
+
+    if !coverage.enabled {
+        return pre_novel;
+    }
+
     let remaining_after_novel: Vec<String> = arms
         .iter()
         .filter(|b| !pre_novel.contains(*b))
@@ -237,7 +293,6 @@ where
         |b| observed(b).0,
     );
 
-    // Preserve deterministic order: novelty picks first, then coverage picks.
     let mut prechosen = pre_novel;
     for b in pre_cov.drain(..) {
         if prechosen.len() >= k {
@@ -248,65 +303,78 @@ where
         }
         prechosen.push(b);
     }
+    prechosen
+}
 
-    let remaining: Vec<String> = arms
-        .iter()
-        .filter(|b| !prechosen.contains(*b))
-        .cloned()
-        .collect();
+/// Compute the policy plan: novelty pre-picks + observed latency guardrail.
+///
+/// Important semantics:
+/// - Novelty picks are computed **before** the guardrail filter (so they can include unmeasured arms
+///   even when `require_measured=true`, if novelty fills all \(k\)).
+/// - If you want the guardrail to apply as a **hard constraint** to novelty/coverage picks, use the
+///   `*_guardrail_first_*` helpers below.
+pub fn policy_plan_observed<F>(
+    seed: u64,
+    arms: &[String],
+    k: usize,
+    novelty_enabled: bool,
+    guard: LatencyGuardrail,
+    observed: F,
+) -> PolicyPlan
+where
+    F: FnMut(&str) -> (u64, u64),
+{
+    policy_plan_generic(
+        seed,
+        arms,
+        k,
+        novelty_enabled,
+        CoverageConfig::default(),
+        guard,
+        PipelineOrder::NoveltyFirst,
+        observed,
+    )
+}
 
-    let (eligible, stop_early) =
-        guardrail_filter_observed_elapsed(seed ^ 0x504C_414E, &remaining, guard, observed); // "PLAN"
-
-    PolicyPlan {
-        prechosen,
-        eligible,
-        stop_early,
-    }
+/// Like `policy_plan_observed`, but also adds a deterministic "coverage" pre-pick stage
+/// to enforce minimum sampling quotas (useful for monitoring/change detection).
+///
+/// Delegates to [`policy_plan_generic`] with `PipelineOrder::NoveltyFirst`.
+pub fn policy_plan_observed_with_coverage<F>(
+    seed: u64,
+    arms: &[String],
+    k: usize,
+    novelty_enabled: bool,
+    coverage: CoverageConfig,
+    guard: LatencyGuardrail,
+    observed: F,
+) -> PolicyPlan
+where
+    F: FnMut(&str) -> (u64, u64),
+{
+    policy_plan_generic(seed, arms, k, novelty_enabled, coverage, guard, PipelineOrder::NoveltyFirst, observed)
 }
 
 /// Guardrail-first policy plan: apply observed guardrail first, then novelty pre-picks.
 ///
-/// This uses **strict guardrail semantics** (no fallback): if guardrails filter out all arms,
-/// `stop_early=true` and both `prechosen` and `eligible` are empty.
+/// Delegates to [`policy_plan_generic`] with `PipelineOrder::GuardrailFirst`.
 pub fn policy_plan_observed_guardrail_first<F>(
     seed: u64,
     arms: &[String],
     k: usize,
     novelty_enabled: bool,
     guard: LatencyGuardrail,
-    mut observed: F,
+    observed: F,
 ) -> PolicyPlan
 where
     F: FnMut(&str) -> (u64, u64),
 {
-    let (guarded, stop_early) =
-        guardrail_filter_observed_strict_elapsed(seed ^ 0x504C_414E, arms, guard, &mut observed); // "PLAN"
-    if stop_early || guarded.is_empty() {
-        return PolicyPlan {
-            prechosen: Vec::new(),
-            eligible: Vec::new(),
-            stop_early: true,
-        };
-    }
-
-    let prechosen = novelty_pick_unseen(seed, &guarded, k, novelty_enabled, |b| observed(b).0);
-    let eligible: Vec<String> = guarded
-        .iter()
-        .filter(|b| !prechosen.contains(*b))
-        .cloned()
-        .collect();
-
-    PolicyPlan {
-        prechosen,
-        eligible,
-        stop_early: false,
-    }
+    policy_plan_generic(seed, arms, k, novelty_enabled, CoverageConfig::default(), guard, PipelineOrder::GuardrailFirst, observed)
 }
 
-/// Guardrail-first policy plan: apply observed guardrail first, then novelty+coverage pre-picks.
+/// Guardrail-first policy plan with coverage: apply guardrail first, then novelty+coverage.
 ///
-/// This uses **strict guardrail semantics** (no fallback). See [`policy_plan_observed_guardrail_first`].
+/// Delegates to [`policy_plan_generic`] with `PipelineOrder::GuardrailFirst`.
 pub fn policy_plan_observed_guardrail_first_with_coverage<F>(
     seed: u64,
     arms: &[String],
@@ -314,72 +382,31 @@ pub fn policy_plan_observed_guardrail_first_with_coverage<F>(
     novelty_enabled: bool,
     coverage: CoverageConfig,
     guard: LatencyGuardrail,
-    mut observed: F,
+    observed: F,
 ) -> PolicyPlan
 where
     F: FnMut(&str) -> (u64, u64),
 {
-    let (guarded, stop_early) =
-        guardrail_filter_observed_strict_elapsed(seed ^ 0x504C_414E, arms, guard, &mut observed); // "PLAN"
-    if stop_early || guarded.is_empty() {
-        return PolicyPlan {
-            prechosen: Vec::new(),
-            eligible: Vec::new(),
-            stop_early: true,
-        };
-    }
-
-    let pre_novel = novelty_pick_unseen(seed, &guarded, k, novelty_enabled, |b| observed(b).0);
-    let remaining_after_novel: Vec<String> = guarded
-        .iter()
-        .filter(|b| !pre_novel.contains(*b))
-        .cloned()
-        .collect();
-
-    let need_cov = k.saturating_sub(pre_novel.len());
-    let mut pre_cov = coverage_pick_under_sampled(
-        seed ^ 0x434F_5645, // "COVE"
-        &remaining_after_novel,
-        need_cov,
-        coverage,
-        |b| observed(b).0,
-    );
-
-    let mut prechosen = pre_novel;
-    for b in pre_cov.drain(..) {
-        if prechosen.len() >= k {
-            break;
-        }
-        if prechosen.contains(&b) {
-            continue;
-        }
-        prechosen.push(b);
-    }
-
-    let eligible: Vec<String> = guarded
-        .iter()
-        .filter(|b| !prechosen.contains(*b))
-        .cloned()
-        .collect();
-
-    PolicyPlan {
-        prechosen,
-        eligible,
-        stop_early: false,
-    }
+    policy_plan_generic(seed, arms, k, novelty_enabled, coverage, guard, PipelineOrder::GuardrailFirst, observed)
 }
 
-/// Shared muxer “policy pipeline”: novelty → observed guardrail → fill the remaining \(k\).
+/// Generic policy fill: compute a plan via [`policy_plan_generic`], then fill remaining
+/// picks using `pick_rest`.
 ///
-/// Semantics note:
-/// - If the guardrail requests stop-early but we have **zero** picks so far, we **fall back**
-///   to the unguarded remaining set so callers don't accidentally pick nothing.
-pub fn policy_fill_k_observed_with<F, P>(
+/// This is the canonical implementation that all `policy_fill_k_observed*` functions delegate to.
+///
+/// Fallback semantics (NoveltyFirst only): if the guardrail empties the eligible set and
+/// we have zero picks, fall back to the unguarded remaining set (unless `require_measured`
+/// is set, in which case stop early). GuardrailFirst never falls back.
+#[allow(clippy::too_many_arguments)]
+pub fn policy_fill_generic<F, P>(
     seed: u64,
     arms: &[String],
     k: usize,
     novelty_enabled: bool,
+    coverage: CoverageConfig,
     guard: LatencyGuardrail,
+    order: PipelineOrder,
     mut observed: F,
     mut pick_rest: P,
 ) -> PolicyFill
@@ -387,7 +414,7 @@ where
     F: FnMut(&str) -> (u64, u64),
     P: FnMut(&[String], usize) -> Vec<String>,
 {
-    let plan = policy_plan_observed(seed, arms, k, novelty_enabled, guard, &mut observed);
+    let plan = policy_plan_generic(seed, arms, k, novelty_enabled, coverage, guard, order, &mut observed);
     let mut chosen = plan.prechosen.clone();
 
     if chosen.len() >= k {
@@ -400,7 +427,7 @@ where
         };
     }
 
-    // If guardrail says “stop early”, only honor it if we already picked something.
+    // If guardrail says "stop early", only honor it if we already picked something.
     if plan.stop_early && !chosen.is_empty() {
         return PolicyFill {
             chosen,
@@ -411,139 +438,103 @@ where
         };
     }
 
-    // If the guardrail filtered everything:
-    // - If we have picks already and allow_fewer, stop.
-    // - Otherwise, fall back to the unguarded remaining set so we can still pick something.
+    // GuardrailFirst: never fall back; if eligible is empty, stop.
+    if order == PipelineOrder::GuardrailFirst {
+        if plan.stop_early {
+            return PolicyFill {
+                chosen,
+                plan,
+                eligible_used: Vec::new(),
+                fallback_used: false,
+                stopped_early: true,
+            };
+        }
+        let eligible_used = plan.eligible.clone();
+        let remaining_k = k.saturating_sub(chosen.len());
+        if remaining_k > 0 && !eligible_used.is_empty() {
+            let rest = pick_rest(&eligible_used, remaining_k);
+            for b in rest {
+                if chosen.len() >= k { break; }
+                if !eligible_used.contains(&b) { continue; }
+                if chosen.contains(&b) { continue; }
+                chosen.push(b);
+            }
+        }
+        return PolicyFill {
+            chosen,
+            plan,
+            eligible_used,
+            fallback_used: false,
+            stopped_early: false,
+        };
+    }
+
+    // NoveltyFirst: may fall back when eligible is empty.
     let mut eligible_used = plan.eligible.clone();
     let mut fallback_used = false;
     let mut stopped_early = false;
     if eligible_used.is_empty() {
         if guard.require_measured {
             stopped_early = true;
-            return PolicyFill {
-                chosen,
-                eligible_used,
-                plan,
-                fallback_used,
-                stopped_early,
-            };
+            return PolicyFill { chosen, eligible_used, plan, fallback_used, stopped_early };
         }
         if guard.allow_fewer && !chosen.is_empty() {
             stopped_early = true;
-            return PolicyFill {
-                chosen,
-                eligible_used,
-                plan,
-                fallback_used,
-                stopped_early,
-            };
+            return PolicyFill { chosen, eligible_used, plan, fallback_used, stopped_early };
         }
-        eligible_used = arms
-            .iter()
-            .filter(|b| !chosen.contains(*b))
-            .cloned()
-            .collect();
+        eligible_used = arms.iter().filter(|b| !chosen.contains(*b)).cloned().collect();
         fallback_used = true;
     }
 
     let remaining_k = k.saturating_sub(chosen.len());
     if remaining_k > 0 && !eligible_used.is_empty() {
-        // Defensive: the algorithm picker is expected to return <= remaining_k picks from
-        // `eligible_used`, without duplicates. Enforce those invariants here.
         let rest = pick_rest(&eligible_used, remaining_k);
         for b in rest {
-            if chosen.len() >= k {
-                break;
-            }
-            if !eligible_used.contains(&b) {
-                continue;
-            }
-            if chosen.contains(&b) {
-                continue;
-            }
+            if chosen.len() >= k { break; }
+            if !eligible_used.contains(&b) { continue; }
+            if chosen.contains(&b) { continue; }
             chosen.push(b);
         }
     }
 
-    PolicyFill {
-        chosen,
-        plan,
-        eligible_used,
-        fallback_used,
-        stopped_early,
-    }
+    PolicyFill { chosen, plan, eligible_used, fallback_used, stopped_early }
 }
 
-/// Guardrail-first variant of [`policy_fill_k_observed_with`].
-///
-/// - Applies the observed guardrail **first**, using strict semantics (no fallback).
-/// - Then does novelty pre-picks within the guarded set.
-/// - Then fills remaining picks using `pick_rest`.
-///
-/// This is useful when guardrails must be enforced as **hard constraints**, even for pre-picks.
+/// Delegates to [`policy_fill_generic`] with `PipelineOrder::NoveltyFirst`.
+pub fn policy_fill_k_observed_with<F, P>(
+    seed: u64,
+    arms: &[String],
+    k: usize,
+    novelty_enabled: bool,
+    guard: LatencyGuardrail,
+    observed: F,
+    pick_rest: P,
+) -> PolicyFill
+where
+    F: FnMut(&str) -> (u64, u64),
+    P: FnMut(&[String], usize) -> Vec<String>,
+{
+    policy_fill_generic(seed, arms, k, novelty_enabled, CoverageConfig::default(), guard, PipelineOrder::NoveltyFirst, observed, pick_rest)
+}
+
+/// Delegates to [`policy_fill_generic`] with `PipelineOrder::GuardrailFirst`.
 pub fn policy_fill_k_observed_guardrail_first_with<F, P>(
     seed: u64,
     arms: &[String],
     k: usize,
     novelty_enabled: bool,
     guard: LatencyGuardrail,
-    mut observed: F,
-    mut pick_rest: P,
+    observed: F,
+    pick_rest: P,
 ) -> PolicyFill
 where
     F: FnMut(&str) -> (u64, u64),
     P: FnMut(&[String], usize) -> Vec<String>,
 {
-    let plan =
-        policy_plan_observed_guardrail_first(seed, arms, k, novelty_enabled, guard, &mut observed);
-    let mut chosen = plan.prechosen.clone();
-    if chosen.len() >= k {
-        return PolicyFill {
-            chosen,
-            plan,
-            eligible_used: Vec::new(),
-            fallback_used: false,
-            stopped_early: false,
-        };
-    }
-    if plan.stop_early {
-        return PolicyFill {
-            chosen,
-            plan,
-            eligible_used: Vec::new(),
-            fallback_used: false,
-            stopped_early: true,
-        };
-    }
-
-    let eligible_used = plan.eligible.clone();
-    let remaining_k = k.saturating_sub(chosen.len());
-    if remaining_k > 0 && !eligible_used.is_empty() {
-        let rest = pick_rest(&eligible_used, remaining_k);
-        for b in rest {
-            if chosen.len() >= k {
-                break;
-            }
-            if !eligible_used.contains(&b) {
-                continue;
-            }
-            if chosen.contains(&b) {
-                continue;
-            }
-            chosen.push(b);
-        }
-    }
-
-    PolicyFill {
-        chosen,
-        plan,
-        eligible_used,
-        fallback_used: false,
-        stopped_early: false,
-    }
+    policy_fill_generic(seed, arms, k, novelty_enabled, CoverageConfig::default(), guard, PipelineOrder::GuardrailFirst, observed, pick_rest)
 }
 
-/// Like `policy_fill_k_observed_with`, but includes an optional “coverage” pre-pick stage.
+/// Delegates to [`policy_fill_generic`] with `PipelineOrder::NoveltyFirst` and caller-provided coverage.
 #[allow(clippy::too_many_arguments)]
 pub fn policy_fill_k_observed_with_coverage<F, P>(
     seed: u64,
@@ -552,107 +543,18 @@ pub fn policy_fill_k_observed_with_coverage<F, P>(
     novelty_enabled: bool,
     coverage: CoverageConfig,
     guard: LatencyGuardrail,
-    mut observed: F,
-    mut pick_rest: P,
+    observed: F,
+    pick_rest: P,
 ) -> PolicyFill
 where
     F: FnMut(&str) -> (u64, u64),
     P: FnMut(&[String], usize) -> Vec<String>,
 {
-    let plan = policy_plan_observed_with_coverage(
-        seed,
-        arms,
-        k,
-        novelty_enabled,
-        coverage,
-        guard,
-        &mut observed,
-    );
-    let mut chosen = plan.prechosen.clone();
-
-    if chosen.len() >= k {
-        return PolicyFill {
-            chosen,
-            plan,
-            eligible_used: Vec::new(),
-            fallback_used: false,
-            stopped_early: false,
-        };
-    }
-
-    if plan.stop_early && !chosen.is_empty() {
-        return PolicyFill {
-            chosen,
-            eligible_used: Vec::new(),
-            plan,
-            fallback_used: false,
-            stopped_early: true,
-        };
-    }
-
-    let mut eligible_used = plan.eligible.clone();
-    let mut fallback_used = false;
-    let mut stopped_early = false;
-    if eligible_used.is_empty() {
-        if guard.require_measured {
-            stopped_early = true;
-            return PolicyFill {
-                chosen,
-                eligible_used,
-                plan,
-                fallback_used,
-                stopped_early,
-            };
-        }
-        if guard.allow_fewer && !chosen.is_empty() {
-            stopped_early = true;
-            return PolicyFill {
-                chosen,
-                eligible_used,
-                plan,
-                fallback_used,
-                stopped_early,
-            };
-        }
-        eligible_used = arms
-            .iter()
-            .filter(|b| !chosen.contains(*b))
-            .cloned()
-            .collect();
-        fallback_used = true;
-    }
-
-    let remaining_k = k.saturating_sub(chosen.len());
-    if remaining_k > 0 && !eligible_used.is_empty() {
-        let rest = pick_rest(&eligible_used, remaining_k);
-        for b in rest {
-            if chosen.len() >= k {
-                break;
-            }
-            if !eligible_used.contains(&b) {
-                continue;
-            }
-            if chosen.contains(&b) {
-                continue;
-            }
-            chosen.push(b);
-        }
-    }
-
-    PolicyFill {
-        chosen,
-        plan,
-        eligible_used,
-        fallback_used,
-        stopped_early,
-    }
+    policy_fill_generic(seed, arms, k, novelty_enabled, coverage, guard, PipelineOrder::NoveltyFirst, observed, pick_rest)
 }
 
-/// Guardrail-first variant of [`policy_fill_k_observed_with_coverage`].
-///
-/// - Applies the observed guardrail **first**, using strict semantics (no fallback).
-/// - Then does novelty+coverage pre-picks within the guarded set.
-/// - Then fills remaining picks using `pick_rest`.
+/// Delegates to [`policy_fill_generic`] with `PipelineOrder::GuardrailFirst` and caller-provided coverage.
+#[allow(clippy::too_many_arguments)]
 pub fn policy_fill_k_observed_guardrail_first_with_coverage<F, P>(
     seed: u64,
     arms: &[String],
@@ -660,67 +562,14 @@ pub fn policy_fill_k_observed_guardrail_first_with_coverage<F, P>(
     novelty_enabled: bool,
     coverage: CoverageConfig,
     guard: LatencyGuardrail,
-    mut observed: F,
-    mut pick_rest: P,
+    observed: F,
+    pick_rest: P,
 ) -> PolicyFill
 where
     F: FnMut(&str) -> (u64, u64),
     P: FnMut(&[String], usize) -> Vec<String>,
 {
-    let plan = policy_plan_observed_guardrail_first_with_coverage(
-        seed,
-        arms,
-        k,
-        novelty_enabled,
-        coverage,
-        guard,
-        &mut observed,
-    );
-    let mut chosen = plan.prechosen.clone();
-    if chosen.len() >= k {
-        return PolicyFill {
-            chosen,
-            plan,
-            eligible_used: Vec::new(),
-            fallback_used: false,
-            stopped_early: false,
-        };
-    }
-    if plan.stop_early {
-        return PolicyFill {
-            chosen,
-            plan,
-            eligible_used: Vec::new(),
-            fallback_used: false,
-            stopped_early: true,
-        };
-    }
-
-    let eligible_used = plan.eligible.clone();
-    let remaining_k = k.saturating_sub(chosen.len());
-    if remaining_k > 0 && !eligible_used.is_empty() {
-        let rest = pick_rest(&eligible_used, remaining_k);
-        for b in rest {
-            if chosen.len() >= k {
-                break;
-            }
-            if !eligible_used.contains(&b) {
-                continue;
-            }
-            if chosen.contains(&b) {
-                continue;
-            }
-            chosen.push(b);
-        }
-    }
-
-    PolicyFill {
-        chosen,
-        plan,
-        eligible_used,
-        fallback_used: false,
-        stopped_early: false,
-    }
+    policy_fill_generic(seed, arms, k, novelty_enabled, coverage, guard, PipelineOrder::GuardrailFirst, observed, pick_rest)
 }
 
 /// Shared “select K without replacement” driver.
@@ -787,4 +636,89 @@ where
     .into_iter()
     .map(|(b, _)| b)
     .collect()
+}
+
+// =============================================================================
+// Contextual decision pipeline
+// =============================================================================
+
+/// Result of a contextual policy fill (LinUCB-based selection with context features).
+///
+/// This extends the non-contextual `PolicyFill` with context metadata for logging
+/// and offline evaluation (propensity scores, per-arm UCB scores).
+#[cfg(feature = "contextual")]
+#[derive(Debug, Clone)]
+pub struct ContextualPolicyFill {
+    /// Base fill result (chosen arms, plan, guardrail metadata).
+    pub fill: PolicyFill,
+    /// Context vector used for this decision.
+    pub context: Vec<f64>,
+    /// Per-arm (ucb, mean, bonus) scores at decision time.
+    pub scores: std::collections::BTreeMap<String, (f64, f64, f64)>,
+}
+
+/// Contextual variant of `policy_fill_k_observed_with`: uses LinUCB for the
+/// algorithmic selection step instead of a flat MAB/EXP3-IX policy.
+///
+/// This enables the **contextual regime** where routing objectives diverge:
+/// LinUCB learns to route based on per-request features (language, domain, etc.)
+/// so that "biomedical text -> backend X" is learned from all slices simultaneously,
+/// without maintaining separate per-facet histories.
+///
+/// The caller supplies:
+/// - `linucb`: a mutable reference to a `LinUcb` instance (caller manages persistence)
+/// - `context`: the feature vector for this decision (e.g. dataset metadata)
+/// - `observed`: per-arm (calls, elapsed_ms_sum) for guardrail filtering
+///
+/// The harness pipeline is: novelty -> observed guardrail -> LinUCB argmax fill.
+#[cfg(feature = "contextual")]
+#[allow(clippy::too_many_arguments)]
+pub fn policy_fill_k_contextual<F>(
+    seed: u64,
+    arms: &[String],
+    k: usize,
+    novelty_enabled: bool,
+    guard: LatencyGuardrail,
+    linucb: &mut crate::LinUcb,
+    context: &[f64],
+    observed: F,
+) -> ContextualPolicyFill
+where
+    F: FnMut(&str) -> (u64, u64),
+{
+    let scores = linucb.scores(arms, context);
+
+    let fill = policy_fill_k_observed_with(
+        seed,
+        arms,
+        k,
+        novelty_enabled,
+        guard,
+        observed,
+        |eligible, remaining_k| {
+            // LinUCB argmax selection: pick the top-scoring eligible arms.
+            let mut scored: Vec<(f64, String)> = eligible
+                .iter()
+                .map(|a| {
+                    let ucb = scores.get(a).map(|t| t.0).unwrap_or(0.0);
+                    (ucb, a.clone())
+                })
+                .collect();
+            // Sort by UCB descending, then lexicographic for stable tie-break.
+            scored.sort_by(|a, b| {
+                b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1))
+            });
+            scored
+                .into_iter()
+                .take(remaining_k)
+                .map(|(_, arm)| arm)
+                .collect()
+        },
+    );
+
+    ContextualPolicyFill {
+        fill,
+        context: context.to_vec(),
+        scores,
+    }
 }
