@@ -539,6 +539,23 @@ impl LinUcb {
         st.uses = st.uses.saturating_add(1);
     }
 
+    /// Return per-arm theta vectors (A_inv @ b) for sensitivity analysis.
+    ///
+    /// Each arm's theta is its learned response function: `E[reward | context x] = theta^T x`.
+    /// The matrix of theta vectors (arms x dim) can be fed to `pare::sensitivity::analyze_redundancy`
+    /// to compute the gradient rank and identify which arms have genuinely different
+    /// context-dependent behavior.
+    pub fn theta_vectors(&mut self, arms_in_order: &[String]) -> BTreeMap<String, Vec<f64>> {
+        self.ensure_arms(arms_in_order);
+        let mut out = BTreeMap::new();
+        for a in arms_in_order {
+            if let Some(st) = self.state.get(a) {
+                out.insert(a.clone(), self.theta(st));
+            }
+        }
+        out
+    }
+
     /// Capture a persistence snapshot of the current LinUCB state.
     ///
     /// This includes per-arm sufficient statistics (A_inv, b, uses) so that
