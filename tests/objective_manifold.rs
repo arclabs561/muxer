@@ -61,10 +61,10 @@ use pare::sensitivity::{analyze_redundancy, SensitivityRow};
 
 #[test]
 fn product_bound_is_constant_across_allocations() {
-    let delta_gap = 0.5_f64;   // mean gap between arms
+    let delta_gap = 0.5_f64; // mean gap between arms
     let delta_shift = 0.3_f64; // change magnitude to detect
-    let t = 1000.0_f64;        // horizon
-    let b = 1.0_f64;           // CUSUM threshold (normalized)
+    let t = 1000.0_f64; // horizon
+    let b = 1.0_f64; // CUSUM threshold (normalized)
 
     let expected_product = 2.0 * b * delta_gap * t / (delta_shift * delta_shift);
 
@@ -267,7 +267,10 @@ fn non_contextual_sensitivity_rank_is_one() {
     // (only the sign is consistent, not the magnitude pattern).  The cosine
     // is negative but not exactly -1.
     let cos_r = a.cosine(0, 1).unwrap();
-    assert!(cos_r < 0.0, "regret-MSE cosine = {cos_r}, expected negative");
+    assert!(
+        cos_r < 0.0,
+        "regret-MSE cosine = {cos_r}, expected negative"
+    );
 
     // Pareto dimension = 1 (regret vs. MSE/detection, a single tradeoff curve).
     assert_eq!(a.pareto_dimension_bound(1e-6), 1);
@@ -410,14 +413,23 @@ fn k3_m9_eight_objectives_rank_and_spectrum() {
             let j = d % m_cells;
             let (x1, x2) = cells[j];
             let gap = f(optimal_arm[j], x1, x2) - f(a, x1, x2);
-            if gap > 1e-6 { 1.0 / gap } else { 0.0 }
+            if gap > 1e-6 {
+                1.0 / gap
+            } else {
+                0.0
+            }
         })
         .collect();
 
     let sensitivities: Vec<SensitivityRow> = vec![
-        s_regret, s_simple,
-        s_mse[0].clone(), s_mse[1].clone(), s_mse[2].clone(),
-        s_avg_det, s_wc_det, s_fairness,
+        s_regret,
+        s_simple,
+        s_mse[0].clone(),
+        s_mse[1].clone(),
+        s_mse[2].clone(),
+        s_avg_det,
+        s_wc_det,
+        s_fairness,
     ];
 
     let analysis = analyze_redundancy(&sensitivities).unwrap();
@@ -428,7 +440,10 @@ fn k3_m9_eight_objectives_rank_and_spectrum() {
 
     // Formal rank should be high (most objectives are independent).
     let formal_rank = analysis.pareto_dimension_bound(1e-6) + 1;
-    assert!(formal_rank >= 6, "formal rank = {formal_rank}, expected >= 6");
+    assert!(
+        formal_rank >= 6,
+        "formal rank = {formal_rank}, expected >= 6"
+    );
 
     // Eigenvalue spectrum should span orders of magnitude.
     let ev = &analysis.eigenvalues;
@@ -451,7 +466,12 @@ fn k3_m9_eight_objectives_rank_and_spectrum() {
     // Per-arm MSEs: exactly orthogonal (disjoint support in design space).
     for (a, b) in [(2, 3), (2, 4), (3, 4)] {
         let cos = analysis.cosine(a, b).unwrap();
-        assert!(cos.abs() < 1e-9, "MSE arm{}-arm{} cosine = {cos}", a - 2, b - 2);
+        assert!(
+            cos.abs() < 1e-9,
+            "MSE arm{}-arm{} cosine = {cos}",
+            a - 2,
+            b - 2
+        );
     }
 
     // Eigenvalue sum = trace of Gram matrix (sanity check on Jacobi solver).
@@ -534,17 +554,20 @@ fn ehrgott_nickel_three_arms_two_dof() {
     let n2 = 30.0_f64;
 
     let s = vec![
-        vec![-delta_1, 0.0],                  // regret arm 1
-        vec![0.0, -delta_2],                  // regret arm 2
-        vec![-1.0 / (n1 * n1), 0.0],         // MSE arm 1
-        vec![0.0, -1.0 / (n2 * n2)],         // MSE arm 2
+        vec![-delta_1, 0.0],         // regret arm 1
+        vec![0.0, -delta_2],         // regret arm 2
+        vec![-1.0 / (n1 * n1), 0.0], // MSE arm 1
+        vec![0.0, -1.0 / (n2 * n2)], // MSE arm 2
     ];
     let a = analyze_redundancy(&s).unwrap();
 
     // In R^2, at most 2 linearly independent vectors.  So rank <= 2.
     // Pareto dimension <= 1.
     let bound = a.pareto_dimension_bound(1e-6);
-    assert!(bound <= 2, "Pareto bound = {bound}, expected <= 2 (D_eff=2)");
+    assert!(
+        bound <= 2,
+        "Pareto bound = {bound}, expected <= 2 (D_eff=2)"
+    );
 
     // Regret arm 1 and MSE arm 1 have the same support (only d/dn_1 is nonzero)
     // so they are proportional (anti-proportional, cosine = -1).
@@ -640,8 +663,8 @@ fn ids_information_gains_proportional_non_contextual() {
     let delta = 0.3_f64;
 
     // Information gain per observation of arm 2 (the suboptimal arm):
-    let g_opt_2 = 1.0 / sigma2;  // information about optimality
-    let g_chg_2 = delta * delta / (2.0 * sigma2);  // information about change
+    let g_opt_2 = 1.0 / sigma2; // information about optimality
+    let g_chg_2 = delta * delta / (2.0 * sigma2); // information about change
 
     // Ratio is constant (independent of allocation):
     let ratio = g_chg_2 / g_opt_2;
@@ -691,8 +714,20 @@ fn bridge_muxer_cusum_to_pare_sensitivity() {
     let sigma2 = 1.0_f64;
 
     // Outcome factories.
-    let ok = Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100 };
-    let bad = Outcome { ok: false, junk: true, hard_junk: true, cost_units: 1, elapsed_ms: 100 };
+    let ok = Outcome {
+        ok: true,
+        junk: false,
+        hard_junk: false,
+        cost_units: 1,
+        elapsed_ms: 100,
+    };
+    let bad = Outcome {
+        ok: false,
+        junk: true,
+        hard_junk: true,
+        cost_units: 1,
+        elapsed_ms: 100,
+    };
 
     // Build a function that, given allocation [n_0, n_1], returns objective values.
     // We use the *scores* from muxer's actual detectors, not theoretical formulas.
@@ -726,9 +761,9 @@ fn bridge_muxer_cusum_to_pare_sensitivity() {
             w1.push(bad);
         }
 
-        let cusum = cusum_score_between_windows(
-            w1.baseline(), w1.recent(), 1e-3, 1e-12, 20, 10, None,
-        ).unwrap_or(0.0);
+        let cusum =
+            cusum_score_between_windows(w1.baseline(), w1.recent(), 1e-3, 1e-12, 20, 10, None)
+                .unwrap_or(0.0);
 
         (regret, mse, cusum)
     };
@@ -761,7 +796,7 @@ fn bridge_muxer_cusum_to_pare_sensitivity() {
     // Use a step of 5 (integer observations) to get meaningful changes.
     let jac = finite_difference_jacobian(&mu, &objectives, 5.0);
 
-    assert_eq!(jac.len(), 3);    // 3 objectives
+    assert_eq!(jac.len(), 3); // 3 objectives
     assert_eq!(jac[0].len(), 2); // 2 design variables
 
     // Regret sensitivity: should only respond to n_1 (arm 1 pulls).

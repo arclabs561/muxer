@@ -46,3 +46,41 @@ pub(crate) fn splitmix64(mut x: u64) -> u64 {
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deterministic() {
+        assert_eq!(stable_hash64(42, "hello"), stable_hash64(42, "hello"));
+        assert_eq!(stable_hash64_u64(42, 99), stable_hash64_u64(42, 99));
+    }
+
+    #[test]
+    fn different_seeds_differ() {
+        assert_ne!(stable_hash64(1, "hello"), stable_hash64(2, "hello"));
+    }
+
+    #[test]
+    fn different_strings_differ() {
+        assert_ne!(stable_hash64(42, "a"), stable_hash64(42, "b"));
+    }
+
+    #[test]
+    fn empty_string_works() {
+        let _ = stable_hash64(0, "");
+    }
+
+    #[cfg(feature = "stochastic")]
+    #[test]
+    fn u01_from_seed_range() {
+        for seed in 0..1000u64 {
+            let v = u01_from_seed(seed);
+            assert!(
+                v >= 0.0 && v < 1.0,
+                "u01_from_seed({seed}) = {v} out of range"
+            );
+        }
+    }
+}

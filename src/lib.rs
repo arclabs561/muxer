@@ -160,6 +160,12 @@
 use pare::{Direction, ParetoFrontier};
 use std::collections::{BTreeMap, VecDeque};
 
+/// Epsilon used for floating-point tie-breaking in selection scoring.
+///
+/// This avoids exact equality comparisons on f64 scores and provides a stable
+/// threshold across all selection paths (Pareto scalarization, UCB, etc.).
+const TIEBREAK_EPS: f64 = 1e-12;
+
 mod decision;
 pub use decision::*;
 
@@ -1126,7 +1132,7 @@ pub fn select_mab_explain(
             - weights[2] * c.mean_elapsed_ms
             - weights[3] * c.hard_junk_rate
             - weights[4] * c.soft_junk_rate;
-        if s > best_score || ((s - best_score).abs() <= 1e-12 && c.name < best_name) {
+        if s > best_score || ((s - best_score).abs() <= TIEBREAK_EPS && c.name < best_name) {
             best_score = s;
             best_name = c.name.clone();
         }
@@ -1175,7 +1181,13 @@ pub fn select_mab_monitored_explain(
         .iter()
         .map(|(k, w)| (k.clone(), w.recent_summary()))
         .collect();
-    select_mab_monitored_explain_with_summaries(arms_in_order, &summaries, monitored, drift_cfg, cfg)
+    select_mab_monitored_explain_with_summaries(
+        arms_in_order,
+        &summaries,
+        monitored,
+        drift_cfg,
+        cfg,
+    )
 }
 
 /// Like `select_mab_monitored_explain`, but uses caller-provided summaries for the base objectives
@@ -1559,7 +1571,7 @@ pub fn select_mab_monitored_explain_with_summaries(
             - weights[5] * drift
             - weights[6] * catkl
             - weights[7] * cusum;
-        if s > best_score || ((s - best_score).abs() <= 1e-12 && c.name < best_name) {
+        if s > best_score || ((s - best_score).abs() <= TIEBREAK_EPS && c.name < best_name) {
             best_score = s;
             best_name = c.name.clone();
         }

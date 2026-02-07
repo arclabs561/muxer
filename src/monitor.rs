@@ -1589,10 +1589,16 @@ mod tests {
         for _ in 0..100 {
             let _ = d.update(best_cat);
             let s = d.score();
-            assert!(s >= prev_score - 1e-12, "score decreased: {prev_score} -> {s}");
+            assert!(
+                s >= prev_score - 1e-12,
+                "score decreased: {prev_score} -> {s}"
+            );
             prev_score = s;
         }
-        assert!(prev_score > 0.0, "score should be positive after 100 positive-LLR obs");
+        assert!(
+            prev_score > 0.0,
+            "score should be positive after 100 positive-LLR obs"
+        );
     }
 
     /// Wall-clock delay scales inversely with sampling rate.
@@ -1633,7 +1639,8 @@ mod tests {
         let ratio = wall_slow / wall_fast;
         assert!(
             (ratio - (rate_fast / rate_slow)).abs() < 1e-9,
-            "wall delay ratio = {ratio}, expected {}", rate_fast / rate_slow
+            "wall delay ratio = {ratio}, expected {}",
+            rate_fast / rate_slow
         );
     }
 
@@ -1666,7 +1673,10 @@ mod tests {
             let d = 2.0 * b * t / (delta_det * delta_det * n2f);
             let product = r * d;
             let err = ((product - expected) / expected).abs();
-            assert!(err < 1e-12, "n2={n2}: product={product}, expected={expected}");
+            assert!(
+                err < 1e-12,
+                "n2={n2}: product={product}, expected={expected}"
+            );
         }
     }
 

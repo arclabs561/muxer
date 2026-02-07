@@ -102,6 +102,71 @@ where
     Some((pick, false))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn arms() -> Vec<String> {
+        vec!["a".into(), "b".into(), "c".into()]
+    }
+
+    fn default_cfg() -> WorstFirstConfig {
+        WorstFirstConfig {
+            exploration_c: 1.0,
+            hard_weight: 2.0,
+            soft_weight: 1.0,
+        }
+    }
+
+    #[test]
+    fn picks_unseen_first() {
+        let (pick, explore) =
+            worst_first_pick_one(42, &arms(), default_cfg(), |_| 0, |_| (0, 0.0, 0.0)).unwrap();
+        assert!(explore, "should flag explore_first for unseen arms");
+        assert!(arms().contains(&pick));
+    }
+
+    #[test]
+    fn prefers_highest_badness() {
+        let (pick, explore) = worst_first_pick_one(
+            42,
+            &arms(),
+            default_cfg(),
+            |_| 10, // all seen
+            |name| match name {
+                "a" => (10, 0.1, 0.1),
+                "b" => (10, 0.9, 0.9), // worst
+                "c" => (10, 0.5, 0.5),
+                _ => (10, 0.0, 0.0),
+            },
+        )
+        .unwrap();
+        assert!(!explore);
+        assert_eq!(pick, "b", "should pick the arm with highest badness");
+    }
+
+    #[test]
+    fn pick_k_returns_at_most_k() {
+        let result = worst_first_pick_k(42, &arms(), 2, default_cfg(), |_| 0, |_| (0, 0.0, 0.0));
+        assert_eq!(result.len(), 2);
+        // All picks should be unique.
+        assert_ne!(result[0].0, result[1].0);
+    }
+
+    #[test]
+    fn pick_k_empty_arms() {
+        let result = worst_first_pick_k(42, &[], 5, default_cfg(), |_| 0, |_| (0, 0.0, 0.0));
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn deterministic_given_seed() {
+        let a = worst_first_pick_k(99, &arms(), 3, default_cfg(), |_| 0, |_| (0, 0.0, 0.0));
+        let b = worst_first_pick_k(99, &arms(), 3, default_cfg(), |_| 0, |_| (0, 0.0, 0.0));
+        assert_eq!(a, b);
+    }
+}
+
 /// Pick up to `k` arms for worst-first regression hunting (without replacement).
 ///
 /// Returns a list of `(arm, explore_first)` pairs in selection order.

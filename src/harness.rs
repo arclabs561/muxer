@@ -224,8 +224,14 @@ where
                     stop_early: true,
                 };
             }
-            let prechosen =
-                prepick_novelty_coverage(seed, &guarded, k, novelty_enabled, coverage, &mut observed);
+            let prechosen = prepick_novelty_coverage(
+                seed,
+                &guarded,
+                k,
+                novelty_enabled,
+                coverage,
+                &mut observed,
+            );
             let eligible: Vec<String> = guarded
                 .iter()
                 .filter(|b| !prechosen.contains(*b))
@@ -245,12 +251,8 @@ where
                 .filter(|b| !prechosen.contains(*b))
                 .cloned()
                 .collect();
-            let (eligible, stop_early) = guardrail_filter_observed_elapsed(
-                seed ^ 0x504C_414E,
-                &remaining,
-                guard,
-                observed,
-            );
+            let (eligible, stop_early) =
+                guardrail_filter_observed_elapsed(seed ^ 0x504C_414E, &remaining, guard, observed);
             PolicyPlan {
                 prechosen,
                 eligible,
@@ -352,7 +354,16 @@ pub fn policy_plan_observed_with_coverage<F>(
 where
     F: FnMut(&str) -> (u64, u64),
 {
-    policy_plan_generic(seed, arms, k, novelty_enabled, coverage, guard, PipelineOrder::NoveltyFirst, observed)
+    policy_plan_generic(
+        seed,
+        arms,
+        k,
+        novelty_enabled,
+        coverage,
+        guard,
+        PipelineOrder::NoveltyFirst,
+        observed,
+    )
 }
 
 /// Guardrail-first policy plan: apply observed guardrail first, then novelty pre-picks.
@@ -369,7 +380,16 @@ pub fn policy_plan_observed_guardrail_first<F>(
 where
     F: FnMut(&str) -> (u64, u64),
 {
-    policy_plan_generic(seed, arms, k, novelty_enabled, CoverageConfig::default(), guard, PipelineOrder::GuardrailFirst, observed)
+    policy_plan_generic(
+        seed,
+        arms,
+        k,
+        novelty_enabled,
+        CoverageConfig::default(),
+        guard,
+        PipelineOrder::GuardrailFirst,
+        observed,
+    )
 }
 
 /// Guardrail-first policy plan with coverage: apply guardrail first, then novelty+coverage.
@@ -387,7 +407,16 @@ pub fn policy_plan_observed_guardrail_first_with_coverage<F>(
 where
     F: FnMut(&str) -> (u64, u64),
 {
-    policy_plan_generic(seed, arms, k, novelty_enabled, coverage, guard, PipelineOrder::GuardrailFirst, observed)
+    policy_plan_generic(
+        seed,
+        arms,
+        k,
+        novelty_enabled,
+        coverage,
+        guard,
+        PipelineOrder::GuardrailFirst,
+        observed,
+    )
 }
 
 /// Generic policy fill: compute a plan via [`policy_plan_generic`], then fill remaining
@@ -414,7 +443,16 @@ where
     F: FnMut(&str) -> (u64, u64),
     P: FnMut(&[String], usize) -> Vec<String>,
 {
-    let plan = policy_plan_generic(seed, arms, k, novelty_enabled, coverage, guard, order, &mut observed);
+    let plan = policy_plan_generic(
+        seed,
+        arms,
+        k,
+        novelty_enabled,
+        coverage,
+        guard,
+        order,
+        &mut observed,
+    );
     let mut chosen = plan.prechosen.clone();
 
     if chosen.len() >= k {
@@ -454,9 +492,15 @@ where
         if remaining_k > 0 && !eligible_used.is_empty() {
             let rest = pick_rest(&eligible_used, remaining_k);
             for b in rest {
-                if chosen.len() >= k { break; }
-                if !eligible_used.contains(&b) { continue; }
-                if chosen.contains(&b) { continue; }
+                if chosen.len() >= k {
+                    break;
+                }
+                if !eligible_used.contains(&b) {
+                    continue;
+                }
+                if chosen.contains(&b) {
+                    continue;
+                }
                 chosen.push(b);
             }
         }
@@ -476,13 +520,29 @@ where
     if eligible_used.is_empty() {
         if guard.require_measured {
             stopped_early = true;
-            return PolicyFill { chosen, eligible_used, plan, fallback_used, stopped_early };
+            return PolicyFill {
+                chosen,
+                eligible_used,
+                plan,
+                fallback_used,
+                stopped_early,
+            };
         }
         if guard.allow_fewer && !chosen.is_empty() {
             stopped_early = true;
-            return PolicyFill { chosen, eligible_used, plan, fallback_used, stopped_early };
+            return PolicyFill {
+                chosen,
+                eligible_used,
+                plan,
+                fallback_used,
+                stopped_early,
+            };
         }
-        eligible_used = arms.iter().filter(|b| !chosen.contains(*b)).cloned().collect();
+        eligible_used = arms
+            .iter()
+            .filter(|b| !chosen.contains(*b))
+            .cloned()
+            .collect();
         fallback_used = true;
     }
 
@@ -490,14 +550,26 @@ where
     if remaining_k > 0 && !eligible_used.is_empty() {
         let rest = pick_rest(&eligible_used, remaining_k);
         for b in rest {
-            if chosen.len() >= k { break; }
-            if !eligible_used.contains(&b) { continue; }
-            if chosen.contains(&b) { continue; }
+            if chosen.len() >= k {
+                break;
+            }
+            if !eligible_used.contains(&b) {
+                continue;
+            }
+            if chosen.contains(&b) {
+                continue;
+            }
             chosen.push(b);
         }
     }
 
-    PolicyFill { chosen, plan, eligible_used, fallback_used, stopped_early }
+    PolicyFill {
+        chosen,
+        plan,
+        eligible_used,
+        fallback_used,
+        stopped_early,
+    }
 }
 
 /// Delegates to [`policy_fill_generic`] with `PipelineOrder::NoveltyFirst`.
@@ -514,7 +586,17 @@ where
     F: FnMut(&str) -> (u64, u64),
     P: FnMut(&[String], usize) -> Vec<String>,
 {
-    policy_fill_generic(seed, arms, k, novelty_enabled, CoverageConfig::default(), guard, PipelineOrder::NoveltyFirst, observed, pick_rest)
+    policy_fill_generic(
+        seed,
+        arms,
+        k,
+        novelty_enabled,
+        CoverageConfig::default(),
+        guard,
+        PipelineOrder::NoveltyFirst,
+        observed,
+        pick_rest,
+    )
 }
 
 /// Delegates to [`policy_fill_generic`] with `PipelineOrder::GuardrailFirst`.
@@ -531,7 +613,17 @@ where
     F: FnMut(&str) -> (u64, u64),
     P: FnMut(&[String], usize) -> Vec<String>,
 {
-    policy_fill_generic(seed, arms, k, novelty_enabled, CoverageConfig::default(), guard, PipelineOrder::GuardrailFirst, observed, pick_rest)
+    policy_fill_generic(
+        seed,
+        arms,
+        k,
+        novelty_enabled,
+        CoverageConfig::default(),
+        guard,
+        PipelineOrder::GuardrailFirst,
+        observed,
+        pick_rest,
+    )
 }
 
 /// Delegates to [`policy_fill_generic`] with `PipelineOrder::NoveltyFirst` and caller-provided coverage.
@@ -550,7 +642,17 @@ where
     F: FnMut(&str) -> (u64, u64),
     P: FnMut(&[String], usize) -> Vec<String>,
 {
-    policy_fill_generic(seed, arms, k, novelty_enabled, coverage, guard, PipelineOrder::NoveltyFirst, observed, pick_rest)
+    policy_fill_generic(
+        seed,
+        arms,
+        k,
+        novelty_enabled,
+        coverage,
+        guard,
+        PipelineOrder::NoveltyFirst,
+        observed,
+        pick_rest,
+    )
 }
 
 /// Delegates to [`policy_fill_generic`] with `PipelineOrder::GuardrailFirst` and caller-provided coverage.
@@ -569,7 +671,17 @@ where
     F: FnMut(&str) -> (u64, u64),
     P: FnMut(&[String], usize) -> Vec<String>,
 {
-    policy_fill_generic(seed, arms, k, novelty_enabled, coverage, guard, PipelineOrder::GuardrailFirst, observed, pick_rest)
+    policy_fill_generic(
+        seed,
+        arms,
+        k,
+        novelty_enabled,
+        coverage,
+        guard,
+        PipelineOrder::GuardrailFirst,
+        observed,
+        pick_rest,
+    )
 }
 
 /// Shared “select K without replacement” driver.
@@ -705,9 +817,7 @@ where
                 })
                 .collect();
             // Sort by UCB descending, then lexicographic for stable tie-break.
-            scored.sort_by(|a, b| {
-                b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1))
-            });
+            scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
             scored
                 .into_iter()
                 .take(remaining_k)

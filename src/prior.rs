@@ -36,3 +36,65 @@ pub fn apply_prior_counts_to_summary(out: &mut Summary, prior: Summary, target_c
     out.junk = out.junk.min(out.calls);
     out.hard_junk = out.hard_junk.min(out.calls);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_summary(calls: u64, ok: u64, junk: u64, hard_junk: u64) -> Summary {
+        Summary {
+            calls,
+            ok,
+            junk,
+            hard_junk,
+            cost_units: 0,
+            elapsed_ms_sum: 0,
+        }
+    }
+
+    #[test]
+    fn no_op_when_already_at_target() {
+        let mut out = make_summary(10, 8, 1, 0);
+        let prior = make_summary(100, 80, 10, 5);
+        apply_prior_counts_to_summary(&mut out, prior, 10);
+        assert_eq!(out.calls, 10, "should not change when calls >= target");
+    }
+
+    #[test]
+    fn no_op_when_target_zero() {
+        let mut out = make_summary(0, 0, 0, 0);
+        let prior = make_summary(100, 80, 10, 5);
+        apply_prior_counts_to_summary(&mut out, prior, 0);
+        assert_eq!(out.calls, 0);
+    }
+
+    #[test]
+    fn no_op_when_prior_empty() {
+        let mut out = make_summary(0, 0, 0, 0);
+        let prior = make_summary(0, 0, 0, 0);
+        apply_prior_counts_to_summary(&mut out, prior, 10);
+        assert_eq!(out.calls, 0, "empty prior should not add counts");
+    }
+
+    #[test]
+    fn adds_pseudo_counts() {
+        let mut out = make_summary(0, 0, 0, 0);
+        let prior = make_summary(100, 50, 20, 10);
+        apply_prior_counts_to_summary(&mut out, prior, 10);
+        assert_eq!(out.calls, 10);
+        assert_eq!(out.ok, 5); // 10 * 0.5
+        assert_eq!(out.junk, 2); // 10 * 0.2
+        assert_eq!(out.hard_junk, 1); // 10 * 0.1
+    }
+
+    #[test]
+    fn invariant_counts_do_not_exceed_calls() {
+        let mut out = make_summary(5, 5, 0, 0);
+        // Prior with 100% ok + 100% junk (impossible rates, but defensive).
+        let prior = make_summary(10, 10, 10, 10);
+        apply_prior_counts_to_summary(&mut out, prior, 20);
+        assert!(out.ok <= out.calls);
+        assert!(out.junk <= out.calls);
+        assert!(out.hard_junk <= out.calls);
+    }
+}

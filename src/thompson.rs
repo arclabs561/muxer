@@ -463,10 +463,7 @@ mod tests {
         let p1 = ts.allocation_mean_softmax(&arms, 0.3);
         let p2 = ts2.allocation_mean_softmax(&arms, 0.3);
         for a in &arms {
-            assert!(
-                (p1[a] - p2[a]).abs() < 1e-12,
-                "allocation mismatch for {a}"
-            );
+            assert!((p1[a] - p2[a]).abs() < 1e-12, "allocation mismatch for {a}");
         }
     }
 
