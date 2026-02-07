@@ -696,7 +696,7 @@ fn bridge_muxer_cusum_to_pare_sensitivity() {
 
     // Build a function that, given allocation [n_0, n_1], returns objective values.
     // We use the *scores* from muxer's actual detectors, not theoretical formulas.
-    let build_objectives = |n0: usize, n1: usize| -> (f64, f64, f64) {
+    let build_objectives = |_n0: usize, n1: usize| -> (f64, f64, f64) {
         // Regret: suboptimal arm (arm 1) pulled n_1 times, each costs Delta.
         let regret = delta * n1 as f64;
 
@@ -717,7 +717,7 @@ fn bridge_muxer_cusum_to_pare_sensitivity() {
         }
         // Recent: mix of ok and bad, proportional to n1 total observations
         // (simulating that more observations = more evidence about a shift).
-        let n_bad = (n1 / 5).max(1).min(80);
+        let n_bad = (n1 / 5).clamp(1, 80);
         let n_ok_recent = 80_usize.saturating_sub(n_bad);
         for _ in 0..n_ok_recent {
             w1.push(ok);
@@ -738,21 +738,24 @@ fn bridge_muxer_cusum_to_pare_sensitivity() {
     let n1_base = 50.0_f64;
     let mu = vec![n0_base, n1_base];
 
-    // Wrap each objective as a closure over the allocation vector.
-    let obj_regret = |alloc: &[f64]| -> f64 {
-        let (r, _, _) = build_objectives(alloc[0] as usize, alloc[1] as usize);
-        r
-    };
-    let obj_mse = |alloc: &[f64]| -> f64 {
-        let (_, m, _) = build_objectives(alloc[0] as usize, alloc[1] as usize);
-        m
-    };
-    let obj_cusum = |alloc: &[f64]| -> f64 {
-        let (_, _, c) = build_objectives(alloc[0] as usize, alloc[1] as usize);
-        c
-    };
-
-    let objectives = [obj_regret, obj_mse, obj_cusum];
+    // Wrap each objective as a boxed closure over the allocation vector.
+    // (Rust closures have distinct types, so we need Box<dyn Fn> to store them
+    // in a single array for `finite_difference_jacobian`.)
+    #[allow(clippy::type_complexity)]
+    let objectives: Vec<Box<dyn Fn(&[f64]) -> f64>> = vec![
+        Box::new(|alloc: &[f64]| {
+            let (r, _, _) = build_objectives(alloc[0] as usize, alloc[1] as usize);
+            r
+        }),
+        Box::new(|alloc: &[f64]| {
+            let (_, m, _) = build_objectives(alloc[0] as usize, alloc[1] as usize);
+            m
+        }),
+        Box::new(|alloc: &[f64]| {
+            let (_, _, c) = build_objectives(alloc[0] as usize, alloc[1] as usize);
+            c
+        }),
+    ];
 
     // Compute Jacobian via finite differences.
     // Use a step of 5 (integer observations) to get meaningful changes.
