@@ -909,6 +909,131 @@ pub struct CusumGuardDecision {
     pub alt_p: [f64; 4],
 }
 
+fn apply_base_constraints(
+    arms_in_order: &[String],
+    summaries: &BTreeMap<String, Summary>,
+    cfg: &MabConfig,
+) -> (Vec<String>, bool) {
+    // Apply hard constraints (BwK-ish “anytime” gating).
+    // If constraints filter everything, fall back to the original arm set (never return empty).
+    let mut eligible: Vec<String> = Vec::new();
+    for a in arms_in_order {
+        let s = summaries.get(a).copied().unwrap_or_default();
+        let ok = cfg
+            .max_junk_rate
+            .map(|thr| s.junk_rate() <= thr)
+            .unwrap_or(true)
+            && cfg
+                .max_hard_junk_rate
+                .map(|thr| s.hard_junk_rate() <= thr)
+                .unwrap_or(true)
+            && cfg
+                .max_mean_cost_units
+                .map(|thr| s.mean_cost_units() <= thr)
+                .unwrap_or(true);
+        if ok {
+            eligible.push(a.clone());
+        }
+    }
+    let constraints_fallback_used = eligible.is_empty();
+    let eligible_arms: Vec<String> = if constraints_fallback_used {
+        arms_in_order.to_vec()
+    } else {
+        eligible
+    };
+    (eligible_arms, constraints_fallback_used)
+}
+
+fn explore_first_decision(
+    chosen: String,
+    eligible_arms: Vec<String>,
+    constraints_fallback_used: bool,
+    cfg: MabConfig,
+) -> MabSelectionDecision {
+    let sel = Selection {
+        chosen: chosen.clone(),
+        frontier: vec![chosen.clone()],
+        candidates: vec![CandidateDebug {
+            name: chosen,
+            calls: 0,
+            ok: 0,
+            junk: 0,
+            hard_junk: 0,
+            ok_rate: 0.0,
+            junk_rate: 0.0,
+            hard_junk_rate: 0.0,
+            soft_junk_rate: 0.0,
+            mean_cost_units: 0.0,
+            mean_elapsed_ms: 0.0,
+            ucb: 0.0,
+            objective_success: 0.0,
+            drift_score: None,
+            catkl_score: None,
+            cusum_score: None,
+            ok_half_width: None,
+            junk_half_width: None,
+            hard_junk_half_width: None,
+        }],
+        config: cfg,
+    };
+    MabSelectionDecision {
+        selection: sel,
+        eligible_arms,
+        constraints_fallback_used,
+        explore_first: true,
+        drift_guard: None,
+        catkl_guard: None,
+        cusum_guard: None,
+    }
+}
+
+fn choose_from_frontier<FScore>(
+    dims: usize,
+    candidates: &[CandidateDebug],
+    frontier_points: &[Vec<f64>],
+    frontier_names_in_order: &[String],
+    fallback_first: Option<&String>,
+    score: FScore,
+) -> (String, Vec<String>)
+where
+    FScore: Fn(&CandidateDebug) -> f64,
+{
+    let mut frontier = ParetoFrontier::new(vec![Direction::Maximize; dims]);
+    for (i, vals) in frontier_points.iter().enumerate() {
+        frontier.push(vals.clone(), i);
+    }
+    let mut frontier_indices: Vec<usize> = if frontier.is_empty() {
+        (0..frontier_points.len()).collect()
+    } else {
+        frontier.points().iter().map(|p| p.data).collect()
+    };
+    // Ensure stable ordering regardless of frontier internals.
+    frontier_indices.sort_unstable();
+
+    let frontier_names: Vec<String> = frontier_indices
+        .iter()
+        .filter_map(|&i| frontier_names_in_order.get(i).cloned())
+        .collect();
+
+    let mut best_name = frontier_names
+        .first()
+        .cloned()
+        .unwrap_or_else(|| fallback_first.cloned().unwrap_or_default());
+    let mut best_score = f64::NEG_INFINITY;
+    for &idx in &frontier_indices {
+        let Some(c) = candidates.get(idx) else {
+            continue;
+        };
+        let s = score(c);
+        if s > best_score || ((s - best_score).abs() <= TIEBREAK_EPS && c.name < best_name) {
+            best_score = s;
+            best_name = c.name.clone();
+        }
+    }
+
+    (best_name, frontier_names)
+}
+
 /// Deterministic selection:
 /// - Explore each arm at least once (in stable order).
 /// - Then:
@@ -953,78 +1078,17 @@ pub fn select_mab_explain(
     summaries: &BTreeMap<String, Summary>,
     cfg: MabConfig,
 ) -> MabSelectionDecision {
-    // Apply hard constraints (BwK-ish “anytime” gating).
-    // If constraints filter everything, fall back to the original arm set (never return empty).
-    let mut eligible: Vec<String> = Vec::new();
-    for a in arms_in_order {
-        let s = summaries.get(a).copied().unwrap_or_default();
-        let ok = cfg
-            .max_junk_rate
-            .map(|thr| s.junk_rate() <= thr)
-            .unwrap_or(true)
-            && cfg
-                .max_hard_junk_rate
-                .map(|thr| s.hard_junk_rate() <= thr)
-                .unwrap_or(true)
-            && cfg
-                .max_mean_cost_units
-                .map(|thr| s.mean_cost_units() <= thr)
-                .unwrap_or(true);
-        if ok {
-            eligible.push(a.clone());
-        }
-    }
-    let constraints_fallback_used = eligible.is_empty();
-    let eligible_arms: Vec<String> = if constraints_fallback_used {
-        arms_in_order.to_vec()
-    } else {
-        eligible.clone()
-    };
-    let arms_in_order: &[String] = if constraints_fallback_used {
-        arms_in_order
-    } else {
-        &eligible
-    };
+    let (eligible_arms, constraints_fallback_used) =
+        apply_base_constraints(arms_in_order, summaries, &cfg);
+    let arms_in_order: &[String] = &eligible_arms;
 
     // Explore first.
-    for a in arms_in_order {
-        if summaries.get(a).copied().unwrap_or_default().calls == 0 {
-            let sel = Selection {
-                chosen: a.clone(),
-                frontier: vec![a.clone()],
-                candidates: vec![CandidateDebug {
-                    name: a.clone(),
-                    calls: 0,
-                    ok: 0,
-                    junk: 0,
-                    hard_junk: 0,
-                    ok_rate: 0.0,
-                    junk_rate: 0.0,
-                    hard_junk_rate: 0.0,
-                    soft_junk_rate: 0.0,
-                    mean_cost_units: 0.0,
-                    mean_elapsed_ms: 0.0,
-                    ucb: 0.0,
-                    objective_success: 0.0,
-                    drift_score: None,
-                    catkl_score: None,
-                    cusum_score: None,
-                    ok_half_width: None,
-                    junk_half_width: None,
-                    hard_junk_half_width: None,
-                }],
-                config: cfg,
-            };
-            return MabSelectionDecision {
-                selection: sel,
-                eligible_arms,
-                constraints_fallback_used,
-                explore_first: true,
-                drift_guard: None,
-                catkl_guard: None,
-                cusum_guard: None,
-            };
-        }
+    let explore_choice: Option<String> = arms_in_order
+        .iter()
+        .find(|a| summaries.get(*a).copied().unwrap_or_default().calls == 0)
+        .cloned();
+    if let Some(chosen) = explore_choice {
+        return explore_first_decision(chosen, eligible_arms, constraints_fallback_used, cfg);
     }
 
     // Only count calls for the arms actually being considered (important if `summaries`
@@ -1091,23 +1155,6 @@ pub fn select_mab_explain(
         frontier_names_in_order.push(a.clone());
     }
 
-    let mut frontier = ParetoFrontier::new(vec![Direction::Maximize; 5]);
-    for (i, vals) in frontier_points.iter().enumerate() {
-        frontier.push(vals.clone(), i);
-    }
-    let mut frontier_indices: Vec<usize> = if frontier.is_empty() {
-        (0..frontier_points.len()).collect()
-    } else {
-        frontier.points().iter().map(|p| p.data).collect()
-    };
-    // Ensure stable ordering regardless of frontier internals.
-    frontier_indices.sort_unstable();
-
-    let frontier_names: Vec<String> = frontier_indices
-        .iter()
-        .filter_map(|&i| frontier_names_in_order.get(i).cloned())
-        .collect();
-
     // Deterministic scalarization among frontier points.
     let weights: [f64; 5] = [
         1.0,
@@ -1116,27 +1163,22 @@ pub fn select_mab_explain(
         cfg.hard_junk_weight.max(0.0),
         cfg.junk_weight.max(0.0),
     ];
-    let mut best_name = frontier_names
-        .first()
-        .cloned()
-        .unwrap_or_else(|| arms_in_order.first().cloned().unwrap_or_default());
-    let mut best_score = f64::NEG_INFINITY;
-    for &idx in &frontier_indices {
-        let Some(c) = candidates.get(idx) else {
-            continue;
-        };
-        // Maximize:
-        //   objective_success - w_cost * cost - w_lat * latency - w_hard * hard_junk - w_soft * soft_junk
-        let s = c.objective_success
-            - weights[1] * c.mean_cost_units
-            - weights[2] * c.mean_elapsed_ms
-            - weights[3] * c.hard_junk_rate
-            - weights[4] * c.soft_junk_rate;
-        if s > best_score || ((s - best_score).abs() <= TIEBREAK_EPS && c.name < best_name) {
-            best_score = s;
-            best_name = c.name.clone();
-        }
-    }
+    let (best_name, frontier_names) = choose_from_frontier(
+        5,
+        &candidates,
+        &frontier_points,
+        &frontier_names_in_order,
+        arms_in_order.first(),
+        |c| {
+            // Maximize:
+            //   objective_success - w_cost * cost - w_lat * latency - w_hard * hard_junk - w_soft * soft_junk
+            c.objective_success
+                - weights[1] * c.mean_cost_units
+                - weights[2] * c.mean_elapsed_ms
+                - weights[3] * c.hard_junk_rate
+                - weights[4] * c.soft_junk_rate
+        },
+    );
 
     let sel = Selection {
         chosen: best_name,
@@ -1204,76 +1246,17 @@ pub fn select_mab_monitored_explain_with_summaries(
     cfg: MabConfig,
 ) -> MabSelectionDecision {
     // Apply base hard constraints first (same semantics as `select_mab_explain`).
-    let mut eligible: Vec<String> = Vec::new();
-    for a in arms_in_order {
-        let s = summaries.get(a).copied().unwrap_or_default();
-        let ok = cfg
-            .max_junk_rate
-            .map(|thr| s.junk_rate() <= thr)
-            .unwrap_or(true)
-            && cfg
-                .max_hard_junk_rate
-                .map(|thr| s.hard_junk_rate() <= thr)
-                .unwrap_or(true)
-            && cfg
-                .max_mean_cost_units
-                .map(|thr| s.mean_cost_units() <= thr)
-                .unwrap_or(true);
-        if ok {
-            eligible.push(a.clone());
-        }
-    }
-    let constraints_fallback_used = eligible.is_empty();
-    let eligible_arms: Vec<String> = if constraints_fallback_used {
-        arms_in_order.to_vec()
-    } else {
-        eligible.clone()
-    };
-    let arms_in_order: &[String] = if constraints_fallback_used {
-        arms_in_order
-    } else {
-        &eligible
-    };
+    let (eligible_arms, constraints_fallback_used) =
+        apply_base_constraints(arms_in_order, summaries, &cfg);
+    let arms_in_order: &[String] = &eligible_arms;
 
     // Explore first (stable order).
-    for a in arms_in_order {
-        if summaries.get(a).copied().unwrap_or_default().calls == 0 {
-            let sel = Selection {
-                chosen: a.clone(),
-                frontier: vec![a.clone()],
-                candidates: vec![CandidateDebug {
-                    name: a.clone(),
-                    calls: 0,
-                    ok: 0,
-                    junk: 0,
-                    hard_junk: 0,
-                    ok_rate: 0.0,
-                    junk_rate: 0.0,
-                    hard_junk_rate: 0.0,
-                    soft_junk_rate: 0.0,
-                    mean_cost_units: 0.0,
-                    mean_elapsed_ms: 0.0,
-                    ucb: 0.0,
-                    objective_success: 0.0,
-                    drift_score: None,
-                    catkl_score: None,
-                    cusum_score: None,
-                    ok_half_width: None,
-                    junk_half_width: None,
-                    hard_junk_half_width: None,
-                }],
-                config: cfg,
-            };
-            return MabSelectionDecision {
-                selection: sel,
-                eligible_arms,
-                constraints_fallback_used,
-                explore_first: true,
-                drift_guard: None,
-                catkl_guard: None,
-                cusum_guard: None,
-            };
-        }
+    let explore_choice: Option<String> = arms_in_order
+        .iter()
+        .find(|a| summaries.get(*a).copied().unwrap_or_default().calls == 0)
+        .cloned();
+    if let Some(chosen) = explore_choice {
+        return explore_first_decision(chosen, eligible_arms, constraints_fallback_used, cfg);
     }
 
     // Apply drift guard (optional) over the constraint-eligible set.
@@ -1523,23 +1506,6 @@ pub fn select_mab_monitored_explain_with_summaries(
         ]);
         frontier_names_in_order.push(a.clone());
     }
-
-    let mut frontier = ParetoFrontier::new(vec![Direction::Maximize; 8]);
-    for (i, vals) in frontier_points.iter().enumerate() {
-        frontier.push(vals.clone(), i);
-    }
-    let mut frontier_indices: Vec<usize> = if frontier.is_empty() {
-        (0..frontier_points.len()).collect()
-    } else {
-        frontier.points().iter().map(|p| p.data).collect()
-    };
-    frontier_indices.sort_unstable();
-
-    let frontier_names: Vec<String> = frontier_indices
-        .iter()
-        .filter_map(|&i| frontier_names_in_order.get(i).cloned())
-        .collect();
-
     let weights: [f64; 8] = [
         1.0,
         cfg.cost_weight.max(0.0),
@@ -1550,32 +1516,26 @@ pub fn select_mab_monitored_explain_with_summaries(
         cfg.catkl_weight.max(0.0),
         cfg.cusum_weight.max(0.0),
     ];
-
-    let mut best_name = frontier_names
-        .first()
-        .cloned()
-        .unwrap_or_else(|| eligible_after_cusum.first().cloned().unwrap_or_default());
-    let mut best_score = f64::NEG_INFINITY;
-    for &idx in &frontier_indices {
-        let Some(c) = candidates.get(idx) else {
-            continue;
-        };
-        let drift = c.drift_score.unwrap_or(0.0);
-        let catkl = c.catkl_score.unwrap_or(0.0);
-        let cusum = c.cusum_score.unwrap_or(0.0);
-        let s = c.objective_success
-            - weights[1] * c.mean_cost_units
-            - weights[2] * c.mean_elapsed_ms
-            - weights[3] * c.hard_junk_rate
-            - weights[4] * c.soft_junk_rate
-            - weights[5] * drift
-            - weights[6] * catkl
-            - weights[7] * cusum;
-        if s > best_score || ((s - best_score).abs() <= TIEBREAK_EPS && c.name < best_name) {
-            best_score = s;
-            best_name = c.name.clone();
-        }
-    }
+    let (best_name, frontier_names) = choose_from_frontier(
+        8,
+        &candidates,
+        &frontier_points,
+        &frontier_names_in_order,
+        eligible_after_cusum.first(),
+        |c| {
+            let drift = c.drift_score.unwrap_or(0.0);
+            let catkl = c.catkl_score.unwrap_or(0.0);
+            let cusum = c.cusum_score.unwrap_or(0.0);
+            c.objective_success
+                - weights[1] * c.mean_cost_units
+                - weights[2] * c.mean_elapsed_ms
+                - weights[3] * c.hard_junk_rate
+                - weights[4] * c.soft_junk_rate
+                - weights[5] * drift
+                - weights[6] * catkl
+                - weights[7] * cusum
+        },
+    );
 
     let sel = Selection {
         chosen: best_name,

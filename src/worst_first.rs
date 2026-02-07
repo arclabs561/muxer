@@ -102,6 +102,47 @@ where
     Some((pick, false))
 }
 
+/// Pick up to `k` arms for worst-first regression hunting (without replacement).
+///
+/// Returns a list of `(arm, explore_first)` pairs in selection order.
+#[must_use]
+pub fn worst_first_pick_k<FObs, FSum>(
+    seed: u64,
+    arms: &[String],
+    k: usize,
+    cfg: WorstFirstConfig,
+    mut observed_calls: FObs,
+    mut summary: FSum,
+) -> Vec<(String, bool)>
+where
+    FObs: FnMut(&str) -> u64,
+    FSum: FnMut(&str) -> (u64, f64, f64),
+{
+    if k == 0 || arms.is_empty() {
+        return Vec::new();
+    }
+    let mut chosen: Vec<(String, bool)> = Vec::new();
+    let mut remaining: Vec<String> = arms.to_vec();
+
+    while chosen.len() < k && !remaining.is_empty() {
+        let (pick, explore_first) = match worst_first_pick_one(
+            seed ^ ((chosen.len() as u64) + 1),
+            &remaining,
+            cfg,
+            |b| observed_calls(b),
+            |b| summary(b),
+        ) {
+            None => break,
+            Some(x) => x,
+        };
+
+        remaining.retain(|b| b != &pick);
+        chosen.push((pick, explore_first));
+    }
+
+    chosen
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,45 +206,4 @@ mod tests {
         let b = worst_first_pick_k(99, &arms(), 3, default_cfg(), |_| 0, |_| (0, 0.0, 0.0));
         assert_eq!(a, b);
     }
-}
-
-/// Pick up to `k` arms for worst-first regression hunting (without replacement).
-///
-/// Returns a list of `(arm, explore_first)` pairs in selection order.
-#[must_use]
-pub fn worst_first_pick_k<FObs, FSum>(
-    seed: u64,
-    arms: &[String],
-    k: usize,
-    cfg: WorstFirstConfig,
-    mut observed_calls: FObs,
-    mut summary: FSum,
-) -> Vec<(String, bool)>
-where
-    FObs: FnMut(&str) -> u64,
-    FSum: FnMut(&str) -> (u64, f64, f64),
-{
-    if k == 0 || arms.is_empty() {
-        return Vec::new();
-    }
-    let mut chosen: Vec<(String, bool)> = Vec::new();
-    let mut remaining: Vec<String> = arms.to_vec();
-
-    while chosen.len() < k && !remaining.is_empty() {
-        let (pick, explore_first) = match worst_first_pick_one(
-            seed ^ ((chosen.len() as u64) + 1),
-            &remaining,
-            cfg,
-            |b| observed_calls(b),
-            |b| summary(b),
-        ) {
-            None => break,
-            Some(x) => x,
-        };
-
-        remaining.retain(|b| b != &pick);
-        chosen.push((pick, explore_first));
-    }
-
-    chosen
 }

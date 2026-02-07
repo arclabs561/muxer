@@ -78,7 +78,7 @@ mod tests {
         for seed in 0..1000u64 {
             let v = u01_from_seed(seed);
             assert!(
-                v >= 0.0 && v < 1.0,
+                (0.0..1.0).contains(&v),
                 "u01_from_seed({seed}) = {v} out of range"
             );
         }
