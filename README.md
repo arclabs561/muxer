@@ -209,14 +209,14 @@ Reusable bits extracted from these experiments live in `muxer::monitor`, notably
 
 ```toml
 [dependencies]
-muxer = "0.1.0"
+muxer = "0.1.2"
 ```
 
 If you only want the deterministic `Window` + `select_mab*` core (no stochastic bandits), disable default features:
 
 ```toml
 [dependencies]
-muxer = { version = "0.1.0", default-features = false }
+muxer = { version = "0.1.2", default-features = false }
 ```
 
 ## Development
