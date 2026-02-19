@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.3]
 
 ### Added
 - `context_bin` / `ContextBinConfig`: deterministic feature-vector → bin-ID quantisation (levels × stable_hash64).
