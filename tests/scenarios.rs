@@ -1,6 +1,6 @@
 use muxer::{
-    select_mab_explain, ContextBinConfig, ContextualCoverageTracker, MabConfig, Outcome,
-    StickyConfig, StickyMab, Window, WorstFirstConfig, context_bin,
+    context_bin, select_mab_explain, ContextBinConfig, ContextualCoverageTracker, MabConfig,
+    Outcome, StickyConfig, StickyMab, Window, WorstFirstConfig,
 };
 use std::collections::BTreeMap;
 
@@ -198,7 +198,10 @@ fn contextual_tracker_surfaces_localised_regression() {
 
     // pick_one should surface (b, bin_high) as the worst cell.
     let (cell, explore) = tracker.pick_one(42, &arms, &bins, wf_cfg).unwrap();
-    assert!(!explore, "all cells are seen; should be a scored pick, not coverage");
+    assert!(
+        !explore,
+        "all cells are seen; should be a scored pick, not coverage"
+    );
     assert_eq!(cell.arm, "b");
     assert_eq!(
         cell.context_bin, bin_high,

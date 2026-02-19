@@ -222,7 +222,11 @@ pub fn context_bin(context: &[f64], config: ContextBinConfig) -> u64 {
     // Format: "b0:b1:b2:..." where each bi is the bucket index for dimension i.
     let mut key = String::with_capacity(context.len() * 4);
     for (i, &v) in context.iter().enumerate() {
-        let clamped = if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+        let clamped = if v.is_finite() {
+            v.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         let bucket = ((clamped * levels as f64).floor() as u64).min(levels - 1);
         if i > 0 {
             key.push(':');
@@ -658,7 +662,10 @@ mod tests {
     #[test]
     fn context_bin_is_deterministic() {
         let cfg = ContextBinConfig::default();
-        assert_eq!(context_bin(&[0.1, 0.5, 0.9], cfg), context_bin(&[0.1, 0.5, 0.9], cfg));
+        assert_eq!(
+            context_bin(&[0.1, 0.5, 0.9], cfg),
+            context_bin(&[0.1, 0.5, 0.9], cfg)
+        );
     }
 
     #[test]
