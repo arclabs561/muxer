@@ -410,6 +410,183 @@ where
     chosen
 }
 
+// =============================================================================
+// ContextualCoverageTracker — convenience accumulator for per-cell stats
+// =============================================================================
+
+/// Per-(arm, context-bin) outcome statistics accumulated by [`ContextualCoverageTracker`].
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CellStats {
+    /// Total calls observed for this (arm, bin) pair.
+    pub calls: u64,
+    /// Number of hard-junk outcomes (instability / hard failures).
+    pub hard_junk: u64,
+    /// Number of soft-junk outcomes (degraded but not hard failures).
+    pub soft_junk: u64,
+}
+
+impl CellStats {
+    /// Hard-junk rate in `[0, 1]`, or 0 if no calls.
+    pub fn hard_junk_rate(&self) -> f64 {
+        if self.calls == 0 {
+            return 0.0;
+        }
+        self.hard_junk as f64 / self.calls as f64
+    }
+
+    /// Soft-junk rate in `[0, 1]`, or 0 if no calls.
+    pub fn soft_junk_rate(&self) -> f64 {
+        if self.calls == 0 {
+            return 0.0;
+        }
+        self.soft_junk as f64 / self.calls as f64
+    }
+}
+
+/// Per-(arm, context-bin) observation tracker.
+///
+/// Accumulates outcome statistics so callers can plug directly into
+/// [`contextual_worst_first_pick_one`] / [`contextual_worst_first_pick_k`]
+/// without managing their own `HashMap`.
+///
+/// # Example
+///
+/// ```rust
+/// use muxer::{ContextualCoverageTracker, ContextBinConfig, WorstFirstConfig, context_bin};
+///
+/// let arms = vec!["a".to_string(), "b".to_string()];
+/// let cfg = ContextBinConfig::default();
+/// let wf_cfg = WorstFirstConfig { exploration_c: 1.0, hard_weight: 2.0, soft_weight: 1.0 };
+/// let mut tracker = ContextualCoverageTracker::new();
+///
+/// // Record 10 clean observations for arm "a" in bin derived from context [0.1, 0.2].
+/// let bin = context_bin(&[0.1, 0.2], cfg);
+/// for _ in 0..10 { tracker.record("a", bin, false, false); }
+///
+/// // Record 10 hard-junk observations for arm "b" in the same bin.
+/// for _ in 0..10 { tracker.record("b", bin, true, false); }
+///
+/// let bins = tracker.active_bins();
+/// let pick = tracker.pick_one(42, &arms, &bins, wf_cfg);
+/// assert!(pick.is_some());
+/// let (cell, _explore) = pick.unwrap();
+/// assert_eq!(cell.arm, "b", "worst-first should flag the arm with hard junk");
+/// ```
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ContextualCoverageTracker {
+    cells: std::collections::BTreeMap<(String, u64), CellStats>,
+}
+
+impl ContextualCoverageTracker {
+    /// Create an empty tracker.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record one outcome for `(arm, bin)`.
+    ///
+    /// - `hard_junk`: outcome was a hard failure (instability / operational error).
+    /// - `soft_junk`: outcome was degraded but not a hard failure.
+    pub fn record(&mut self, arm: &str, bin: u64, hard_junk: bool, soft_junk: bool) {
+        let stats = self.cells.entry((arm.to_string(), bin)).or_default();
+        stats.calls += 1;
+        if hard_junk {
+            stats.hard_junk += 1;
+        }
+        if soft_junk {
+            stats.soft_junk += 1;
+        }
+    }
+
+    /// Call count for `(arm, bin)`.
+    pub fn cell_calls(&self, arm: &str, bin: u64) -> u64 {
+        self.cells
+            .get(&(arm.to_string(), bin))
+            .map(|s| s.calls)
+            .unwrap_or(0)
+    }
+
+    /// Returns `(calls, hard_junk_rate, soft_junk_rate)` for `(arm, bin)`.
+    pub fn cell_summary(&self, arm: &str, bin: u64) -> (u64, f64, f64) {
+        match self.cells.get(&(arm.to_string(), bin)) {
+            None => (0, 0.0, 0.0),
+            Some(s) => (s.calls, s.hard_junk_rate(), s.soft_junk_rate()),
+        }
+    }
+
+    /// Sorted list of all context bins observed so far.
+    pub fn active_bins(&self) -> Vec<u64> {
+        let mut bins: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+        for &(_, bin) in self.cells.keys() {
+            bins.insert(bin);
+        }
+        bins.into_iter().collect()
+    }
+
+    /// Sorted list of all arms observed so far.
+    pub fn observed_arms(&self) -> Vec<String> {
+        let mut arms: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (arm, _) in self.cells.keys() {
+            arms.insert(arm.clone());
+        }
+        arms.into_iter().collect()
+    }
+
+    /// Get the stats for a specific (arm, bin) cell, if any.
+    pub fn get(&self, arm: &str, bin: u64) -> Option<&CellStats> {
+        self.cells.get(&(arm.to_string(), bin))
+    }
+
+    /// Total calls recorded across all cells.
+    pub fn total_calls(&self) -> u64 {
+        self.cells.values().map(|s| s.calls).sum()
+    }
+
+    /// Pick the single (arm, context-bin) cell most in need of investigation.
+    ///
+    /// Delegates to [`contextual_worst_first_pick_one`].
+    pub fn pick_one(
+        &self,
+        seed: u64,
+        arms: &[String],
+        active_bins: &[u64],
+        cfg: WorstFirstConfig,
+    ) -> Option<(ContextualCell, bool)> {
+        contextual_worst_first_pick_one(
+            seed,
+            arms,
+            active_bins,
+            cfg,
+            |a, b| self.cell_calls(a, b),
+            |a, b| self.cell_summary(a, b),
+        )
+    }
+
+    /// Pick up to `k` (arm, context-bin) cells for triage.
+    ///
+    /// Delegates to [`contextual_worst_first_pick_k`].
+    pub fn pick_k(
+        &self,
+        seed: u64,
+        arms: &[String],
+        active_bins: &[u64],
+        k: usize,
+        cfg: WorstFirstConfig,
+    ) -> Vec<(ContextualCell, bool)> {
+        contextual_worst_first_pick_k(
+            seed,
+            arms,
+            active_bins,
+            k,
+            cfg,
+            |a, b| self.cell_calls(a, b),
+            |a, b| self.cell_summary(a, b),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

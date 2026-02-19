@@ -1,4 +1,7 @@
-use muxer::{select_mab_explain, MabConfig, Outcome, StickyConfig, StickyMab, Window};
+use muxer::{
+    select_mab_explain, ContextBinConfig, ContextualCoverageTracker, MabConfig, Outcome,
+    StickyConfig, StickyMab, Window, WorstFirstConfig, context_bin,
+};
 use std::collections::BTreeMap;
 
 fn push_n(w: &mut Window, n: usize, o: Outcome) {
@@ -141,4 +144,123 @@ fn sticky_reduces_switching_under_alternating_small_advantages() {
         sticky_switches,
         base_switches
     );
+}
+
+/// Simulate a localised contextual regression: arm "b" degrades specifically in the
+/// "high-domain" feature bin while remaining healthy in the "low-domain" bin.
+/// Verify that `ContextualCoverageTracker::pick_one` surfaces the bad cell and not
+/// the healthy one, even though arm "b" looks acceptable in aggregate.
+#[test]
+fn contextual_tracker_surfaces_localised_regression() {
+    let arms = vec!["a".to_string(), "b".to_string()];
+    let bin_cfg = ContextBinConfig { levels: 4, seed: 0 };
+
+    // Two distinct feature regimes: "low-domain" and "high-domain".
+    let bin_low = context_bin(&[0.1, 0.1], bin_cfg);
+    let bin_high = context_bin(&[0.9, 0.9], bin_cfg);
+    assert_ne!(bin_low, bin_high, "bins must be distinct for this test");
+
+    let wf_cfg = WorstFirstConfig {
+        exploration_c: 1.0,
+        hard_weight: 3.0,
+        soft_weight: 1.0,
+    };
+
+    let mut tracker = ContextualCoverageTracker::new();
+
+    // Arm "a" is fully healthy across both bins.
+    for _ in 0..20 {
+        tracker.record("a", bin_low, false, false);
+        tracker.record("a", bin_high, false, false);
+    }
+
+    // Arm "b" is healthy in the low-domain bin ...
+    for _ in 0..20 {
+        tracker.record("b", bin_low, false, false);
+    }
+
+    // ... but has a high hard-junk rate in the high-domain bin (localised regression).
+    for _ in 0..20 {
+        tracker.record("b", bin_high, true, false); // hard junk
+    }
+
+    assert_eq!(tracker.total_calls(), 80);
+
+    let bins = tracker.active_bins();
+    assert_eq!(bins.len(), 2);
+
+    // Per-arm aggregate for "b" is 50% hard-junk — noticeable.  But the per-cell view
+    // should pinpoint (arm="b", bin=bin_high) with hard_junk_rate=1.0.
+    let stats_b_high = tracker.get("b", bin_high).unwrap();
+    assert_eq!(stats_b_high.hard_junk_rate(), 1.0);
+    let stats_b_low = tracker.get("b", bin_low).unwrap();
+    assert_eq!(stats_b_low.hard_junk_rate(), 0.0);
+
+    // pick_one should surface (b, bin_high) as the worst cell.
+    let (cell, explore) = tracker.pick_one(42, &arms, &bins, wf_cfg).unwrap();
+    assert!(!explore, "all cells are seen; should be a scored pick, not coverage");
+    assert_eq!(cell.arm, "b");
+    assert_eq!(
+        cell.context_bin, bin_high,
+        "localised regression in bin_high should be surfaced"
+    );
+}
+
+/// Demonstrate the full detect-then-triage loop using ContextualCoverageTracker::pick_k:
+/// after a regression fires on arm "provider_b", the top-2 triage picks should both
+/// be in the degraded feature region (bin_degraded), not the healthy region (bin_ok).
+#[test]
+fn contextual_tracker_pick_k_targets_degraded_bins() {
+    let arms = vec!["provider_a".to_string(), "provider_b".to_string()];
+    let bin_cfg = ContextBinConfig { levels: 4, seed: 7 };
+
+    let bin_ok = context_bin(&[0.2, 0.3], bin_cfg);
+    let bin_degraded = context_bin(&[0.7, 0.8], bin_cfg);
+    let bin_new = context_bin(&[0.5, 0.5], bin_cfg); // unseen → should get coverage pick
+
+    let wf_cfg = WorstFirstConfig {
+        exploration_c: 0.5,
+        hard_weight: 2.0,
+        soft_weight: 1.0,
+    };
+
+    let mut tracker = ContextualCoverageTracker::new();
+
+    // Healthy history for both arms in bin_ok.
+    for _ in 0..30 {
+        tracker.record("provider_a", bin_ok, false, false);
+        tracker.record("provider_b", bin_ok, false, false);
+    }
+
+    // provider_a is clean in bin_degraded too.
+    for _ in 0..30 {
+        tracker.record("provider_a", bin_degraded, false, false);
+    }
+
+    // provider_b has regressed in bin_degraded.
+    for _ in 0..30 {
+        tracker.record("provider_b", bin_degraded, false, true); // soft junk
+        tracker.record("provider_b", bin_degraded, true, false); // hard junk (alternating)
+    }
+
+    let seen_bins = vec![bin_ok, bin_degraded];
+    let all_bins = vec![bin_ok, bin_degraded, bin_new]; // bin_new is unseen
+
+    // With unseen bin present, first pick should be coverage (explore_first=true).
+    let picks = tracker.pick_k(42, &arms, &all_bins, 3, wf_cfg);
+    assert_eq!(picks.len(), 3);
+    // At least one pick should be the coverage pick for bin_new.
+    assert!(
+        picks.iter().any(|(_, explore)| *explore),
+        "unseen bin should trigger at least one coverage pick"
+    );
+
+    // Among the scored (non-coverage) picks from seen_bins only, provider_b/bin_degraded
+    // should rank highest.
+    let scored_picks = tracker.pick_k(42, &arms, &seen_bins, 2, wf_cfg);
+    assert_eq!(scored_picks.len(), 2);
+    let (top_cell, top_explore) = &scored_picks[0];
+    assert!(!top_explore);
+    assert_eq!(top_cell.arm, "provider_b");
+    assert_eq!(top_cell.context_bin, bin_degraded);
 }
