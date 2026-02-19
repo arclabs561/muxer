@@ -379,7 +379,7 @@ where
 
     let mut chosen: Vec<(ContextualCell, bool)> = Vec::new();
     let mut remaining_bins: Vec<u64> = active_bins.to_vec();
-    let mut remaining_arms: Vec<String> = arms.to_vec();
+    let remaining_arms: Vec<String> = arms.to_vec();
 
     while chosen.len() < k {
         if remaining_arms.is_empty() || remaining_bins.is_empty() {
