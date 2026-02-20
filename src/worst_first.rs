@@ -48,6 +48,7 @@ use crate::{stable_hash64, stable_hash64_u64};
 
 /// Configuration for worst-first scoring.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WorstFirstConfig {
     /// Exploration coefficient for the worst-first score.
     pub exploration_c: f64,

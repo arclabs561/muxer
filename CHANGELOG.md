@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.0]
 
 ### Added
 - `TriageSession`: combines per-arm `CusumCatBank` detection with
