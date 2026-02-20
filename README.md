@@ -190,7 +190,7 @@ cargo run --example sticky_mab_router
 
 If you want runnable “research probes” that make tradeoffs/failure modes explicit, see:
 
-- `muxer/examples/EXPERIMENTS.md`
+- [EXPERIMENTS](examples/EXPERIMENTS.md)
 - Examples:
   - `cargo run --example guardrail_semantics`
   - `cargo run --example coverage_autotune --features stochastic`
@@ -205,18 +205,24 @@ Reusable bits extracted from these experiments live in `muxer::monitor`, notably
 - `CusumCatBank`: “GLR-lite” robustification via a small bank of CUSUM alternatives.
 - `calibrate_threshold_from_max_scores`: threshold calibration from null max-score samples (supports Wilson-conservative mode).
 
+## Documentation
+
+- [API docs (docs.rs)](https://docs.rs/muxer)
+- [Changelog](CHANGELOG.md)
+- [Mini-experiments / research probes](examples/EXPERIMENTS.md)
+
 ## Usage
 
 ```toml
 [dependencies]
-muxer = "0.1.2"
+muxer = "0.2.0"
 ```
 
 If you only want the deterministic `Window` + `select_mab*` core (no stochastic bandits), disable default features:
 
 ```toml
 [dependencies]
-muxer = { version = "0.1.2", default-features = false }
+muxer = { version = "0.2.0", default-features = false }
 ```
 
 ## Development
