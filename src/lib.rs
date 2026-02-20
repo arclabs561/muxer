@@ -213,6 +213,9 @@ pub use worst_first::*;
 mod harness;
 pub use harness::*;
 
+mod triage;
+pub use triage::*;
+
 pub use monitor::{
     DriftConfig, DriftDecision, DriftMetric, MonitoredWindow, RateBoundMode, UncertaintyConfig,
 };

@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `TriageSession`: combines per-arm `CusumCatBank` detection with
+  `ContextualCoverageTracker` cell triage in a single stateful session.
+  `observe(arm, outcome_idx, context)` feeds both; `alarmed_arms()` surfaces
+  regressions; `top_alarmed_cells(bins, k)` returns investigation targets.
+- `TriageSessionConfig`: defaults for CUSUM p0/alts/threshold and bin/scoring config.
+- `ArmTriageState`: snapshot of `(n, score_max, alarmed)` for one arm.
+- `OutcomeIdx`: typed constants for the 4-category outcome space (`OK`, `SOFT_JUNK`,
+  `HARD_JUNK`, `FAIL`) with `from_outcome(ok, junk, hard_junk)` helper.
+
 ## [0.1.3]
 
 ### Added
