@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.8]
+
+### Fixed
+
+- **`log_top_candidates_mab` score**: now includes `quality_weight × mean_quality_score`
+  in the ranking score, so audit logs reflect the same objective as selection.
+
+### Added
+
+- **`LogTopCandidate::mean_quality_score: Option<f64>`** — quality score now included
+  in the top-candidates log rows.
+- **`DecisionNote::Diagnostics::mean_quality_score`** — the per-arm diagnostics note
+  now carries the quality score for the chosen arm.
+- **README link to `docs/QUICKSTART.md`** at the top of the Documentation section.
+- **`BanditPolicy` re-exported** from anno's `muxer_harness.rs`.
+
 ## [0.3.7]
 
 ### Added

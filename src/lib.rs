@@ -415,6 +415,12 @@ pub struct LogTopCandidate {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub hard_junk_rate: Option<f64>,
+    /// Mean quality score (present when `Outcome::quality_score` has been set).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub mean_quality_score: Option<f64>,
 }
 
 /// A typed top-candidates payload for logging.
@@ -442,6 +448,7 @@ pub fn log_top_candidates_mab(decision: &MabSelectionDecision, top: usize) -> Ve
             let drift = c.drift_score.unwrap_or(0.0);
             let catkl = c.catkl_score.unwrap_or(0.0);
             let cusum = c.cusum_score.unwrap_or(0.0);
+            let quality_bonus = cfg.quality_weight * c.mean_quality_score.unwrap_or(0.0);
             let score = c.objective_success
                 - cfg.cost_weight * c.mean_cost_units
                 - cfg.latency_weight * c.mean_elapsed_ms
@@ -449,7 +456,8 @@ pub fn log_top_candidates_mab(decision: &MabSelectionDecision, top: usize) -> Ve
                 - cfg.junk_weight * c.soft_junk_rate
                 - cfg.drift_weight * drift
                 - cfg.catkl_weight * catkl
-                - cfg.cusum_weight * cusum;
+                - cfg.cusum_weight * cusum
+                + quality_bonus;
             (score, c)
         })
         .collect();
@@ -463,6 +471,7 @@ pub fn log_top_candidates_mab(decision: &MabSelectionDecision, top: usize) -> Ve
             ok_rate: Some(c.ok_rate),
             junk_rate: Some(c.junk_rate),
             hard_junk_rate: Some(c.hard_junk_rate),
+            mean_quality_score: c.mean_quality_score,
         })
         .collect()
 }
@@ -483,6 +492,7 @@ pub fn log_top_candidates_exp3ix(decision: &Decision, top: usize) -> Vec<LogTopC
             ok_rate: None,
             junk_rate: None,
             hard_junk_rate: None,
+            mean_quality_score: None,
         })
         .collect()
 }
@@ -1890,6 +1900,7 @@ pub fn select_mab_monitored_decide(
             ok_half_width: c.ok_half_width,
             junk_half_width: c.junk_half_width,
             hard_junk_half_width: c.hard_junk_half_width,
+            mean_quality_score: c.mean_quality_score,
         });
     }
 

@@ -116,6 +116,12 @@ pub enum DecisionNote {
             serde(default, skip_serializing_if = "Option::is_none")
         )]
         hard_junk_half_width: Option<f64>,
+        /// Mean quality score for the chosen arm (when quality_score has been recorded).
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        mean_quality_score: Option<f64>,
     },
 
     /// Numerical / CDF fallthrough required choosing the last arm as a safe fallback.
