@@ -1,6 +1,6 @@
 # muxer
 
-Deterministic, multi-objective routing primitives for “provider selection” problems.
+Deterministic, multi-objective routing primitives for "provider selection" problems.
 
 ## What problem this solves
 
@@ -8,11 +8,11 @@ You have a small set of arms (providers/models/backends) and repeated calls that
 
 - **explores** new or recently-changed arms
 - **avoids regressions** (junk/429 spikes)
-- is **deterministic by default** (same stats/config → same choice), so it’s easy to debug
+- is **deterministic by default** (same stats/config → same choice), so it's easy to debug
 
 ## What it is
 
-The core idea is:
+The core selection idea is:
 
 - maintain a small sliding window of recent outcomes per provider (ok/429/junk, cost, latency)
 - compute a Pareto frontier over the objectives
@@ -23,17 +23,46 @@ This crate also includes:
 - a **seedable Thompson-sampling** policy (`ThompsonSampling`) for cases where you can provide a scalar reward in `[0, 1]` per call
 - a **seedable EXP3-IX** policy (`Exp3Ix`) for more adversarial / fast-shifting reward settings
 - (feature `contextual`) a **linear contextual bandit** policy (`LinUcb`) for per-request routing with feature vectors
+- **latency guardrails** (`LatencyGuardrailConfig` / `apply_latency_guardrail`) — hard pre-filter by mean latency, with stop-early semantics for multi-pick loops
+- **multi-pick selection** (`select_mab_k_guardrailed_explain_full` and variants) — select up to `k` unique arms per decision with a per-round guardrail loop
+- **maintenance sampling** (`CoverageConfig` / `coverage_pick_under_sampled`) — ensure all arms stay measured above a quota; see [Three goals for sampling](#three-goals-for-sampling) for why this matters
+- **post-detection triage** (`WorstFirstConfig` / `worst_first_pick_k`) — prioritize the most degraded arms for investigation after monitoring fires
+- **contextual cell triage** (`ContextualCoverageTracker` / `contextual_worst_first_pick_k`) — lift triage to `(arm, context-bin)` pairs so localised regressions don't average away
+- **combined detect + triage sessions** (`TriageSession`) — wires per-arm CUSUM detection and per-cell cell investigation into one stateful session
+- **`softmax_map`** — stable score → probability helper for traffic splitting
+- **novelty helpers** (`novelty_pick_unseen`), **prior smoothing** (`apply_prior_counts_to_summary`), and **pipeline glue** (`PipelineOrder` / `PolicyPlan`) for building custom routing harnesses
 
 ## Which policy should I use?
 
 - **`select_mab` (Window + Pareto + scalarization)**: when you care about **multiple objectives** at once (success, 429, junk, cost, latency) and you want deterministic selection with hard constraints.
 - **`ThompsonSampling`**: when you can provide a **single reward** per call (in `[0, 1]`) and want a classic explore/exploit policy (seedable, optionally decayed).
 - **`Exp3Ix`**: when reward is **non-stationary / adversarial-ish** and you still want a probabilistic policy (seedable, optionally decayed).
-- **`LinUcb` (feature `contextual`)**: when you have a per-request feature vector (e.g. cheap “difficulty” features, embeddings, metadata) and want a contextual policy.
+- **`LinUcb` (feature `contextual`)**: when you have a per-request feature vector (e.g. cheap "difficulty" features, embeddings, metadata) and want a contextual policy.
+
+## Three goals for sampling
+
+Every routing decision involves three objectives that generally compete:
+
+1. **Exploitation** — minimize regret; route to the best arm now.
+2. **Estimation** — understand each arm's true rates; keep all arms measured.
+3. **Detection** — notice when an arm changes; minimize delay between the change and the alarm.
+
+**The two clocks.** You only observe an arm when you sample it, so there are two notions of time:
+
+- **Wall time** $t$: global decision steps.
+- **Sample time** $n_k$: observations from arm $k$.
+
+Detection delay in wall time scales as $\text{delay}_{wall} \approx \text{delay}_{samples} / \text{rate}_k$. `CoverageConfig` sets a minimum sampling-rate floor, which is the direct lever for bounding wall-clock detection delay.
+
+**The non-contextual collapse.** In the non-contextual case with a static allocation, estimation error and average detection delay are both $O(1/n_k)$ in the per-arm sample count. They are structurally proportional — the same lever (how often you sample an arm) drives both. This means there is no free-lunch between estimation and average detection: the Pareto surface collapses to a 1-D curve parameterized by $n_k$.
+
+**The contextual revival.** In the contextual regime (`LinUcb`), routing also depends on a per-request feature vector. Average detection delay remains proportional to estimation (they share the same design-measure sensitivity). But **worst-case detection delay** — which concentrates on the covariate cell with the fewest observations — is genuinely independent. This is why `ContextualCoverageTracker` and `TriageSession` exist: localised regressions in sparse covariate regions need explicit coverage and cell-level triage, not just arm-level monitoring.
+
+For the full treatment and concrete failure modes, see the [API docs](https://docs.rs/muxer) and [examples/EXPERIMENTS.md](examples/EXPERIMENTS.md).
 
 ## Unified decision records (recommended for logging/replay)
 
-Most production routers want a single “decision object” shape regardless of policy so logging, auditing, and replay don’t depend on per-policy conventions. `muxer` provides a unified `Decision` envelope with:
+Most production routers want a single "decision object" shape regardless of policy so logging, auditing, and replay don't depend on per-policy conventions. `muxer` provides a unified `Decision` envelope with:
 
 - `chosen`: the arm name
 - `probs`: optional probability distribution (when a policy has one)
@@ -58,7 +87,7 @@ let sel = select_mab(&arms, &summaries, MabConfig::default());
 assert_eq!(sel.chosen, "a"); // lower junk when all else is equal
 ```
 
-### Realistic “online routing loop” (Window ingestion)
+### Realistic "online routing loop" (Window ingestion)
 
 This is closer to production usage: you maintain a `Window` per arm, push `Outcome`s as requests finish, and call `select_mab` each decision.
 
@@ -82,16 +111,14 @@ cargo run --example monitored_router --features stochastic
 This combines multiple production patterns in one loop: window ingestion, constraints+weights, stickiness reasons, and delayed junk labeling.
 
 ```bash
-cargo run --example end_to_end_router
+cargo run --example end_to_end_router --features stochastic
 ```
 
-Note: this example simulates an environment and therefore requires `--features stochastic` if you disabled default features.
-
-This same scenario has a CI-checked regression test in `tests/e2e_metrics.rs` and now logs whether constraint fallback was used.
+This same scenario has a CI-checked regression test in `tests/e2e_metrics.rs` and logs whether constraint fallback was used.
 
 ### Window ingestion with delayed junk labeling
 
-If your “junk” classification is only known after downstream parsing/validation, you can update the most recent outcome:
+If your "junk" classification is only known after downstream parsing/validation, you can update the most recent outcome:
 
 ```bash
 cargo run --example window_delayed_junk_label
@@ -99,11 +126,54 @@ cargo run --example window_delayed_junk_label
 
 ### Constraint + trade-off tuning for `select_mab`
 
-Example showing “constraints first, then weights”:
+Example showing "constraints first, then weights":
 
 ```bash
 cargo run --example mab_constraints_tuning
 ```
+
+### Multi-pick selection with a latency guardrail
+
+`select_mab_k_guardrailed_explain_full` selects up to `k` unique arms per decision, applying
+a `LatencyGuardrailConfig` each round. When combined with `MonitoredWindow`s, use
+`select_mab_k_guardrailed_monitored_explain_full`. `log_mab_k_rounds_typed` converts the
+explanation into compact, log-ready round rows.
+
+Guardrail semantics (soft pre-filter vs hard constraint) are shown in:
+
+```bash
+cargo run --example guardrail_semantics
+```
+
+### Unified decision records
+
+```bash
+cargo run --example decision_unified
+```
+
+### Detect-then-triage (`TriageSession`)
+
+`TriageSession` wires per-arm CUSUM detection with per-`(arm, context-bin)` cell investigation:
+
+```rust
+use muxer::{TriageSession, TriageSessionConfig, OutcomeIdx};
+
+let arms = vec!["a".to_string(), "b".to_string()];
+let mut session = TriageSession::new(&arms, TriageSessionConfig::default()).unwrap();
+
+// Feed observations: arm name, outcome category, feature context.
+session.observe("a", OutcomeIdx::OK, &[0.2, 0.3]);
+session.observe("b", OutcomeIdx::HARD_JUNK, &[0.8, 0.9]);
+
+// Which arms have CUSUM-alarmed?
+let alarmed = session.alarmed_arms();
+
+// Top (arm, bin) cells to route extra investigation traffic to.
+let bins = session.tracker().active_bins();
+let cells = session.top_alarmed_cells(&bins, 3);
+```
+
+`OutcomeIdx::from_outcome(ok, junk, hard_junk)` maps a `muxer::Outcome` triple to the 4-category index space (`OK` / `SOFT_JUNK` / `HARD_JUNK` / `FAIL`). For the non-contextual case, `worst_first_pick_k` provides arm-level triage without feature vectors.
 
 ### EXP3-IX (adversarial bandit) with probabilities
 
@@ -130,7 +200,7 @@ cargo run --example exp3ix_router
 
 Note: this example requires `--features stochastic` if you disabled default features.
 
-### Thompson “traffic splitting” selector (mean-softmax allocation)
+### Thompson "traffic splitting" selector (mean-softmax allocation)
 
 ```rust
 use muxer::{ThompsonConfig, ThompsonSampling};
@@ -170,9 +240,9 @@ cargo run --example contextual_router --features contextual
 Notes:
 
 - If you want a probability distribution over arms for this context (e.g. for traffic-splitting or logging approximate propensities), use `LinUcb::probabilities(...)` or `LinUcb::decide_softmax_ucb(...)`.
-- Algorithm reference: LinUCB (Chu et al., “Contextual bandits with linear payoff functions”).
+- Algorithm reference: LinUCB (Chu et al., "Contextual bandits with linear payoff functions").
 
-Contextual “propensity logging” example:
+Contextual "propensity logging" example:
 
 ```bash
 cargo run --example contextual_propensity_logging --features contextual
@@ -180,7 +250,7 @@ cargo run --example contextual_propensity_logging --features contextual
 
 ### Stickiness / switching-cost control
 
-If you want to reduce “flapping” between arms, wrap deterministic selection with `StickyMab`:
+If you want to reduce "flapping" between arms, wrap deterministic selection with `StickyMab`:
 
 ```bash
 cargo run --example sticky_mab_router
@@ -188,7 +258,7 @@ cargo run --example sticky_mab_router
 
 ### Mini-experiments (bandits × monitoring × false alarms)
 
-If you want runnable “research probes” that make tradeoffs/failure modes explicit, see:
+If you want runnable "research probes" that make tradeoffs/failure modes explicit, see:
 
 - [EXPERIMENTS](examples/EXPERIMENTS.md)
 - Examples:
@@ -202,7 +272,7 @@ If you want runnable “research probes” that make tradeoffs/failure modes exp
 
 Reusable bits extracted from these experiments live in `muxer::monitor`, notably:
 
-- `CusumCatBank`: “GLR-lite” robustification via a small bank of CUSUM alternatives.
+- `CusumCatBank`: "GLR-lite" robustification via a small bank of CUSUM alternatives.
 - `calibrate_threshold_from_max_scores`: threshold calibration from null max-score samples (supports Wilson-conservative mode).
 
 ## Documentation
