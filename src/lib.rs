@@ -958,6 +958,15 @@ pub struct CandidateDebug {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub hard_junk_half_width: Option<f64>,
+
+    /// Mean quality score for this arm (when `Outcome::quality_score` has been set).
+    ///
+    /// Present when any outcome in the summary window had `quality_score` set.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub mean_quality_score: Option<f64>,
 }
 
 /// Output of `select_mab` (chosen arm + debugging context).
@@ -1131,6 +1140,7 @@ fn explore_first_decision(
             ok_half_width: None,
             junk_half_width: None,
             hard_junk_half_width: None,
+            mean_quality_score: None,
         }],
         config: cfg,
     };
@@ -1306,6 +1316,7 @@ pub fn select_mab_explain(
             ok_half_width: None,
             junk_half_width: None,
             hard_junk_half_width: None,
+            mean_quality_score: s.mean_quality_score,
         });
 
         frontier_points.push(vec![
@@ -1660,6 +1671,7 @@ pub fn select_mab_monitored_explain_with_summaries(
             ok_half_width: Some(ok_half),
             junk_half_width: Some(soft_half),
             hard_junk_half_width: Some(hard_half),
+            mean_quality_score: s.mean_quality_score,
         });
 
         frontier_points.push(vec![
@@ -2380,6 +2392,7 @@ mod tests {
                             ok_half_width: None,
                             junk_half_width: None,
                             hard_junk_half_width: None,
+                            mean_quality_score: None,
                         },
                         CandidateDebug {
                             name: "b".to_string(),
@@ -2401,6 +2414,7 @@ mod tests {
                             ok_half_width: None,
                             junk_half_width: None,
                             hard_junk_half_width: None,
+                            mean_quality_score: None,
                         },
                     ],
                     config: cfg,
@@ -2462,6 +2476,7 @@ mod tests {
                     ok_half_width: None,
                     junk_half_width: None,
                     hard_junk_half_width: None,
+                    mean_quality_score: None,
                 }],
                 config: cfg,
             },
@@ -2498,6 +2513,7 @@ mod tests {
                 ok_half_width: None,
                 junk_half_width: None,
                 hard_junk_half_width: None,
+                mean_quality_score: None,
             }],
             config: cfg,
         };

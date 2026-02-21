@@ -650,6 +650,18 @@ impl Router {
         self.windows.get(arm).map(|w| w.summary()).unwrap_or_default()
     }
 
+    /// Mean quality score for an arm, or `None` if no `quality_score` has been set.
+    ///
+    /// Convenience wrapper around [`Window::mean_quality_score`].
+    pub fn mean_quality_score(&self, arm: &str) -> Option<f64> {
+        self.windows.get(arm)?.mean_quality_score()
+    }
+
+    /// Number of observations currently in the selection window for an arm.
+    pub fn window_len(&self, arm: &str) -> usize {
+        self.windows.get(arm).map(|w| w.len()).unwrap_or(0)
+    }
+
     /// Read-only access to the selection window for an arm.
     pub fn window(&self, arm: &str) -> Option<&Window> {
         self.windows.get(arm)

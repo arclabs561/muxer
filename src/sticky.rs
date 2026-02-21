@@ -385,6 +385,7 @@ mod tests {
                     ok_half_width: None,
                     junk_half_width: None,
                     hard_junk_half_width: None,
+                    mean_quality_score: None,
                 },
                 CandidateDebug {
                     name: "b".to_string(),
@@ -406,6 +407,7 @@ mod tests {
                     ok_half_width: None,
                     junk_half_width: None,
                     hard_junk_half_width: None,
+                    mean_quality_score: None,
                 },
             ],
             config: cfg,
@@ -447,6 +449,7 @@ mod tests {
                 ok_half_width: None,
                 junk_half_width: None,
                 hard_junk_half_width: None,
+                mean_quality_score: None,
             }],
             config: cfg,
         };

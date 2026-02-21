@@ -365,14 +365,14 @@ let d = router.select(3, 0);
 
 ```toml
 [dependencies]
-muxer = "0.3.6"
+muxer = "0.3.7"
 ```
 
 If you only want the deterministic `Window` + `select_mab*` core (no stochastic bandits), disable default features:
 
 ```toml
 [dependencies]
-muxer = { version = "0.3.6", default-features = false }
+muxer = { version = "0.3.7", default-features = false }
 ```
 
 ## Development

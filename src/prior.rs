@@ -35,6 +35,26 @@ pub fn apply_prior_counts_to_summary(out: &mut Summary, prior: Summary, target_c
     out.ok = out.ok.min(out.calls);
     out.junk = out.junk.min(out.calls);
     out.hard_junk = out.hard_junk.min(out.calls);
+
+    // Blend quality scores: inherit from prior when out has none;
+    // compute a calls-weighted average when both have quality estimates.
+    let out_obs = out.calls.saturating_sub(need) as f64; // calls before adding pseudo-counts
+    let prior_obs = need_f;
+    match (out.mean_quality_score, prior.mean_quality_score) {
+        (None, Some(prior_q)) => {
+            out.mean_quality_score = Some(prior_q.clamp(0.0, 1.0));
+        }
+        (Some(out_q), Some(prior_q)) => {
+            let total = out_obs + prior_obs;
+            if total > 0.0 {
+                out.mean_quality_score = Some(
+                    ((out_q * out_obs + prior_q.clamp(0.0, 1.0) * prior_obs) / total)
+                        .clamp(0.0, 1.0),
+                );
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -97,5 +117,51 @@ mod tests {
         assert!(out.ok <= out.calls);
         assert!(out.junk <= out.calls);
         assert!(out.hard_junk <= out.calls);
+    }
+
+    #[test]
+    fn prior_inherits_quality_score_when_out_has_none() {
+        let mut out = Summary {
+            calls: 0, ok: 0, junk: 0, hard_junk: 0, cost_units: 0, elapsed_ms_sum: 0,
+            mean_quality_score: None,
+        };
+        let prior = Summary {
+            calls: 100, ok: 80, junk: 10, hard_junk: 5, cost_units: 0, elapsed_ms_sum: 0,
+            mean_quality_score: Some(0.85),
+        };
+        apply_prior_counts_to_summary(&mut out, prior, 10);
+        let q = out.mean_quality_score.unwrap();
+        assert!((q - 0.85).abs() < 1e-10, "should inherit prior quality: {q}");
+    }
+
+    #[test]
+    fn prior_blends_quality_score_weighted_by_calls() {
+        let mut out = Summary {
+            calls: 10, ok: 9, junk: 0, hard_junk: 0, cost_units: 0, elapsed_ms_sum: 0,
+            mean_quality_score: Some(0.90),
+        };
+        let prior = Summary {
+            calls: 100, ok: 80, junk: 10, hard_junk: 5, cost_units: 0, elapsed_ms_sum: 0,
+            mean_quality_score: Some(0.50),
+        };
+        apply_prior_counts_to_summary(&mut out, prior, 20); // adds 10 pseudo-calls
+        let q = out.mean_quality_score.unwrap();
+        // Weighted avg: (0.90 * 10 + 0.50 * 10) / 20 = 0.70
+        assert!((q - 0.70).abs() < 1e-6, "blended quality: {q}");
+    }
+
+    #[test]
+    fn prior_quality_none_does_not_overwrite() {
+        let mut out = Summary {
+            calls: 10, ok: 9, junk: 0, hard_junk: 0, cost_units: 0, elapsed_ms_sum: 0,
+            mean_quality_score: Some(0.90),
+        };
+        let prior = Summary {
+            calls: 100, ok: 80, junk: 10, hard_junk: 5, cost_units: 0, elapsed_ms_sum: 0,
+            mean_quality_score: None,
+        };
+        apply_prior_counts_to_summary(&mut out, prior, 20);
+        // out had quality but prior doesn't — keep out's quality (no blend possible)
+        assert_eq!(out.mean_quality_score, Some(0.90));
     }
 }

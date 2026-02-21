@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.3.7]
+
+### Added
+
+- **`CandidateDebug::mean_quality_score: Option<f64>`** — audit field populated from
+  `Summary::mean_quality_score` in both `select_mab_explain` and monitored selection.
+- **`Router::mean_quality_score(arm)`** — convenience accessor for the selection window's
+  mean quality score.
+- **`Router::window_len(arm)`** — number of observations currently in the selection window.
+- **`apply_prior_counts_to_summary` quality blending** — if the prior has
+  `mean_quality_score` set, it is now inherited (or calls-weighted merged with the
+  observed quality) instead of being silently dropped.
+- **`docs/QUICKSTART.md`** — 5-minute guide: start-here command, two-minute Router
+  snippet, expected output, configuration checklist, common failure modes.
+
+### Tests added
+
+- `prior_inherits_quality_score_when_out_has_none`
+- `prior_blends_quality_score_weighted_by_calls`
+- `prior_quality_none_does_not_overwrite`
+
 ## [0.3.6]
 
 ### Changed
