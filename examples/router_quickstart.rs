@@ -12,11 +12,25 @@
 use muxer::{Outcome, Router, RouterConfig, TriageSessionConfig};
 
 fn clean() -> Outcome {
-    Outcome { ok: true, junk: false, hard_junk: false, cost_units: 2, elapsed_ms: 80, quality_score: None }
+    Outcome {
+        ok: true,
+        junk: false,
+        hard_junk: false,
+        cost_units: 2,
+        elapsed_ms: 80,
+        quality_score: None,
+    }
 }
 
 fn degraded() -> Outcome {
-    Outcome { ok: false, junk: true, hard_junk: true, cost_units: 2, elapsed_ms: 300, quality_score: None }
+    Outcome {
+        ok: false,
+        junk: true,
+        hard_junk: true,
+        cost_units: 2,
+        elapsed_ms: 300,
+        quality_score: None,
+    }
 }
 
 fn main() {
@@ -42,20 +56,39 @@ fn main() {
     println!("\n=== 2. Quality divergence ===");
 
     for _ in 0..30 {
-        router.observe("arm-b", Outcome { ok: true, junk: true, hard_junk: false, ..clean() });
+        router.observe(
+            "arm-b",
+            Outcome {
+                ok: true,
+                junk: true,
+                hard_junk: false,
+                ..clean()
+            },
+        );
         router.observe("arm-a", clean());
     }
 
     let d = router.select(1, 99);
-    println!("  After arm-b accumulates junk: chose {:?}", d.primary().unwrap());
-    assert_eq!(d.primary().unwrap(), "arm-a", "should prefer arm-a after arm-b degrades");
+    println!(
+        "  After arm-b accumulates junk: chose {:?}",
+        d.primary().unwrap()
+    );
+    assert_eq!(
+        d.primary().unwrap(),
+        "arm-a",
+        "should prefer arm-a after arm-b degrades"
+    );
 
     // -----------------------------------------------------------------------
     // 3. Triage mode: hard failures on arm-b trigger CUSUM alarm
     // -----------------------------------------------------------------------
     println!("\n=== 3. Triage mode ===");
 
-    let tcfg = TriageSessionConfig { min_n: 10, threshold: 3.0, ..TriageSessionConfig::default() };
+    let tcfg = TriageSessionConfig {
+        min_n: 10,
+        threshold: 3.0,
+        ..TriageSessionConfig::default()
+    };
     let cfg = RouterConfig::default().with_triage_cfg(tcfg);
 
     let arms2 = vec!["stable".to_string(), "degraded".to_string()];
@@ -73,7 +106,10 @@ fn main() {
     }
 
     println!("  mode after failures: {:?}", r2.mode());
-    assert!(r2.mode().is_triage(), "should be in triage after hard failures");
+    assert!(
+        r2.mode().is_triage(),
+        "should be in triage after hard failures"
+    );
     println!("  alarmed arms: {:?}", r2.mode().alarmed_arms());
 
     // In triage mode, select routes investigation traffic to alarmed arm.
@@ -84,7 +120,10 @@ fn main() {
     // Acknowledge: reset CUSUM, promote recent → baseline.
     r2.acknowledge_change("degraded");
     println!("  mode after acknowledge: {:?}", r2.mode());
-    assert!(!r2.mode().is_triage(), "should return to Normal after acknowledge");
+    assert!(
+        !r2.mode().is_triage(),
+        "should return to Normal after acknowledge"
+    );
 
     // -----------------------------------------------------------------------
     // 4. Large-K batch exploration
@@ -127,12 +166,20 @@ fn main() {
     rd.add_arm("new-c".to_string()).unwrap();
     let d = rd.select(1, 0);
     println!("  After add_arm('new-c'): chose {:?}", d.primary().unwrap());
-    assert_eq!(d.primary().unwrap(), "new-c", "newly added arm should be explored first");
+    assert_eq!(
+        d.primary().unwrap(),
+        "new-c",
+        "newly added arm should be explored first"
+    );
 
     rd.remove_arm("old-b");
     for _ in 0..100 {
         let d = rd.select(1, 0);
-        assert_ne!(d.primary().unwrap(), "old-b", "removed arm must not be selected");
+        assert_ne!(
+            d.primary().unwrap(),
+            "old-b",
+            "removed arm must not be selected"
+        );
     }
     println!("  remove_arm('old-b'): never selected again ✓");
 

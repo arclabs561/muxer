@@ -81,13 +81,19 @@ mod tests {
     fn suggested_window_cap_decreases_with_higher_change_rate() {
         let slow = suggested_window_cap(1000, 0.01);
         let fast = suggested_window_cap(1000, 0.5);
-        assert!(slow >= fast, "more frequent changes → smaller optimal window");
+        assert!(
+            slow >= fast,
+            "more frequent changes → smaller optimal window"
+        );
     }
 
     #[test]
     fn suggested_window_cap_for_k_scales_down_with_more_arms() {
         let few = suggested_window_cap_for_k(2, 1000, 0.05);
         let many = suggested_window_cap_for_k(50, 1000, 0.05);
-        assert!(few >= many, "more arms share the same budget → smaller per-arm window");
+        assert!(
+            few >= many,
+            "more arms share the same budget → smaller per-arm window"
+        );
     }
 }

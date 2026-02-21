@@ -876,10 +876,10 @@ mod tests {
             guard_strict(50.0),
             PipelineOrder::NoveltyFirst,
             |b| match b {
-                "unseen" => (0, 0),    // 0 calls → novelty pick
-                "slow"   => (10, 1000), // mean 100ms > 50ms
-                "fast"   => (10, 200),  // mean 20ms < 50ms
-                _        => (0, 0),
+                "unseen" => (0, 0),   // 0 calls → novelty pick
+                "slow" => (10, 1000), // mean 100ms > 50ms
+                "fast" => (10, 200),  // mean 20ms < 50ms
+                _ => (0, 0),
             },
         );
         assert!(
@@ -968,9 +968,18 @@ mod tests {
                 _ => (0, 0),
             },
         );
-        assert!(plan.prechosen.contains(&"a".to_string()), "unseen arm prechosen");
-        assert!(plan.eligible.contains(&"b".to_string()), "fast arm eligible");
-        assert!(!plan.eligible.contains(&"c".to_string()), "slow arm filtered");
+        assert!(
+            plan.prechosen.contains(&"a".to_string()),
+            "unseen arm prechosen"
+        );
+        assert!(
+            plan.eligible.contains(&"b".to_string()),
+            "fast arm eligible"
+        );
+        assert!(
+            !plan.eligible.contains(&"c".to_string()),
+            "slow arm filtered"
+        );
     }
 
     // policy_fill_generic: prechosen fills k without calling pick_rest.
@@ -1009,7 +1018,10 @@ mod tests {
             |eligible, _k| eligible.to_vec(),
         );
         assert_eq!(fill.chosen.len(), 2);
-        assert!(fill.chosen.contains(&"a".to_string()), "prechosen novelty arm included");
+        assert!(
+            fill.chosen.contains(&"a".to_string()),
+            "prechosen novelty arm included"
+        );
         // uniqueness
         let mut s = fill.chosen.clone();
         s.sort();

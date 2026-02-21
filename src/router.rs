@@ -26,11 +26,10 @@
 
 use crate::monitor::{DriftConfig, MonitoredWindow};
 use crate::{
-    policy_fill_generic, select_mab_explain,
-    select_mab_monitored_explain_with_summaries, worst_first_pick_k, ControlConfig,
-    ContextualCell, CoverageConfig, DriftMetric, LatencyGuardrailConfig, MabConfig, Outcome,
-    OutcomeIdx, PipelineOrder, Summary, TriageSession, TriageSessionConfig, Window,
-    WorstFirstConfig, split_control_budget,
+    policy_fill_generic, select_mab_explain, select_mab_monitored_explain_with_summaries,
+    split_control_budget, worst_first_pick_k, ContextualCell, ControlConfig, CoverageConfig,
+    DriftMetric, LatencyGuardrailConfig, MabConfig, Outcome, OutcomeIdx, PipelineOrder, Summary,
+    TriageSession, TriageSessionConfig, Window, WorstFirstConfig,
 };
 use std::collections::BTreeMap;
 
@@ -153,7 +152,11 @@ impl RouterConfig {
 
     /// Enable coverage sampling with the given minimum fraction.
     pub fn with_coverage(mut self, min_fraction: f64, min_floor: u64) -> Self {
-        self.coverage = CoverageConfig { enabled: true, min_fraction, min_calls_floor: min_floor };
+        self.coverage = CoverageConfig {
+            enabled: true,
+            min_fraction,
+            min_calls_floor: min_floor,
+        };
         self
     }
 
@@ -306,10 +309,7 @@ impl Router {
                     .map(|a| {
                         (
                             a.clone(),
-                            MonitoredWindow::new(
-                                cfg.baseline_cap.max(1),
-                                cfg.recent_cap.max(1),
-                            ),
+                            MonitoredWindow::new(cfg.baseline_cap.max(1), cfg.recent_cap.max(1)),
                         )
                     })
                     .collect(),
@@ -345,7 +345,8 @@ impl Router {
         if self.arms.contains(&arm) {
             return Ok(());
         }
-        self.windows.insert(arm.clone(), Window::new(self.cfg.window_cap.max(1)));
+        self.windows
+            .insert(arm.clone(), Window::new(self.cfg.window_cap.max(1)));
         if let Some(ref mut m) = self.monitored {
             m.insert(
                 arm.clone(),
@@ -427,8 +428,11 @@ impl Router {
         };
 
         if triage_k > 0 {
-            let triage_arms: Vec<String> =
-                alarmed.iter().filter(|a| !chosen.contains(*a)).cloned().collect();
+            let triage_arms: Vec<String> = alarmed
+                .iter()
+                .filter(|a| !chosen.contains(*a))
+                .cloned()
+                .collect();
             let picks = worst_first_pick_k(
                 seed ^ 0x5452_4947,
                 &triage_arms,
@@ -436,7 +440,11 @@ impl Router {
                 self.cfg.triage_wf,
                 |arm| self.windows.get(arm).map(|w| w.len() as u64).unwrap_or(0),
                 |arm| {
-                    let s = self.windows.get(arm).map(|w| w.summary()).unwrap_or_default();
+                    let s = self
+                        .windows
+                        .get(arm)
+                        .map(|w| w.summary())
+                        .unwrap_or_default();
                     (s.calls, s.hard_junk_rate(), s.soft_junk_rate())
                 },
             );
@@ -490,7 +498,11 @@ impl Router {
         let sum_snap: BTreeMap<String, Summary> = mab_arms
             .iter()
             .map(|a| {
-                let s = self.windows.get(a.as_str()).map(|w| w.summary()).unwrap_or_default();
+                let s = self
+                    .windows
+                    .get(a.as_str())
+                    .map(|w| w.summary())
+                    .unwrap_or_default();
                 (a.clone(), s)
             })
             .collect();
@@ -631,7 +643,9 @@ impl Router {
         if alarmed.is_empty() {
             RouterMode::Normal
         } else {
-            RouterMode::Triage { alarmed_arms: alarmed }
+            RouterMode::Triage {
+                alarmed_arms: alarmed,
+            }
         }
     }
 
@@ -647,7 +661,10 @@ impl Router {
 
     /// Current `Summary` for an arm (from the selection window).
     pub fn summary(&self, arm: &str) -> Summary {
-        self.windows.get(arm).map(|w| w.summary()).unwrap_or_default()
+        self.windows
+            .get(arm)
+            .map(|w| w.summary())
+            .unwrap_or_default()
     }
 
     /// Mean quality score for an arm, or `None` if no `quality_score` has been set.
@@ -821,11 +838,25 @@ mod tests {
     }
 
     fn clean() -> Outcome {
-        Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 50, quality_score: None }
+        Outcome {
+            ok: true,
+            junk: false,
+            hard_junk: false,
+            cost_units: 1,
+            elapsed_ms: 50,
+            quality_score: None,
+        }
     }
 
     fn bad() -> Outcome {
-        Outcome { ok: false, junk: true, hard_junk: true, cost_units: 1, elapsed_ms: 50, quality_score: None }
+        Outcome {
+            ok: false,
+            junk: true,
+            hard_junk: true,
+            cost_units: 1,
+            elapsed_ms: 50,
+            quality_score: None,
+        }
     }
 
     // --- Basic invariants ---
@@ -887,7 +918,15 @@ mod tests {
             r.observe("arm0", clean());
         }
         for _ in 0..50 {
-            r.observe("arm1", Outcome { ok: true, junk: true, hard_junk: false, ..clean() });
+            r.observe(
+                "arm1",
+                Outcome {
+                    ok: true,
+                    junk: true,
+                    hard_junk: false,
+                    ..clean()
+                },
+            );
         }
         let d = r.select(1, 0);
         assert_eq!(d.chosen[0], "arm0", "arm0 has lower junk rate");
@@ -944,7 +983,10 @@ mod tests {
         assert!(r.mode().is_triage());
 
         r.acknowledge_change("a");
-        assert!(!r.mode().is_triage(), "mode should return to Normal after acknowledge");
+        assert!(
+            !r.mode().is_triage(),
+            "mode should return to Normal after acknowledge"
+        );
     }
 
     // --- Monitoring windows ---
@@ -954,7 +996,10 @@ mod tests {
         let cfg = RouterConfig::default().with_monitoring(200, 50);
         let r = Router::new(arms(3), cfg).unwrap();
         for a in r.arms() {
-            assert!(r.monitored_window(a).is_some(), "monitored window should exist for {a}");
+            assert!(
+                r.monitored_window(a).is_some(),
+                "monitored window should exist for {a}"
+            );
         }
     }
 
@@ -969,7 +1014,10 @@ mod tests {
         assert!(before_recent > 0);
         r.acknowledge_change("a");
         let after_recent = r.monitored_window("a").unwrap().recent_len();
-        assert_eq!(after_recent, 0, "recent window should be cleared after acknowledge");
+        assert_eq!(
+            after_recent, 0,
+            "recent window should be cleared after acknowledge"
+        );
     }
 
     // --- Dynamic arm management ---
@@ -984,7 +1032,10 @@ mod tests {
         r.add_arm("arm2".to_string()).unwrap();
 
         let d = r.select(1, 0);
-        assert_eq!(d.chosen[0], "arm2", "newly added arm should be explored first");
+        assert_eq!(
+            d.chosen[0], "arm2",
+            "newly added arm should be explored first"
+        );
     }
 
     #[test]
@@ -1016,7 +1067,11 @@ mod tests {
                 r.observe(a, clean());
             }
         }
-        assert_eq!(seen.len(), n, "all {n} arms should be explored within 15 rounds (k=3)");
+        assert_eq!(
+            seen.len(),
+            n,
+            "all {n} arms should be explored within 15 rounds (k=3)"
+        );
     }
 
     #[test]

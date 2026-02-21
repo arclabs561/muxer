@@ -1135,8 +1135,8 @@ pub fn simulate_cusum_null_max_scores(
     n_trials: usize,
     seed: u64,
 ) -> Result<Vec<f64>, logp::Error> {
-    use rand::SeedableRng;
     use rand::Rng;
+    use rand::SeedableRng;
 
     if n_trials == 0 || m == 0 {
         return Ok(Vec::new());
@@ -1221,7 +1221,8 @@ pub fn calibrate_cusum_threshold(
     seed: u64,
     require_wilson: bool,
 ) -> Result<ThresholdCalibration, logp::Error> {
-    let mut max_scores = simulate_cusum_null_max_scores(p0, alts, m, cusum_alpha, min_n, n_trials, seed)?;
+    let mut max_scores =
+        simulate_cusum_null_max_scores(p0, alts, m, cusum_alpha, min_n, n_trials, seed)?;
     if max_scores.is_empty() {
         return Ok(ThresholdCalibration {
             threshold: 0.0,

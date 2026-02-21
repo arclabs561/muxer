@@ -304,12 +304,12 @@ pub use harness::*;
 mod triage;
 pub use triage::*;
 
-pub use monitor::{
-    DriftConfig, DriftDecision, DriftMetric, MonitoredWindow, RateBoundMode, UncertaintyConfig,
-    ThresholdCalibration, calibrate_threshold_from_max_scores,
-};
 #[cfg(feature = "stochastic")]
 pub use monitor::{calibrate_cusum_threshold, simulate_cusum_null_max_scores};
+pub use monitor::{
+    calibrate_threshold_from_max_scores, DriftConfig, DriftDecision, DriftMetric, MonitoredWindow,
+    RateBoundMode, ThresholdCalibration, UncertaintyConfig,
+};
 
 /// Per-round details for multi-pick MAB selection with an external latency guardrail.
 #[derive(Debug, Clone)]
@@ -540,7 +540,10 @@ pub struct Outcome {
     ///
     /// `None` (the default) means "not measured". Set via
     /// [`Window::set_last_quality_score`] when scoring completes after the call.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub quality_score: Option<f64>,
 }
 
@@ -629,7 +632,11 @@ impl Window {
                 count += 1;
             }
         }
-        if count == 0 { None } else { Some(sum / count as f64) }
+        if count == 0 {
+            None
+        } else {
+            Some(sum / count as f64)
+        }
     }
 
     /// Summarize the current window as counts and sums.
@@ -697,7 +704,10 @@ pub struct Summary {
     ///
     /// Populated by [`Window::summary`].  When constructing `Summary` directly
     /// (not via `Window`), set this to reflect a pre-computed quality estimate.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub mean_quality_score: Option<f64>,
 }
 
@@ -1326,7 +1336,13 @@ pub fn select_mab_explain(
             mean_quality_score: s.mean_quality_score,
         });
 
-        let mut pt = vec![objective_success, -mean_cost, -mean_lat, -hard_junk_rate, -soft_junk_rate];
+        let mut pt = vec![
+            objective_success,
+            -mean_cost,
+            -mean_lat,
+            -hard_junk_rate,
+            -soft_junk_rate,
+        ];
         if cfg.quality_weight > 0.0 {
             pt.push(mean_q);
         }

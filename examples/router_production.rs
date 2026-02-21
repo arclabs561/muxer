@@ -19,8 +19,8 @@ fn main() {
 #[cfg(feature = "stochastic")]
 fn main() {
     use muxer::{
-        calibrate_cusum_threshold, Outcome, Router, RouterConfig, RouterSnapshot,
-        TriageSessionConfig, suggested_window_cap,
+        calibrate_cusum_threshold, suggested_window_cap, Outcome, Router, RouterConfig,
+        RouterSnapshot, TriageSessionConfig,
     };
     use rand::{Rng, SeedableRng};
 
@@ -64,11 +64,11 @@ fn main() {
     };
 
     let cfg = RouterConfig::default()
-        .with_monitoring(400, 80)          // baseline/recent windows
-        .with_triage_cfg(tcfg)             // calibrated CUSUM threshold
-        .with_coverage(0.05, 3)            // ≥5% of traffic to each arm
-        .with_guardrail(2_000.0)           // filter arms with mean latency > 2s
-        .with_control(1)                   // 1 random control pick per k=3 batch
+        .with_monitoring(400, 80) // baseline/recent windows
+        .with_triage_cfg(tcfg) // calibrated CUSUM threshold
+        .with_coverage(0.05, 3) // ≥5% of traffic to each arm
+        .with_guardrail(2_000.0) // filter arms with mean latency > 2s
+        .with_control(1) // 1 random control pick per k=3 batch
         .window_cap(window);
 
     let mut router = Router::new(arms.clone(), cfg).unwrap();
@@ -86,7 +86,17 @@ fn main() {
             let junk_prob = 0.04;
             let ok = rng.random::<f64>() < ok_prob;
             let junk = ok && rng.random::<f64>() < junk_prob;
-            router.observe(arm, Outcome { ok, junk, hard_junk: !ok, cost_units: 3, elapsed_ms: rng.random_range(50..150), quality_score: None });
+            router.observe(
+                arm,
+                Outcome {
+                    ok,
+                    junk,
+                    hard_junk: !ok,
+                    cost_units: 3,
+                    elapsed_ms: rng.random_range(50..150),
+                    quality_score: None,
+                },
+            );
         }
     }
     println!("  total observations: {}", router.total_observations());
@@ -94,7 +104,9 @@ fn main() {
         let s = router.summary(arm);
         println!(
             "  {arm}: calls={} ok_rate={:.3} junk_rate={:.3}",
-            s.calls, s.ok_rate(), s.junk_rate()
+            s.calls,
+            s.ok_rate(),
+            s.junk_rate()
         );
     }
     println!("  mode: {:?}", router.mode());
@@ -106,9 +118,23 @@ fn main() {
         for arm in &d.chosen {
             let outcome = if arm == "svc-beta" {
                 // Inject hard failures on beta.
-                Outcome { ok: false, junk: true, hard_junk: true, cost_units: 3, elapsed_ms: 500, quality_score: None }
+                Outcome {
+                    ok: false,
+                    junk: true,
+                    hard_junk: true,
+                    cost_units: 3,
+                    elapsed_ms: 500,
+                    quality_score: None,
+                }
             } else {
-                Outcome { ok: true, junk: false, hard_junk: false, cost_units: 3, elapsed_ms: rng.random_range(50..150), quality_score: None }
+                Outcome {
+                    ok: true,
+                    junk: false,
+                    hard_junk: false,
+                    cost_units: 3,
+                    elapsed_ms: rng.random_range(50..150),
+                    quality_score: None,
+                }
             };
             router.observe_with_context(arm, outcome, &[0.5_f64]);
         }
@@ -139,13 +165,19 @@ fn main() {
 
     // Restore from snapshot (simulates process restart).
     let router2 = Router::from_snapshot(snap).unwrap();
-    println!("  restored: total_observations = {}", router2.total_observations());
+    println!(
+        "  restored: total_observations = {}",
+        router2.total_observations()
+    );
     assert_eq!(router.total_observations(), router2.total_observations());
 
     for arm in &arms {
         let s1 = router.summary(arm);
         let s2 = router2.summary(arm);
-        assert_eq!(s1.calls, s2.calls, "window data should be identical after restore");
+        assert_eq!(
+            s1.calls, s2.calls,
+            "window data should be identical after restore"
+        );
     }
     println!("  window data identical after restore ✓");
     println!("  CUSUM state reset after restore (no stale alarms) ✓");

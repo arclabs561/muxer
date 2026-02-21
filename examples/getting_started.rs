@@ -35,10 +35,10 @@ fn main() {
     // Simulated quality profiles per arm.
     let quality_for = |arm: &str| -> (f64, bool) {
         match arm {
-            "gpt-4o"        => (0.92, false),  // high quality
-            "claude-sonnet" => (0.78, false),  // moderate quality (below threshold)
-            "gemini-pro"    => (0.55, true),   // frequent junk
-            _               => (1.0,  false),
+            "gpt-4o" => (0.92, false),        // high quality
+            "claude-sonnet" => (0.78, false), // moderate quality (below threshold)
+            "gemini-pro" => (0.55, true),     // frequent junk
+            _ => (1.0, false),
         }
     };
 
@@ -55,8 +55,14 @@ fn main() {
         // know quality yet — the call hasn't been scored).
         router.observe(
             &arm,
-            Outcome { ok: true, junk: false, hard_junk: false,
-                      cost_units: 5, elapsed_ms: 200, quality_score: None },
+            Outcome {
+                ok: true,
+                junk: false,
+                hard_junk: false,
+                cost_units: 5,
+                elapsed_ms: 200,
+                quality_score: None,
+            },
         );
 
         // Step 2 (delayed): score the response after downstream processing.
@@ -76,16 +82,27 @@ fn main() {
     println!("\n=== After 30 rounds ===");
     for arm in router.arms() {
         let s = router.summary(arm);
-        let q = s.mean_quality_score.map(|v| format!("{v:.2}")).unwrap_or("—".into());
+        let q = s
+            .mean_quality_score
+            .map(|v| format!("{v:.2}"))
+            .unwrap_or("—".into());
         println!(
             "  {:15}  calls={:2}  ok={:.2}  junk={:.2}  quality={}",
-            arm, s.calls, s.ok_rate(), s.junk_rate(), q
+            arm,
+            s.calls,
+            s.ok_rate(),
+            s.junk_rate(),
+            q
         );
     }
 
     // The Router selects the best arm given current stats.
     let best = router.select(1, 99);
-    println!("\nBest arm now: {:?}  (mode: {:?})", best.primary().unwrap(), router.mode());
+    println!(
+        "\nBest arm now: {:?}  (mode: {:?})",
+        best.primary().unwrap(),
+        router.mode()
+    );
     // Note: gpt-4o and claude-sonnet both have ok_rate=1.0, junk=0 — without
     // quality_weight they are indistinguishable and the router tie-breaks
     // alphabetically. The quality_score field preserves the gradient.
@@ -93,11 +110,17 @@ fn main() {
     // -----------------------------------------------------------------
     // 4. Enable quality_weight to break the tie using the gradient signal.
     // -----------------------------------------------------------------
-    use muxer::{MabConfig, select_mab};
+    use muxer::{select_mab, MabConfig};
     use std::collections::BTreeMap;
 
-    let cfg = MabConfig { exploration_c: 0.0, quality_weight: 1.0, ..MabConfig::default() };
-    let summaries: BTreeMap<String, _> = router.arms().iter()
+    let cfg = MabConfig {
+        exploration_c: 0.0,
+        quality_weight: 1.0,
+        ..MabConfig::default()
+    };
+    let summaries: BTreeMap<String, _> = router
+        .arms()
+        .iter()
         .map(|a| (a.clone(), router.summary(a)))
         .collect();
     let sel = select_mab(router.arms(), &summaries, cfg);

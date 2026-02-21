@@ -122,26 +122,49 @@ mod tests {
     #[test]
     fn prior_inherits_quality_score_when_out_has_none() {
         let mut out = Summary {
-            calls: 0, ok: 0, junk: 0, hard_junk: 0, cost_units: 0, elapsed_ms_sum: 0,
+            calls: 0,
+            ok: 0,
+            junk: 0,
+            hard_junk: 0,
+            cost_units: 0,
+            elapsed_ms_sum: 0,
             mean_quality_score: None,
         };
         let prior = Summary {
-            calls: 100, ok: 80, junk: 10, hard_junk: 5, cost_units: 0, elapsed_ms_sum: 0,
+            calls: 100,
+            ok: 80,
+            junk: 10,
+            hard_junk: 5,
+            cost_units: 0,
+            elapsed_ms_sum: 0,
             mean_quality_score: Some(0.85),
         };
         apply_prior_counts_to_summary(&mut out, prior, 10);
         let q = out.mean_quality_score.unwrap();
-        assert!((q - 0.85).abs() < 1e-10, "should inherit prior quality: {q}");
+        assert!(
+            (q - 0.85).abs() < 1e-10,
+            "should inherit prior quality: {q}"
+        );
     }
 
     #[test]
     fn prior_blends_quality_score_weighted_by_calls() {
         let mut out = Summary {
-            calls: 10, ok: 9, junk: 0, hard_junk: 0, cost_units: 0, elapsed_ms_sum: 0,
+            calls: 10,
+            ok: 9,
+            junk: 0,
+            hard_junk: 0,
+            cost_units: 0,
+            elapsed_ms_sum: 0,
             mean_quality_score: Some(0.90),
         };
         let prior = Summary {
-            calls: 100, ok: 80, junk: 10, hard_junk: 5, cost_units: 0, elapsed_ms_sum: 0,
+            calls: 100,
+            ok: 80,
+            junk: 10,
+            hard_junk: 5,
+            cost_units: 0,
+            elapsed_ms_sum: 0,
             mean_quality_score: Some(0.50),
         };
         apply_prior_counts_to_summary(&mut out, prior, 20); // adds 10 pseudo-calls
@@ -153,11 +176,21 @@ mod tests {
     #[test]
     fn prior_quality_none_does_not_overwrite() {
         let mut out = Summary {
-            calls: 10, ok: 9, junk: 0, hard_junk: 0, cost_units: 0, elapsed_ms_sum: 0,
+            calls: 10,
+            ok: 9,
+            junk: 0,
+            hard_junk: 0,
+            cost_units: 0,
+            elapsed_ms_sum: 0,
             mean_quality_score: Some(0.90),
         };
         let prior = Summary {
-            calls: 100, ok: 80, junk: 10, hard_junk: 5, cost_units: 0, elapsed_ms_sum: 0,
+            calls: 100,
+            ok: 80,
+            junk: 10,
+            hard_junk: 5,
+            cost_units: 0,
+            elapsed_ms_sum: 0,
             mean_quality_score: None,
         };
         apply_prior_counts_to_summary(&mut out, prior, 20);

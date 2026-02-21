@@ -3,9 +3,7 @@
 //! These use small `n_trials` / `m` to keep CI fast.  For production calibration
 //! use `n_trials >= 2000` and the Wilson-conservative mode.
 
-use muxer::monitor::{
-    calibrate_threshold_from_max_scores, ThresholdCalibration,
-};
+use muxer::monitor::{calibrate_threshold_from_max_scores, ThresholdCalibration};
 
 #[cfg(feature = "stochastic")]
 use muxer::monitor::{calibrate_cusum_threshold, simulate_cusum_null_max_scores};
@@ -57,8 +55,14 @@ fn calibrate_threshold_produces_valid_output() {
     let cal = calibrate_cusum_threshold(&p0, &alts, 0.10, 200, 300, 1e-3, 10, 42, false)
         .expect("calibration should succeed");
     assert!(cal.threshold > 0.0, "threshold must be positive");
-    assert!(cal.fa_hat >= 0.0 && cal.fa_hat <= 1.0, "fa_hat must be a rate");
-    assert!(cal.fa_wilson_hi >= cal.fa_hat, "Wilson hi must be >= empirical");
+    assert!(
+        cal.fa_hat >= 0.0 && cal.fa_hat <= 1.0,
+        "fa_hat must be a rate"
+    );
+    assert!(
+        cal.fa_wilson_hi >= cal.fa_hat,
+        "Wilson hi must be >= empirical"
+    );
     assert_eq!(cal.trials, 300);
 }
 
@@ -67,15 +71,18 @@ fn calibrate_threshold_produces_valid_output() {
 fn calibrate_threshold_stricter_alpha_gives_higher_threshold() {
     let p0 = vec![0.85, 0.05, 0.05, 0.05];
     let alts = vec![vec![0.40, 0.10, 0.40, 0.10]];
-    let cal_loose = calibrate_cusum_threshold(&p0, &alts, 0.20, 200, 300, 1e-3, 10, 42, false)
-        .unwrap();
-    let cal_strict = calibrate_cusum_threshold(&p0, &alts, 0.05, 200, 300, 1e-3, 10, 42, false)
-        .unwrap();
+    let cal_loose =
+        calibrate_cusum_threshold(&p0, &alts, 0.20, 200, 300, 1e-3, 10, 42, false).unwrap();
+    let cal_strict =
+        calibrate_cusum_threshold(&p0, &alts, 0.05, 200, 300, 1e-3, 10, 42, false).unwrap();
     // Stricter alpha → fewer false alarms → higher threshold (or equal at boundary).
     assert!(
         cal_strict.threshold >= cal_loose.threshold - 1e-9,
         "strict α={} threshold={:.3} should be ≥ loose α={} threshold={:.3}",
-        0.05, cal_strict.threshold, 0.20, cal_loose.threshold
+        0.05,
+        cal_strict.threshold,
+        0.20,
+        cal_loose.threshold
     );
 }
 

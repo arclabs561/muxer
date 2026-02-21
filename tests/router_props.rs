@@ -4,11 +4,25 @@ use muxer::{Outcome, Router, RouterConfig, RouterMode, TriageSessionConfig};
 use proptest::prelude::*;
 
 fn clean() -> Outcome {
-    Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 50, quality_score: None }
+    Outcome {
+        ok: true,
+        junk: false,
+        hard_junk: false,
+        cost_units: 1,
+        elapsed_ms: 50,
+        quality_score: None,
+    }
 }
 
 fn bad() -> Outcome {
-    Outcome { ok: false, junk: true, hard_junk: true, cost_units: 1, elapsed_ms: 200, quality_score: None }
+    Outcome {
+        ok: false,
+        junk: true,
+        hard_junk: true,
+        cost_units: 1,
+        elapsed_ms: 200,
+        quality_score: None,
+    }
 }
 
 fn arms(n: usize) -> Vec<String> {
@@ -121,7 +135,11 @@ proptest! {
 
 #[test]
 fn router_full_triage_lifecycle() {
-    let tcfg = TriageSessionConfig { min_n: 10, threshold: 3.0, ..TriageSessionConfig::default() };
+    let tcfg = TriageSessionConfig {
+        min_n: 10,
+        threshold: 3.0,
+        ..TriageSessionConfig::default()
+    };
     let cfg = RouterConfig::default().with_triage_cfg(tcfg);
     let mut r = Router::new(vec!["good".to_string(), "bad".to_string()], cfg).unwrap();
 
@@ -141,7 +159,10 @@ fn router_full_triage_lifecycle() {
 
     // Phase 3: investigate — Router routes to alarmed arm.
     let d = r.select(2, 0);
-    assert!(d.chosen.contains(&"bad".to_string()), "triage should prioritize alarmed arm");
+    assert!(
+        d.chosen.contains(&"bad".to_string()),
+        "triage should prioritize alarmed arm"
+    );
 
     // Phase 4: acknowledge.
     r.acknowledge_change("bad");
@@ -169,13 +190,27 @@ fn router_large_k_coverage_with_monitoring() {
             r.observe(arm, clean());
         }
     }
-    assert_eq!(seen.len(), n, "K={n} arms should all be explored within 12 rounds (k=3)");
+    assert_eq!(
+        seen.len(),
+        n,
+        "K={n} arms should all be explored within 12 rounds (k=3)"
+    );
 }
 
 #[test]
 fn router_delayed_junk_labeling_updates_windows() {
     let mut r = Router::new(arms(2), RouterConfig::default()).unwrap();
-    r.observe("arm0", Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 50, quality_score: None });
+    r.observe(
+        "arm0",
+        Outcome {
+            ok: true,
+            junk: false,
+            hard_junk: false,
+            cost_units: 1,
+            elapsed_ms: 50,
+            quality_score: None,
+        },
+    );
     // Quality discovered after the call.
     r.set_last_junk_level("arm0", true, false);
     let s = r.summary("arm0");
@@ -261,24 +296,40 @@ fn router_snapshot_restores_monitored_windows() {
 
 #[test]
 fn router_from_snapshot_resets_cusum() {
-    let tcfg = TriageSessionConfig { min_n: 5, threshold: 2.0, ..TriageSessionConfig::default() };
+    let tcfg = TriageSessionConfig {
+        min_n: 5,
+        threshold: 2.0,
+        ..TriageSessionConfig::default()
+    };
     let cfg = RouterConfig::default().with_triage_cfg(tcfg);
     let mut r = Router::new(arms(2), cfg).unwrap();
-    for _ in 0..10 { r.observe("arm0", clean()); }
-    for _ in 0..20 { r.observe("arm0", bad()); }
+    for _ in 0..10 {
+        r.observe("arm0", clean());
+    }
+    for _ in 0..20 {
+        r.observe("arm0", bad());
+    }
     assert!(r.mode().is_triage());
 
     // Snapshot + restore: CUSUM is reset.
     let snap = r.snapshot();
     let r2 = Router::from_snapshot(snap).unwrap();
-    assert_eq!(r2.mode(), RouterMode::Normal, "CUSUM should be reset on restore");
+    assert_eq!(
+        r2.mode(),
+        RouterMode::Normal,
+        "CUSUM should be reset on restore"
+    );
     // But window data is preserved.
     assert_eq!(r2.summary("arm0").calls, 30);
 }
 
 #[test]
 fn router_acknowledge_all_clears_all_alarmed() {
-    let tcfg = TriageSessionConfig { min_n: 5, threshold: 2.0, ..TriageSessionConfig::default() };
+    let tcfg = TriageSessionConfig {
+        min_n: 5,
+        threshold: 2.0,
+        ..TriageSessionConfig::default()
+    };
     let cfg = RouterConfig::default().with_triage_cfg(tcfg);
     let mut r = Router::new(arms(3), cfg).unwrap();
     for _ in 0..10 {

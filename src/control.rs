@@ -34,11 +34,13 @@ pub struct ControlConfig {
     pub control_k: usize,
 }
 
-
 impl ControlConfig {
     /// Create a config with `control_k` enabled.
     pub fn with_k(control_k: usize) -> Self {
-        Self { enabled: control_k > 0, control_k }
+        Self {
+            enabled: control_k > 0,
+            control_k,
+        }
     }
 
     /// Fraction of a k-pick budget to reserve as control, rounded up.
@@ -46,7 +48,10 @@ impl ControlConfig {
     /// Example: `ControlConfig::fraction(0.1)` with k=10 → control_k=1.
     pub fn fraction(frac: f64, total_k: usize) -> Self {
         let k = ((frac * total_k as f64).ceil() as usize).min(total_k);
-        Self { enabled: k > 0, control_k: k }
+        Self {
+            enabled: k > 0,
+            control_k: k,
+        }
     }
 }
 
@@ -89,7 +94,10 @@ pub fn split_control_budget(
         return (Vec::new(), k);
     }
     let max_control = cfg.control_k.min(k.saturating_sub(1)); // always leave room for ≥1 MAB pick
-    let control_cfg = ControlConfig { control_k: max_control, ..cfg };
+    let control_cfg = ControlConfig {
+        control_k: max_control,
+        ..cfg
+    };
     let controls = pick_control_arms(seed, arms, control_cfg);
     let mab_k = k.saturating_sub(controls.len());
     (controls, mab_k)
