@@ -4,17 +4,17 @@ Deterministic, multi-objective routing primitives for "provider selection" probl
 
 ## What problem this solves
 
-You have a small set of arms (providers/models/backends) and repeated calls that produce outcomes (success/429/junk), plus cost + latency. You want an **online policy** that:
+You have a small set of arms (providers/models/backends) and repeated calls that produce outcomes (success/failure/degraded), plus cost + latency. You want an **online policy** that:
 
 - **explores** new or recently-changed arms
-- **avoids regressions** (junk/429 spikes)
+- **avoids regressions** (quality or reliability spikes)
 - is **deterministic by default** (same stats/config → same choice), so it's easy to debug
 
 ## What it is
 
 The core selection idea is:
 
-- maintain a small sliding window of recent outcomes per provider (ok/429/junk, cost, latency)
+- maintain a small sliding window of recent outcomes per provider (ok/fail/degraded, cost, latency)
 - compute a Pareto frontier over the objectives
 - pick a single provider deterministically via scalarization + stable tie-break
 
@@ -34,7 +34,7 @@ This crate also includes:
 
 ## Which policy should I use?
 
-- **`select_mab` (Window + Pareto + scalarization)**: when you care about **multiple objectives** at once (success, 429, junk, cost, latency) and you want deterministic selection with hard constraints.
+- **`select_mab` (Window + Pareto + scalarization)**: when you care about **multiple objectives** at once (success rate, failure rate, quality degradation, cost, latency) and you want deterministic selection with hard constraints.
 - **`ThompsonSampling`**: when you can provide a **single reward** per call (in `[0, 1]`) and want a classic explore/exploit policy (seedable, optionally decayed).
 - **`Exp3Ix`**: when reward is **non-stationary / adversarial-ish** and you still want a probabilistic policy (seedable, optionally decayed).
 - **`LinUcb` (feature `contextual`)**: when you have a per-request feature vector (e.g. cheap "difficulty" features, embeddings, metadata) and want a contextual policy.
