@@ -37,6 +37,7 @@ fn main() {
             hard_junk,
             cost_units,
             elapsed_ms,
+            quality_score: None,
         }
     }
 

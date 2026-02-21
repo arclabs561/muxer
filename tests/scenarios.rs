@@ -29,6 +29,7 @@ fn select_mab_prefers_non_hard_junk_arm_when_window_is_hard_junk_heavy() {
             hard_junk: true,
             cost_units: 1,
             elapsed_ms: 100,
+            quality_score: None,
         },
     );
 
@@ -42,6 +43,7 @@ fn select_mab_prefers_non_hard_junk_arm_when_window_is_hard_junk_heavy() {
             hard_junk: false,
             cost_units: 1,
             elapsed_ms: 120,
+            quality_score: None,
         },
     );
 
@@ -91,6 +93,7 @@ fn sticky_reduces_switching_under_alternating_small_advantages() {
                 hard_junk: false,
                 cost_units: 1,
                 elapsed_ms: 100,
+                quality_score: None,
             },
         );
         push_n(
@@ -102,6 +105,7 @@ fn sticky_reduces_switching_under_alternating_small_advantages() {
                 hard_junk: false,
                 cost_units: 1,
                 elapsed_ms: 100,
+                quality_score: None,
             },
         );
 
@@ -285,8 +289,8 @@ fn routing_lifecycle_normal_then_detect_then_triage() {
     let mut w_healthy = Window::new(50);
     let mut w_degraded = Window::new(50);
 
-    let clean = Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100 };
-    let _bad  = Outcome { ok: true, junk: true,  hard_junk: false, cost_units: 1, elapsed_ms: 100 };
+    let clean = Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100, quality_score: None };
+    let _bad  = Outcome { ok: true, junk: true,  hard_junk: false, cost_units: 1, elapsed_ms: 100, quality_score: None };
 
     for _ in 0..20 { w_healthy.push(clean); }
     for _ in 0..20 { w_degraded.push(clean); }
@@ -334,7 +338,7 @@ fn routing_lifecycle_normal_then_detect_then_triage() {
     let mut w_d = Window::new(50);
     for _ in 0..30 { w_h.push(clean); }
     for _ in 0..10 { w_d.push(clean); }
-    for _ in 0..20 { w_d.push(Outcome { ok: false, junk: true, hard_junk: true, cost_units: 1, elapsed_ms: 100 }); }
+    for _ in 0..20 { w_d.push(Outcome { ok: false, junk: true, hard_junk: true, cost_units: 1, elapsed_ms: 100, quality_score: None }); }
 
     let wf_cfg = WorstFirstConfig { exploration_c: 1.0, hard_weight: 3.0, soft_weight: 1.0 };
     let s_h = w_h.summary();

@@ -27,6 +27,7 @@ fn sample_outcome(rng: &mut StdRng, t: ArmTruth) -> (Outcome, bool, bool) {
         hard_junk: false,
         cost_units: t.cost_units.saturating_add(rng.random_range(0..=1)),
         elapsed_ms: t.latency_ms.saturating_add(rng.random_range(0..=50)),
+        quality_score: None,
     };
     (o, is_junk, is_hard)
 }
@@ -138,6 +139,7 @@ fn constraints_hold_in_windowed_summary_when_one_arm_is_bad() {
             hard_junk: true,
             cost_units: 1,
             elapsed_ms: 100,
+            quality_score: None,
         });
         w_good.push(Outcome {
             ok: true,
@@ -145,6 +147,7 @@ fn constraints_hold_in_windowed_summary_when_one_arm_is_bad() {
             hard_junk: false,
             cost_units: 1,
             elapsed_ms: 120,
+            quality_score: None,
         });
     }
 

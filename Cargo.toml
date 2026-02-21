@@ -1,6 +1,6 @@
 [package]
 name = "muxer"
-version = "0.3.2"
+version = "0.3.4"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 publish = true
@@ -14,7 +14,7 @@ features = ["serde", "contextual"]
 
 [dependencies]
 logp = "0.1.0"
-pare = "0.1.1"
+pare = "0.1.2"
 rand = { version = "0.9", optional = true }
 rand_distr = { version = "0.5", optional = true }
 serde = { version = "1.0", optional = true, features = ["derive"] }

@@ -737,6 +737,7 @@ fn bridge_muxer_cusum_to_pare_sensitivity() {
         hard_junk: false,
         cost_units: 1,
         elapsed_ms: 100,
+        quality_score: None,
     };
     let bad = Outcome {
         ok: false,
@@ -744,6 +745,7 @@ fn bridge_muxer_cusum_to_pare_sensitivity() {
         hard_junk: true,
         cost_units: 1,
         elapsed_ms: 100,
+        quality_score: None,
     };
 
     // Build a function that, given allocation [n_0, n_1], returns objective values.

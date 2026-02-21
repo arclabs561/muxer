@@ -12,6 +12,7 @@ fn main() {
         hard_junk: false,
         cost_units: 2,
         elapsed_ms: 420,
+        quality_score: None,
     });
 
     // Later, downstream validation decides it was "soft junk".

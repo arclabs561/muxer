@@ -1471,6 +1471,7 @@ mod tests {
                 hard_junk: false,
                 cost_units: 0,
                 elapsed_ms: 0,
+                quality_score: None,
             };
             b.push(o);
             r.push(o);
@@ -1497,6 +1498,7 @@ mod tests {
                 hard_junk: false,
                 cost_units: 0,
                 elapsed_ms: 0,
+                quality_score: None,
             });
         }
         // recent: mostly hard junk
@@ -1507,6 +1509,7 @@ mod tests {
                 hard_junk: true,
                 cost_units: 0,
                 elapsed_ms: 0,
+                quality_score: None,
             });
         }
 

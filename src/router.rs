@@ -267,7 +267,7 @@ impl RouterDecision {
 /// let d = router.select(1, 0);         // pick 1 arm
 /// let arm = d.primary().unwrap().to_string();
 /// // ... make the call ...
-/// let outcome = Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 50 };
+/// let outcome = Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 50, quality_score: None };
 /// router.observe(&arm, outcome);       // record result
 ///
 /// // After detecting a regression:
@@ -791,11 +791,11 @@ mod tests {
     }
 
     fn clean() -> Outcome {
-        Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 50 }
+        Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 50, quality_score: None }
     }
 
     fn bad() -> Outcome {
-        Outcome { ok: false, junk: true, hard_junk: true, cost_units: 1, elapsed_ms: 50 }
+        Outcome { ok: false, junk: true, hard_junk: true, cost_units: 1, elapsed_ms: 50, quality_score: None }
     }
 
     // --- Basic invariants ---

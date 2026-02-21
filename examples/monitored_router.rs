@@ -33,6 +33,7 @@ fn main() {
             hard_junk,
             cost_units: t.mean_cost_units.saturating_add(rng.random_range(0..=2)),
             elapsed_ms: t.mean_latency_ms.saturating_add(rng.random_range(0..=200)),
+            quality_score: None,
         }
     }
 

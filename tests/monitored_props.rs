@@ -30,6 +30,7 @@ fn outcome_strategy() -> impl Strategy<Value = Outcome> {
                 hard_junk,
                 cost_units,
                 elapsed_ms,
+                quality_score: None,
             }
         })
 }
@@ -59,7 +60,7 @@ proptest! {
             let mut v: Vec<Outcome> = Vec::new();
             v.extend_from_slice(s);
             while v.len() < need {
-                v.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100 });
+                v.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100, quality_score: None });
             }
             fill_monitored(&mut w, &v[..need]);
             m.insert(arms[i].clone(), w);
@@ -122,7 +123,7 @@ proptest! {
             let mut v: Vec<Outcome> = Vec::new();
             v.extend_from_slice(s);
             while v.len() < need {
-                v.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100 });
+                v.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100, quality_score: None });
             }
             fill_monitored(&mut w, &v[..need]);
             m.insert(arms[i].clone(), w);
@@ -168,7 +169,7 @@ proptest! {
             let mut v: Vec<Outcome> = Vec::new();
             v.extend_from_slice(s);
             while v.len() < need {
-                v.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100 });
+                v.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100, quality_score: None });
             }
             fill_monitored(&mut w, &v[..need]);
             m.insert(arms[i].clone(), w);
@@ -213,7 +214,7 @@ proptest! {
             let mut v: Vec<Outcome> = Vec::new();
             v.extend_from_slice(s);
             while v.len() < need {
-                v.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100 });
+                v.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100, quality_score: None });
             }
             fill_monitored(&mut w, &v[..need]);
             m.insert(arms[i].clone(), w);
@@ -249,6 +250,7 @@ fn cusum_guard_filters_shifted_arm_when_threshold_is_tight() {
             hard_junk: false,
             cost_units: 1,
             elapsed_ms: 100,
+            quality_score: None,
         });
     }
 
@@ -260,6 +262,7 @@ fn cusum_guard_filters_shifted_arm_when_threshold_is_tight() {
             hard_junk: false,
             cost_units: 1,
             elapsed_ms: 100,
+            quality_score: None,
         });
     }
     for _ in 0..80 {
@@ -269,6 +272,7 @@ fn cusum_guard_filters_shifted_arm_when_threshold_is_tight() {
             hard_junk: true,
             cost_units: 1,
             elapsed_ms: 100,
+            quality_score: None,
         });
     }
 
@@ -503,6 +507,7 @@ fn drift_guard_filters_changed_arm_when_threshold_is_tight() {
             hard_junk: false,
             cost_units: 1,
             elapsed_ms: 100,
+            quality_score: None,
         });
     }
 
@@ -515,6 +520,7 @@ fn drift_guard_filters_changed_arm_when_threshold_is_tight() {
             hard_junk: false,
             cost_units: 1,
             elapsed_ms: 100,
+            quality_score: None,
         });
     }
     // recent regresses hard
@@ -525,6 +531,7 @@ fn drift_guard_filters_changed_arm_when_threshold_is_tight() {
             hard_junk: true,
             cost_units: 1,
             elapsed_ms: 100,
+            quality_score: None,
         });
     }
 
@@ -585,7 +592,7 @@ proptest! {
             let mut v: Vec<Outcome> = Vec::new();
             v.extend_from_slice(s);
             while v.len() < need {
-                v.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100 });
+                v.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100, quality_score: None });
             }
             fill_monitored(&mut w, &v[..need]);
             m.insert(arms[i].clone(), w);

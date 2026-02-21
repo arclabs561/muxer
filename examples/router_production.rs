@@ -86,7 +86,7 @@ fn main() {
             let junk_prob = 0.04;
             let ok = rng.random::<f64>() < ok_prob;
             let junk = ok && rng.random::<f64>() < junk_prob;
-            router.observe(arm, Outcome { ok, junk, hard_junk: !ok, cost_units: 3, elapsed_ms: rng.random_range(50..150) });
+            router.observe(arm, Outcome { ok, junk, hard_junk: !ok, cost_units: 3, elapsed_ms: rng.random_range(50..150), quality_score: None });
         }
     }
     println!("  total observations: {}", router.total_observations());
@@ -106,9 +106,9 @@ fn main() {
         for arm in &d.chosen {
             let outcome = if arm == "svc-beta" {
                 // Inject hard failures on beta.
-                Outcome { ok: false, junk: true, hard_junk: true, cost_units: 3, elapsed_ms: 500 }
+                Outcome { ok: false, junk: true, hard_junk: true, cost_units: 3, elapsed_ms: 500, quality_score: None }
             } else {
-                Outcome { ok: true, junk: false, hard_junk: false, cost_units: 3, elapsed_ms: rng.random_range(50..150) }
+                Outcome { ok: true, junk: false, hard_junk: false, cost_units: 3, elapsed_ms: rng.random_range(50..150), quality_score: None }
             };
             router.observe_with_context(arm, outcome, &[0.5_f64]);
         }

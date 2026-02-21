@@ -40,6 +40,7 @@ fn arb_outcome() -> impl Strategy<Value = Outcome> {
             hard_junk,
             cost_units,
             elapsed_ms,
+            quality_score: None,
         },
     )
 }
@@ -115,7 +116,7 @@ fn set_last_junk_level_hard_junk_cleared_when_junk_false() {
     // Contract: `set_last_junk_level(false, true)` must NOT set hard_junk,
     // because hard_junk is only meaningful when junk=true.
     let mut w = Window::new(10);
-    w.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 0, elapsed_ms: 0 });
+    w.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 0, elapsed_ms: 0, quality_score: None });
     w.set_last_junk_level(false, true); // junk=false, hard_junk=true (invalid combo)
     let s = w.summary();
     assert_eq!(s.hard_junk, 0, "hard_junk must be cleared when junk=false");
@@ -125,7 +126,7 @@ fn set_last_junk_level_hard_junk_cleared_when_junk_false() {
 #[test]
 fn set_last_junk_level_both_set_when_both_true() {
     let mut w = Window::new(10);
-    w.push(Outcome { ok: false, junk: false, hard_junk: false, cost_units: 0, elapsed_ms: 0 });
+    w.push(Outcome { ok: false, junk: false, hard_junk: false, cost_units: 0, elapsed_ms: 0, quality_score: None });
     w.set_last_junk_level(true, true);
     let s = w.summary();
     assert_eq!(s.junk, 1, "junk must be 1");
@@ -136,7 +137,7 @@ fn set_last_junk_level_both_set_when_both_true() {
 fn set_last_junk_level_soft_junk_only() {
     // junk=true but hard_junk=false → soft junk only.
     let mut w = Window::new(10);
-    w.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 0, elapsed_ms: 0 });
+    w.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 0, elapsed_ms: 0, quality_score: None });
     w.set_last_junk_level(true, false);
     let s = w.summary();
     assert_eq!(s.junk, 1);

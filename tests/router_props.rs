@@ -4,11 +4,11 @@ use muxer::{Outcome, Router, RouterConfig, RouterMode, TriageSessionConfig};
 use proptest::prelude::*;
 
 fn clean() -> Outcome {
-    Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 50 }
+    Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 50, quality_score: None }
 }
 
 fn bad() -> Outcome {
-    Outcome { ok: false, junk: true, hard_junk: true, cost_units: 1, elapsed_ms: 200 }
+    Outcome { ok: false, junk: true, hard_junk: true, cost_units: 1, elapsed_ms: 200, quality_score: None }
 }
 
 fn arms(n: usize) -> Vec<String> {
@@ -74,6 +74,7 @@ proptest! {
             hard_junk,
             cost_units,
             elapsed_ms,
+            quality_score: None,
         };
         // Observe on a known arm.
         r.observe(&a[0], o);
@@ -174,7 +175,7 @@ fn router_large_k_coverage_with_monitoring() {
 #[test]
 fn router_delayed_junk_labeling_updates_windows() {
     let mut r = Router::new(arms(2), RouterConfig::default()).unwrap();
-    r.observe("arm0", Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 50 });
+    r.observe("arm0", Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 50, quality_score: None });
     // Quality discovered after the call.
     r.set_last_junk_level("arm0", true, false);
     let s = r.summary("arm0");

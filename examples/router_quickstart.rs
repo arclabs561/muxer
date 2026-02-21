@@ -12,11 +12,11 @@
 use muxer::{Outcome, Router, RouterConfig, TriageSessionConfig};
 
 fn clean() -> Outcome {
-    Outcome { ok: true, junk: false, hard_junk: false, cost_units: 2, elapsed_ms: 80 }
+    Outcome { ok: true, junk: false, hard_junk: false, cost_units: 2, elapsed_ms: 80, quality_score: None }
 }
 
 fn degraded() -> Outcome {
-    Outcome { ok: false, junk: true, hard_junk: true, cost_units: 2, elapsed_ms: 300 }
+    Outcome { ok: false, junk: true, hard_junk: true, cost_units: 2, elapsed_ms: 300, quality_score: None }
 }
 
 fn main() {

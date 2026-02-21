@@ -10,6 +10,8 @@
 //! - `ok`: the call produced a usable result.
 //! - `junk`: quality was below your threshold (`hard_junk=true` implies `junk=true`).
 //! - `hard_junk`: the call failed entirely — a harsher subset of junk, penalized separately.
+//! - `quality_score: Option<f64>`: optional continuous quality signal `[0,1]` (higher = better).
+//!   Supplements the binary flags without changing routing semantics.
 //!
 //! Plus `cost_units` (caller-defined cost proxy) and `elapsed_ms` (wall-clock time).
 //!
@@ -237,6 +239,10 @@ const TIEBREAK_EPS: f64 = 1e-12;
 
 mod decision;
 pub use decision::*;
+
+mod policy;
+#[cfg(feature = "stochastic")]
+pub use policy::BanditPolicy;
 
 mod alloc;
 pub use alloc::*;
@@ -511,6 +517,17 @@ pub struct Outcome {
     pub cost_units: u64,
     /// Total elapsed time for this call, in milliseconds.
     pub elapsed_ms: u64,
+    /// Optional continuous quality signal in `[0.0, 1.0]` (higher = better).
+    ///
+    /// Supplements the binary `junk`/`hard_junk` flags with a gradient signal.
+    /// A response scoring `0.58` on a `0.60` threshold is functionally different
+    /// from a `0.0` response; this field preserves that distinction without
+    /// changing the binary routing logic.
+    ///
+    /// `None` (the default) means "not measured". Set via
+    /// [`Window::set_last_quality_score`] when scoring completes after the call.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub quality_score: Option<f64>,
 }
 
 /// Sliding-window statistics for an arm.
@@ -574,6 +591,31 @@ impl Window {
             last.junk = junk;
             last.hard_junk = hard_junk && junk;
         }
+    }
+
+    /// Best-effort: set the continuous quality score for the most recent outcome.
+    ///
+    /// Call this after downstream scoring completes (same pattern as
+    /// [`set_last_junk_level`]).  The value is clamped to `[0.0, 1.0]`.
+    pub fn set_last_quality_score(&mut self, score: f64) {
+        if let Some(last) = self.buf.back_mut() {
+            last.quality_score = Some(score.clamp(0.0, 1.0));
+        }
+    }
+
+    /// Mean quality score over outcomes that have one, or `None` if none have been set.
+    ///
+    /// Provides a gradient signal complementary to the binary ok/junk rates.
+    pub fn mean_quality_score(&self) -> Option<f64> {
+        let mut sum = 0.0_f64;
+        let mut count = 0u64;
+        for o in &self.buf {
+            if let Some(q) = o.quality_score {
+                sum += q;
+                count += 1;
+            }
+        }
+        if count == 0 { None } else { Some(sum / count as f64) }
     }
 
     /// Summarize the current window as counts and sums.

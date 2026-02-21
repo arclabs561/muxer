@@ -68,6 +68,7 @@ fn main() {
                 hard_junk: false,
                 cost_units: 0,
                 elapsed_ms: 0,
+                quality_score: None,
             },
             1 => Outcome {
                 ok: true,
@@ -75,6 +76,7 @@ fn main() {
                 hard_junk: false,
                 cost_units: 0,
                 elapsed_ms: 0,
+                quality_score: None,
             },
             2 => Outcome {
                 ok: true,
@@ -82,6 +84,7 @@ fn main() {
                 hard_junk: true,
                 cost_units: 0,
                 elapsed_ms: 0,
+                quality_score: None,
             },
             _ => Outcome {
                 ok: false,
@@ -90,6 +93,7 @@ fn main() {
                 hard_junk: true,
                 cost_units: 0,
                 elapsed_ms: 0,
+                quality_score: None,
             },
         }
     }

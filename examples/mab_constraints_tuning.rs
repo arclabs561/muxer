@@ -22,6 +22,7 @@ fn main() {
             hard_junk: false,
             cost_units: 1,
             elapsed_ms: 450,
+            quality_score: None,
         });
     }
     for _ in 0..5 {
@@ -32,6 +33,7 @@ fn main() {
             hard_junk: true,
             cost_units: 1,
             elapsed_ms: 200,
+            quality_score: None,
         });
     }
 
@@ -42,6 +44,7 @@ fn main() {
             hard_junk: false,
             cost_units: 2,
             elapsed_ms: 250,
+            quality_score: None,
         });
     }
     for _ in 0..5 {
@@ -51,6 +54,7 @@ fn main() {
             hard_junk: false,
             cost_units: 2,
             elapsed_ms: 260,
+            quality_score: None,
         });
     }
 
@@ -61,6 +65,7 @@ fn main() {
             hard_junk: false,
             cost_units: 4,
             elapsed_ms: 650,
+            quality_score: None,
         });
     }
 
