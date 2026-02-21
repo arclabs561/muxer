@@ -36,6 +36,18 @@
 //!
 //! 7. **Lai-Robbins connection**: the information-theoretic lower bound on exploration
 //!    rate constrains the detection budget available to any uniformly good policy.
+//!
+//! ## Reference notes
+//!
+//! - Product bound: Garivier & Moulines 2008 (arXiv:0805.3415) prove the impossibility
+//!   result for adaptive policies: achieving R(T) regret on stationary instances implies
+//!   Ω(T/R(T)) regret on some piecewise-stationary instance.  The product identity here
+//!   is the static-schedule special case.
+//! - Regret-BAI Pareto: Zhong, Cheung & Tan 2021 (arXiv:2110.08627) formally prove
+//!   the two-objective Pareto tradeoff (regret vs BAI) using a similar product structure.
+//! - BQCD lower bound: Gopalan, Saligrama & Lakshminarayanan 2021 (arXiv:2107.10492)
+//!   establish Ω(log(m)/D*) detection delay under false-alarm constraint m.
+//! - IDS: Russo & Van Roy 2014 (arXiv:1403.5556).
 
 use pare::sensitivity::{analyze_redundancy, SensitivityRow};
 
@@ -53,6 +65,11 @@ use pare::sensitivity::{analyze_redundancy, SensitivityRow};
 // Regret:          R_T = Delta * n_2
 // Detection delay: D_2 = 2*b*T / (delta^2 * n_2)
 // Product:         R_T * D_2 = 2*b*Delta*T / delta^2    (independent of n_2!)
+//
+// For adaptive policies this equality becomes a lower bound: the
+// Garivier-Moulines impossibility (arXiv:0805.3415) shows that achieving
+// R(T) regret on stationary instances forces Ω(T/R(T)) regret on some
+// piecewise-stationary instance, which is the adaptive-policy analogue.
 //
 // This is the central impossibility result: the product of regret and detection
 // delay is a constant determined by the problem parameters (gap, shift, horizon),

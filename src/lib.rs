@@ -162,30 +162,67 @@
 //! clean proportionality results).  See Hadad et al. (arXiv:1911.02768) for the
 //! observed vs. expected Fisher information distinction in adaptive experiments.
 //!
-//! ## Related multi-objective bandit frameworks
+//! ## Related work
 //!
-//! The multi-objective routing problem has connections to several existing literatures
-//! that `muxer` does not attempt to fully implement but that inform its design:
+//! **Non-stationary bandits and sliding windows.**
+//! Garivier & Moulines (2008, arXiv:0805.3415) established the Sliding-Window UCB
+//! (SW-UCB) algorithm, which achieves `O(sqrt(Υ_T * K * T * log T))` regret for
+//! piecewise-stationary environments with `Υ_T` changepoints.  This is the theoretical
+//! foundation for `muxer`'s sliding-window approach.  Optimal window size is
+//! `O(sqrt(T / Υ_T))`; in practice `muxer` uses a fixed caller-chosen cap.
 //!
-//! - **Constrained / safe bandits** handle multiple objectives via Lagrangian
-//!   relaxation (hard constraints on secondary objectives).  `muxer`'s `max_junk_rate`,
-//!   `max_drift`, etc. are BwK-style anytime constraints in this spirit.
-//!   (Badanidiyuru, Kleinberg & Slivkins 2013, FOCS; arXiv:1305.2545)
-//! - **Pareto bandits** (Drugan & Nowé, IJCNN 2013) aim to identify the Pareto front
-//!   of arms when each arm has a vector-valued reward.  `muxer`'s `pare`-based frontier
-//!   computation is the selection-time analogue.
-//! - **Information-Directed Sampling** (Russo & Van Roy 2014, arXiv:1403.5556)
-//!   scalarizes the regret/information tradeoff via the information ratio.  Extending
-//!   this to three objectives (adding detection power) is an open problem; the objective
-//!   manifold framework suggests the extension is non-trivial only in the contextual
-//!   case with worst-case detection.
-//! - **Multi-objective RL** explores scalarization and Pareto-based approaches in the
-//!   sequential decision setting.  `muxer`'s deterministic scalarization (after Pareto
-//!   filtering) is a pragmatic instance of this.
-//! - **Adaptive experiment design** (Hadad, Hirshberg, Zhan, Wager & Athey 2021,
-//!   arXiv:1911.02768) studies the distinction between observed and expected Fisher
-//!   information in adaptive experiments — the same lens used in the design measure
-//!   analysis above.
+//! **Non-stationary bandits with explicit detection.**
+//! Besson, Kaufmann, Maillard & Seznec (2019, arXiv:1902.01575, JMLR 2023) introduced
+//! GLR-klUCB: a parameter-free algorithm combining kl-UCB with a Bernoulli Generalized
+//! Likelihood Ratio Test.  It is the closest published analog to `muxer`'s monitored
+//! selection path.  Key difference: GLR-klUCB **restarts** all arm statistics on
+//! detection; `muxer` instead switches to worst-first routing to investigate the flagged
+//! arm, preserving history.  See `TriageSession` and `WorstFirstConfig`.
+//!
+//! **Bandit Quickest Changepoint Detection (BQCD).**
+//! Gopalan, Saligrama & Lakshminarayanan (2021, arXiv:2107.10492) established the BQCD
+//! lower bound: any algorithm with mean-time-to-false-alarm `m` must suffer expected
+//! detection delay `Ω(log(m) / D*)`, where `D*` is the maximum KL divergence between
+//! post-change and pre-change distributions across arms.  Their ε-GCD algorithm achieves
+//! this with exploration rate `ε = Θ(1/√T)`.  `CoverageConfig`'s minimum sampling-rate
+//! floor is the practical lever for approaching this bound.
+//!
+//! **Sampling-constrained detection.**
+//! Zhang & Mei (2020, arXiv:2009.11891) directly analyze changepoint detection under
+//! sampling-rate constraints, confirming that detection delay in wall time scales as
+//! `h / (KL(p1 || p0) * rate_k)` — the formal basis for the two-clocks approximation.
+//!
+//! **Regret–BAI Pareto frontier.**
+//! Zhong, Cheung & Tan (2021, arXiv:2110.08627) formally prove the Pareto tradeoff
+//! between regret minimization (RM) and best-arm identification (BAI): achieving
+//! `O(log T)` regret and `O(log T)` BAI error simultaneously is impossible.  The
+//! product-identity formulation in `muxer`'s docs is the static-schedule special case.
+//!
+//! **Piecewise-stationary multi-objective bandits.**
+//! Rezaei Balef & Maghsudi (2023, arXiv:2302.05257) study the combination of
+//! non-stationarity and multi-objective rewards directly.  `muxer` operates in this
+//! space — without claiming worst-case-optimal bounds — by combining sliding-window
+//! summaries with Pareto scalarization and explicit monitoring.
+//!
+//! **Window-limited CUSUM.**
+//! Xie, Moustakides & Xie (2022, arXiv:2206.06777) connect windowed observation to
+//! CUSUM optimality, providing theoretical grounding for `MonitoredWindow`'s split
+//! between baseline and recent windows.
+//!
+//! **Multi-objective bandit frameworks.**
+//! - **Constrained / safe bandits** (BwK): `muxer`'s `max_junk_rate`, `max_drift`, etc.
+//!   are BwK-style anytime constraints.  (Badanidiyuru, Kleinberg & Slivkins 2013,
+//!   FOCS; arXiv:1305.2545)
+//! - **Pareto bandits** (Drugan & Nowé, IJCNN 2013): `muxer`'s `pare`-based frontier
+//!   is the selection-time analogue.
+//! - **Information-Directed Sampling** (Russo & Van Roy 2014, arXiv:1403.5556):
+//!   scalarizes regret/information via the information ratio.  The three-objective
+//!   extension is non-trivial only in the contextual worst-case-detection regime.
+//! - **Multi-objective RL**: `muxer`'s deterministic post-Pareto scalarization is a
+//!   pragmatic instance of this literature.
+//! - **Adaptive experiment design** (Hadad et al. 2021, arXiv:1911.02768): the
+//!   observed vs. expected Fisher information distinction applies to `muxer`'s
+//!   adaptive design-measure analysis.
 
 #![forbid(unsafe_code)]
 
