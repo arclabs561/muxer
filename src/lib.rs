@@ -23,8 +23,9 @@
 //!
 //! **Selection policies:**
 //! - [`select_mab`] / [`select_mab_explain`] / [`select_mab_monitored_explain`]:
-//!   deterministic Pareto + scalarization.  [`MabConfig::quality_weight`] > 0
-//!   incorporates the `quality_score` gradient into `objective_success`.
+//!   deterministic Pareto + scalarization.  When [`MabConfig::quality_weight`] > 0,
+//!   `mean_quality_score` is a separate Pareto dimension (6th/9th); scalarization
+//!   adds `quality_weight × mean_quality_score` explicitly.
 //! - [`ThompsonSampling`]: seedable Thompson sampling for scalar rewards in `[0, 1]`.
 //! - [`Exp3Ix`]: seedable EXP3-IX for adversarial / fast-shifting rewards.
 //! - [`BanditPolicy`] (feature `stochastic`): common `decide`/`update_reward` trait
@@ -1296,15 +1297,11 @@ pub fn select_mab_explain(
         let soft_junk_rate = s.soft_junk_rate();
 
         let ucb = cfg.exploration_c * ((total_calls.ln() / n).sqrt());
-        let quality_bonus = if cfg.quality_weight > 0.0 {
-            cfg.quality_weight * s.mean_quality_score.unwrap_or(0.0)
-        } else {
-            0.0
-        };
-        let objective_success = ok_rate + ucb + quality_bonus;
+        let objective_success = ok_rate + ucb;
 
         let mean_cost = s.mean_cost_units();
         let mean_lat = s.mean_elapsed_ms();
+        let mean_q = s.mean_quality_score.unwrap_or(0.0);
 
         candidates.push(CandidateDebug {
             name: a.clone(),
@@ -1329,38 +1326,37 @@ pub fn select_mab_explain(
             mean_quality_score: s.mean_quality_score,
         });
 
-        frontier_points.push(vec![
-            objective_success,
-            -mean_cost,
-            -mean_lat,
-            -hard_junk_rate,
-            -soft_junk_rate,
-        ]);
+        let mut pt = vec![objective_success, -mean_cost, -mean_lat, -hard_junk_rate, -soft_junk_rate];
+        if cfg.quality_weight > 0.0 {
+            pt.push(mean_q);
+        }
+        frontier_points.push(pt);
         frontier_names_in_order.push(a.clone());
     }
 
-    // Deterministic scalarization among frontier points.
-    let weights: [f64; 5] = [
+    let dims = if cfg.quality_weight > 0.0 { 6 } else { 5 };
+    let weights: [f64; 6] = [
         1.0,
         cfg.cost_weight.max(0.0),
         cfg.latency_weight.max(0.0),
         cfg.hard_junk_weight.max(0.0),
         cfg.junk_weight.max(0.0),
+        cfg.quality_weight.max(0.0),
     ];
     let (best_name, frontier_names) = choose_from_frontier(
-        5,
+        dims,
         &candidates,
         &frontier_points,
         &frontier_names_in_order,
         arms_in_order.first(),
         |c| {
-            // Maximize:
-            //   objective_success - w_cost * cost - w_lat * latency - w_hard * hard_junk - w_soft * soft_junk
+            let q_bonus = weights[5] * c.mean_quality_score.unwrap_or(0.0);
             c.objective_success
                 - weights[1] * c.mean_cost_units
                 - weights[2] * c.mean_elapsed_ms
                 - weights[3] * c.hard_junk_rate
                 - weights[4] * c.soft_junk_rate
+                + q_bonus
         },
     );
 
@@ -1651,15 +1647,11 @@ pub fn select_mab_monitored_explain_with_summaries(
         let cusum_used = cusum_score.unwrap_or(0.0);
 
         let ucb = cfg.exploration_c * ((total_calls.ln() / n).sqrt());
-        let quality_bonus = if cfg.quality_weight > 0.0 {
-            cfg.quality_weight * s.mean_quality_score.unwrap_or(0.0)
-        } else {
-            0.0
-        };
-        let objective_success = ok_rate_used + ucb + quality_bonus;
+        let objective_success = ok_rate_used + ucb;
 
         let mean_cost = s.mean_cost_units();
         let mean_lat = s.mean_elapsed_ms();
+        let mean_q = s.mean_quality_score.unwrap_or(0.0);
 
         candidates.push(CandidateDebug {
             name: a.clone(),
@@ -1684,7 +1676,7 @@ pub fn select_mab_monitored_explain_with_summaries(
             mean_quality_score: s.mean_quality_score,
         });
 
-        frontier_points.push(vec![
+        let mut pt = vec![
             objective_success,
             -mean_cost,
             -mean_lat,
@@ -1693,10 +1685,15 @@ pub fn select_mab_monitored_explain_with_summaries(
             -drift_used,
             -catkl_used,
             -cusum_used,
-        ]);
+        ];
+        if cfg.quality_weight > 0.0 {
+            pt.push(mean_q);
+        }
+        frontier_points.push(pt);
         frontier_names_in_order.push(a.clone());
     }
-    let weights: [f64; 8] = [
+    let dims = if cfg.quality_weight > 0.0 { 9 } else { 8 };
+    let weights: [f64; 9] = [
         1.0,
         cfg.cost_weight.max(0.0),
         cfg.latency_weight.max(0.0),
@@ -1705,9 +1702,10 @@ pub fn select_mab_monitored_explain_with_summaries(
         cfg.drift_weight.max(0.0),
         cfg.catkl_weight.max(0.0),
         cfg.cusum_weight.max(0.0),
+        cfg.quality_weight.max(0.0),
     ];
     let (best_name, frontier_names) = choose_from_frontier(
-        8,
+        dims,
         &candidates,
         &frontier_points,
         &frontier_names_in_order,
@@ -1716,6 +1714,7 @@ pub fn select_mab_monitored_explain_with_summaries(
             let drift = c.drift_score.unwrap_or(0.0);
             let catkl = c.catkl_score.unwrap_or(0.0);
             let cusum = c.cusum_score.unwrap_or(0.0);
+            let q_bonus = weights[8] * c.mean_quality_score.unwrap_or(0.0);
             c.objective_success
                 - weights[1] * c.mean_cost_units
                 - weights[2] * c.mean_elapsed_ms
@@ -1724,6 +1723,7 @@ pub fn select_mab_monitored_explain_with_summaries(
                 - weights[5] * drift
                 - weights[6] * catkl
                 - weights[7] * cusum
+                + q_bonus
         },
     );
 

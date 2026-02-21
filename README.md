@@ -323,6 +323,7 @@ Reusable bits extracted from these experiments live in `muxer::monitor`, notably
 ## Documentation
 
 - [**Quickstart** (5-minute guide)](docs/QUICKSTART.md)
+- [Docs index](docs/README.md)
 - [API docs (docs.rs)](https://docs.rs/muxer)
 - [Changelog](CHANGELOG.md)
 - [Mini-experiments / research probes](examples/EXPERIMENTS.md)

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.9]
+
+### Changed
+
+- **Quality as proper Pareto dimension**: when `quality_weight > 0`, `mean_quality_score`
+  is now a separate frontier dimension (6th for `select_mab`, 9th for monitored),
+  not folded into `objective_success`.  Pareto can trade off quality vs cost/latency/junk;
+  scalarization adds `quality_weight × mean_quality_score` explicitly.
+- **`CandidateDebug::objective_success`**: now `ok_rate + ucb` only; quality is
+  applied in scalarization, not in this field.
+
+### Added
+
+- **`docs/README.md`** — docs index per docs.mdc canonical entrypoints.
+- **`docs/DOC_STATUS.md`** — ACTIVE vs NOTE status for doc paths.
+
 ## [0.3.8]
 
 ### Fixed
