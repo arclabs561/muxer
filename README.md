@@ -7,7 +7,7 @@ Deterministic, multi-objective routing primitives for "provider selection" probl
 You have a small set of arms (providers/models/backends) and repeated calls that produce outcomes (success/failure/degraded), plus cost + latency. You want an **online policy** that:
 
 - **explores** new or recently-changed arms
-- **avoids regressions** (quality or reliability spikes)
+- **avoids regressions** (sudden quality or reliability degradation)
 - is **deterministic by default** (same stats/config → same choice), so it's easy to debug
 
 ## What it is
@@ -28,7 +28,7 @@ This crate also includes:
 - **maintenance sampling** (`CoverageConfig` / `coverage_pick_under_sampled`) — ensure all arms stay measured above a quota; see [Three goals for sampling](#three-goals-for-sampling) for why this matters
 - **post-detection triage** (`WorstFirstConfig` / `worst_first_pick_k`) — prioritize the most degraded arms for investigation after monitoring fires
 - **contextual cell triage** (`ContextualCoverageTracker` / `contextual_worst_first_pick_k`) — lift triage to `(arm, context-bin)` pairs so localised regressions don't average away
-- **combined detect + triage sessions** (`TriageSession`) — wires per-arm CUSUM detection and per-cell cell investigation into one stateful session
+- **combined detect + triage sessions** (`TriageSession`) — wires per-arm CUSUM detection and per-cell investigation into one stateful session
 - **`softmax_map`** — stable score → probability helper for traffic splitting
 - **novelty helpers** (`novelty_pick_unseen`), **prior smoothing** (`apply_prior_counts_to_summary`), and **pipeline glue** (`PipelineOrder` / `PolicyPlan`) for building custom routing harnesses
 
@@ -87,9 +87,9 @@ let sel = select_mab(&arms, &summaries, MabConfig::default());
 assert_eq!(sel.chosen, "a"); // lower junk when all else is equal
 ```
 
-### Realistic "online routing loop" (Window ingestion)
+### Online routing loop (Window ingestion)
 
-This is closer to production usage: you maintain a `Window` per arm, push `Outcome`s as requests finish, and call `select_mab` each decision.
+You maintain a `Window` per arm, push `Outcome`s as requests finish, and call `select_mab` on each decision.
 
 ```bash
 cargo run --example deterministic_router
@@ -192,8 +192,6 @@ let s: f64 = probs.values().sum();
 assert!((s - 1.0).abs() < 1e-9);
 ```
 
-Runnable:
-
 ```bash
 cargo run --example exp3ix_router
 ```
@@ -221,8 +219,6 @@ let s: f64 = alloc.values().sum();
 assert!((s - 1.0).abs() < 1e-9);
 ```
 
-Runnable:
-
 ```bash
 cargo run --example thompson_router
 ```
@@ -230,8 +226,6 @@ cargo run --example thompson_router
 Note: this example requires `--features stochastic` if you disabled default features.
 
 ### Contextual routing (LinUCB)
-
-Runnable:
 
 ```bash
 cargo run --example contextual_router --features contextual
@@ -258,17 +252,15 @@ cargo run --example sticky_mab_router
 
 ### Mini-experiments (bandits × monitoring × false alarms)
 
-If you want runnable "research probes" that make tradeoffs/failure modes explicit, see:
+Runnable probes that make tradeoffs and failure modes explicit — see [examples/EXPERIMENTS.md](examples/EXPERIMENTS.md) for guided walkthroughs of each:
 
-- [EXPERIMENTS](examples/EXPERIMENTS.md)
-- Examples:
-  - `cargo run --example guardrail_semantics`
-  - `cargo run --example coverage_autotune --features stochastic`
-  - `cargo run --example free_lunch_investigation --features stochastic`
-  - `cargo run --example detector_inertia --features stochastic`
-  - `cargo run --example detector_calibration --features stochastic`
-  - `cargo run --example bqcd_sampling --features stochastic`
-  - `cargo run --release --example bqcd_calibrated --features stochastic`
+- `cargo run --example guardrail_semantics`
+- `cargo run --example coverage_autotune --features stochastic`
+- `cargo run --example free_lunch_investigation --features stochastic`
+- `cargo run --example detector_inertia --features stochastic`
+- `cargo run --example detector_calibration --features stochastic`
+- `cargo run --example bqcd_sampling --features stochastic`
+- `cargo run --release --example bqcd_calibrated --features stochastic`
 
 Reusable bits extracted from these experiments live in `muxer::monitor`, notably:
 
