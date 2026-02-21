@@ -158,6 +158,14 @@ Example showing "constraints first, then weights":
 cargo run --example mab_constraints_tuning
 ```
 
+### Router — production pattern (monitoring + triage + calibration + snapshot)
+
+```bash
+cargo run --example router_production --features stochastic
+```
+
+Shows: CUSUM threshold calibration, full `RouterConfig` with monitoring/triage/coverage/control, regression detection, acknowledgment, and snapshot/restore for persistence across restarts.
+
 ### Router — full lifecycle (select / observe / triage / acknowledge)
 
 ```bash
@@ -346,14 +354,14 @@ let d = router.select(3, seed);
 
 ```toml
 [dependencies]
-muxer = "0.3.0"
+muxer = "0.3.2"
 ```
 
 If you only want the deterministic `Window` + `select_mab*` core (no stochastic bandits), disable default features:
 
 ```toml
 [dependencies]
-muxer = { version = "0.3.0", default-features = false }
+muxer = { version = "0.3.2", default-features = false }
 ```
 
 ## Development

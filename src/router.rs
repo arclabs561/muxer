@@ -672,23 +672,17 @@ impl Router {
             }
             let round_seed = seed ^ (round as u64).wrapping_mul(0x9E37_79B9);
 
+            // Pass the full monitored map directly — select_mab_monitored_explain_with_summaries
+            // iterates over `remaining` and ignores arms not present in the map.
+            // This avoids the O(K × window_cap) clone that a sub-map would incur.
             let d = if let Some(mon) = monitored {
-                // Build a monitored sub-map for remaining arms.
-                let mon_sub: BTreeMap<String, MonitoredWindow> = remaining
-                    .iter()
-                    .filter_map(|a| mon.get(a).map(|mw| (a.clone(), mw.clone())))
-                    .collect();
-                if mon_sub.is_empty() {
-                    select_mab_explain(&remaining, sum_snap, self.cfg.mab)
-                } else {
-                    select_mab_monitored_explain_with_summaries(
-                        &remaining,
-                        sum_snap,
-                        &mon_sub,
-                        self.cfg.drift,
-                        self.cfg.mab,
-                    )
-                }
+                select_mab_monitored_explain_with_summaries(
+                    &remaining,
+                    sum_snap,
+                    mon,
+                    self.cfg.drift,
+                    self.cfg.mab,
+                )
             } else {
                 select_mab_explain(&remaining, sum_snap, self.cfg.mab)
             };
@@ -699,6 +693,87 @@ impl Router {
             picks.push(pick);
         }
         picks
+    }
+}
+
+// ============================================================================
+// Snapshot / persistence
+// ============================================================================
+
+/// A serializable snapshot of [`Router`] state.
+///
+/// The snapshot captures all per-arm window data and config, but **not** the
+/// live triage CUSUM scores (which are rebuilt from config on restore).
+/// This is intentional: CUSUM scores are noise-sensitive and should start
+/// fresh after a process restart to avoid false alarms from stale history.
+///
+/// # Persistence pattern
+///
+/// ```rust,no_run
+/// # #[cfg(feature = "serde")]
+/// # {
+/// use muxer::{Router, RouterConfig};
+///
+/// let arms = vec!["a".to_string()];
+/// let mut router = Router::new(arms, RouterConfig::default()).unwrap();
+/// // ... run routing ...
+///
+/// // Save (requires serde feature):
+/// let snap = router.snapshot();
+/// let json = serde_json::to_string(&snap).unwrap();
+///
+/// // Restore:
+/// let snap2: muxer::RouterSnapshot = serde_json::from_str(&json).unwrap();
+/// let router2 = Router::from_snapshot(snap2).unwrap();
+/// # }
+/// ```
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RouterSnapshot {
+    /// Ordered arm list.
+    pub arms: Vec<String>,
+    /// Per-arm selection windows.
+    pub windows: BTreeMap<String, Window>,
+    /// Per-arm monitored windows (if monitoring was enabled).
+    pub monitored: Option<BTreeMap<String, MonitoredWindow>>,
+    /// Router configuration.
+    pub cfg: RouterConfig,
+    /// Total observations recorded before the snapshot.
+    pub total_observations: u64,
+}
+
+impl Router {
+    /// Capture a serializable snapshot of the current state.
+    ///
+    /// The snapshot excludes live CUSUM scores; they are reset on restore.
+    pub fn snapshot(&self) -> RouterSnapshot {
+        RouterSnapshot {
+            arms: self.arms.clone(),
+            windows: self.windows.clone(),
+            monitored: self.monitored.clone(),
+            cfg: self.cfg.clone(),
+            total_observations: self.total_observations,
+        }
+    }
+
+    /// Restore a [`Router`] from a snapshot.
+    ///
+    /// All window state is restored; CUSUM banks are rebuilt fresh from the
+    /// config (detection history is reset).
+    pub fn from_snapshot(snap: RouterSnapshot) -> Result<Self, logp::Error> {
+        let triage = if let Some(ref tcfg) = snap.cfg.triage_cfg {
+            Some(TriageSession::new(&snap.arms, tcfg.clone())?)
+        } else {
+            None
+        };
+        Ok(Self {
+            arms: snap.arms,
+            windows: snap.windows,
+            monitored: snap.monitored,
+            triage,
+            cfg: snap.cfg,
+            total_observations: snap.total_observations,
+        })
     }
 }
 

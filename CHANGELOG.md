@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.3.2]
+
+### Fixed
+
+- `Router::select_mab_round` no longer clones `MonitoredWindow` per MAB round.
+  Previously O(K × window_cap × sizeof(Outcome)) bytes were cloned per `select`
+  call; now the full map is passed by reference with zero allocation.
+
+### Added
+
+- **`RouterSnapshot`** — serializable snapshot of `Router` state (windows,
+  monitored windows, config, total observations).  CUSUM scores are intentionally
+  excluded and reset on restore to avoid stale alarms across process restarts.
+- **`Router::snapshot()`** — capture current state.
+- **`Router::from_snapshot(snap)`** — restore from a snapshot.
+- **`MonitoredWindow`** now derives `serde::Serialize/Deserialize` (feature `serde`).
+- **`examples/router_production.rs`** — full production pattern: CUSUM threshold
+  calibration, `RouterConfig` builder with monitoring+triage+coverage+control,
+  routing loop with simulated regression, triage detection, acknowledgment, and
+  snapshot/restore.
+- 4 new snapshot tests in `tests/router_props.rs`.
+
+## [0.3.1]
+
+### Added
+
+- `examples/router_quickstart.rs`: runnable full-lifecycle demo (K=20 in 7 rounds with k=3).
+- `tests/router_props.rs`: 11 property/integration tests for `Router`.
+- `tests/calibration.rs`: 8 tests for `calibrate_cusum_threshold` and related utilities.
+
+### Fixed
+
+- Clippy: `PartialEq` for `ControlConfig` is now derived; `RangeInclusive::contains`
+  in `outcome_invariants.rs`; `too_many_arguments` suppressed on `calibrate_cusum_threshold`.
+
 ## [0.3.0]
 
 ### Added

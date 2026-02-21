@@ -216,6 +216,65 @@ fn router_summary_tracks_outcomes() {
     assert_eq!(s.hard_junk, 5);
 }
 
+// ---------------------------------------------------------------------------
+// Snapshot / restore
+// ---------------------------------------------------------------------------
+
+#[test]
+fn router_snapshot_restores_window_state() {
+    let mut r = Router::new(arms(3), RouterConfig::default()).unwrap();
+    for _ in 0..15 {
+        r.observe("arm0", clean());
+        r.observe("arm1", bad());
+    }
+    let snap = r.snapshot();
+    assert_eq!(snap.total_observations, 30);
+
+    let r2 = Router::from_snapshot(snap).unwrap();
+    assert_eq!(r2.summary("arm0").calls, 15);
+    assert_eq!(r2.summary("arm1").calls, 15);
+    assert_eq!(r2.summary("arm1").hard_junk, 15);
+    assert_eq!(r2.total_observations(), 30);
+}
+
+#[test]
+fn router_snapshot_arms_match() {
+    let a = arms(4);
+    let r = Router::new(a.clone(), RouterConfig::default()).unwrap();
+    let snap = r.snapshot();
+    assert_eq!(snap.arms, a);
+}
+
+#[test]
+fn router_snapshot_restores_monitored_windows() {
+    let cfg = RouterConfig::default().with_monitoring(200, 50);
+    let mut r = Router::new(arms(2), cfg).unwrap();
+    for _ in 0..20 {
+        r.observe("arm0", clean());
+    }
+    let snap = r.snapshot();
+    let r2 = Router::from_snapshot(snap).unwrap();
+    assert!(r2.monitored_window("arm0").is_some());
+    assert_eq!(r2.monitored_window("arm0").unwrap().recent_len(), 20);
+}
+
+#[test]
+fn router_from_snapshot_resets_cusum() {
+    let tcfg = TriageSessionConfig { min_n: 5, threshold: 2.0, ..TriageSessionConfig::default() };
+    let cfg = RouterConfig::default().with_triage_cfg(tcfg);
+    let mut r = Router::new(arms(2), cfg).unwrap();
+    for _ in 0..10 { r.observe("arm0", clean()); }
+    for _ in 0..20 { r.observe("arm0", bad()); }
+    assert!(r.mode().is_triage());
+
+    // Snapshot + restore: CUSUM is reset.
+    let snap = r.snapshot();
+    let r2 = Router::from_snapshot(snap).unwrap();
+    assert_eq!(r2.mode(), RouterMode::Normal, "CUSUM should be reset on restore");
+    // But window data is preserved.
+    assert_eq!(r2.summary("arm0").calls, 30);
+}
+
 #[test]
 fn router_acknowledge_all_clears_all_alarmed() {
     let tcfg = TriageSessionConfig { min_n: 5, threshold: 2.0, ..TriageSessionConfig::default() };

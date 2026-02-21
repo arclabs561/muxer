@@ -173,6 +173,7 @@ impl Default for DriftConfig {
 /// A baseline/recent pair of windows for drift monitoring.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MonitoredWindow {
     baseline: Window,
     recent: Window,
