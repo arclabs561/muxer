@@ -23,9 +23,12 @@
 //!
 //! **Selection policies:**
 //! - [`select_mab`] / [`select_mab_explain`] / [`select_mab_monitored_explain`]:
-//!   deterministic Pareto + scalarization from windowed summaries.
+//!   deterministic Pareto + scalarization.  [`MabConfig::quality_weight`] > 0
+//!   incorporates the `quality_score` gradient into `objective_success`.
 //! - [`ThompsonSampling`]: seedable Thompson sampling for scalar rewards in `[0, 1]`.
 //! - [`Exp3Ix`]: seedable EXP3-IX for adversarial / fast-shifting rewards.
+//! - [`BanditPolicy`] (feature `stochastic`): common `decide`/`update_reward` trait
+//!   for `ThompsonSampling` and `Exp3Ix` — enables generic policy code.
 //! - [`softmax_map`]: stable score → probability helper for traffic splitting.
 //! - (feature `contextual`) [`LinUcb`]: linear contextual bandit.
 //!

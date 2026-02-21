@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.3.6]
+
+### Changed
+
+- **`getting_started` example rewritten**: now actually calls `set_last_junk_level`
+  and `set_last_quality_score` (both were commented-out placeholders before), and
+  adds a step 4 demonstrating that `quality_weight=1.0` correctly picks the arm
+  with `quality_score=0.92` over the arm with `quality_score=0.78`.
+- **README "Quick examples"**: `getting_started` is now the first recommended run.
+  Fixed undefined `seed` in the Router quickstart code block.  Added `mean_quality_score: None`
+  to inline `Summary` examples.  Added `BanditPolicy` to "What it is" and "Which policy."
+- **`lib.rs` module overview**: add `BanditPolicy` and `quality_weight` to the
+  selection policies description.
+
+### Fixed
+
+- **`wilson_half_width_decreases_with_more_trials` proptest**: the old test held
+  success COUNT fixed while increasing n — this can widen the Wilson interval by
+  pushing the rate toward 0.5 (maximum variance).  Replaced with
+  `wilson_half_width_decreases_with_proportional_scaling` which scales both
+  successes and trials by the same integer multiplier (exact same rate), where
+  monotone decrease is guaranteed.
+
+### Added
+
+- **`quality_weight_is_monotone` proptest**: for any arm A with `quality_score ∈ [0.6, 1]`
+  and arm B with `quality_score ∈ [0, 0.5]` — all else equal, `quality_weight > 0`
+  always selects A.  Runs 100 random cases.
+
 ## [0.3.5]
 
 ### Added

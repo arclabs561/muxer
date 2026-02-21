@@ -45,14 +45,16 @@ This crate also includes:
 - **threshold calibration** (`calibrate_cusum_threshold`) — Monte Carlo calibration: "what CUSUM threshold gives `P[alarm within m rounds] ≤ α`?"
 - **window size guidance** (`suggested_window_cap`) — SW-UCB–derived: `sqrt(throughput / change_rate)`
 - **control arms** (`ControlConfig` / `pick_control_arms`) — reserve deterministic-random picks as a selection-bias anchor
+- **`BanditPolicy` trait** — common `decide(arms) → Decision` + `update_reward(arm, reward)` interface that both `ThompsonSampling` and `Exp3Ix` implement, enabling generic routing harnesses
 - **novelty helpers** (`novelty_pick_unseen`), **prior smoothing** (`apply_prior_counts_to_summary`), and **pipeline glue** (`PipelineOrder` / `PolicyPlan`) for building custom routing harnesses
 
 ## Which policy should I use?
 
-- **`select_mab` (Window + Pareto + scalarization)**: when you care about **multiple objectives** at once (success rate, failure rate, quality degradation, cost, latency) and you want deterministic selection with hard constraints.
+- **`select_mab` (Window + Pareto + scalarization)**: when you care about **multiple objectives** at once (success rate, failure rate, quality degradation, cost, latency) and want deterministic selection with hard constraints.  Set `MabConfig::quality_weight > 0` to incorporate the continuous `quality_score` gradient into the objective.
 - **`ThompsonSampling`**: when you can provide a **single reward** per call (in `[0, 1]`) and want a classic explore/exploit policy (seedable, optionally decayed).
 - **`Exp3Ix`**: when reward is **non-stationary / adversarial-ish** and you still want a probabilistic policy (seedable, optionally decayed).
 - **`LinUcb` (feature `contextual`)**: when you have a per-request feature vector (e.g. cheap "difficulty" features, embeddings, metadata) and want a contextual policy.
+- **`BanditPolicy` trait** (feature `stochastic`): when you want to write code that works with both `ThompsonSampling` and `Exp3Ix` without committing to one — `fn run<P: BanditPolicy>(p: &mut P)` covers both.
 
 ## Routing lifecycle
 
@@ -97,6 +99,14 @@ Each policy has a `*_decide` / `decide_*` method that returns this.
 
 ## Quick examples
 
+### Start here — getting_started (3 arms, no CUSUM, no theory required)
+
+```bash
+cargo run --example getting_started
+```
+
+This covers the 80% case in ~60 lines: create a `Router`, run a select/observe loop, use delayed quality labeling (`set_last_junk_level` + `set_last_quality_score`), and see why `quality_weight` breaks ties that binary ok/junk rates can't. No feature flags needed.
+
 ### Deterministic multi-objective selection (Pareto + scalarization)
 
 ```rust
@@ -106,9 +116,9 @@ use std::collections::BTreeMap;
 let arms = vec!["a".to_string(), "b".to_string()];
 let mut summaries = BTreeMap::new();
 // arm "a": 9/10 ok, 0 junk (quality above threshold)
-summaries.insert("a".to_string(), Summary { calls: 10, ok: 9, junk: 0, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900 });
+summaries.insert("a".to_string(), Summary { calls: 10, ok: 9, junk: 0, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900, mean_quality_score: None });
 // arm "b": same ok rate, but 2 results fell below quality threshold
-summaries.insert("b".to_string(), Summary { calls: 10, ok: 9, junk: 2, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900 });
+summaries.insert("b".to_string(), Summary { calls: 10, ok: 9, junk: 2, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900, mean_quality_score: None });
 
 let sel = select_mab(&arms, &summaries, MabConfig::default());
 assert_eq!(sel.chosen, "a"); // lower junk rate wins when all else is equal
@@ -327,12 +337,12 @@ let arms = vec!["backend-a".to_string(), "backend-b".to_string()];
 let mut router = Router::new(arms, RouterConfig::default()).unwrap();
 
 loop {
-    let d = router.select(1, seed);          // pick an arm
+    let d = router.select(1, 0);             // pick an arm (seed for tie-breaking)
     let arm = d.primary().unwrap().to_string();
 
     // ... make the call, evaluate quality ...
     let outcome = Outcome { ok: true, junk: false, hard_junk: false,
-                            cost_units: 5, elapsed_ms: 120 };
+                            cost_units: 5, elapsed_ms: 120, quality_score: None };
     router.observe(&arm, outcome);           // record result
 
     // If quality degrades, triage mode fires automatically:
@@ -348,21 +358,21 @@ For larger arm counts, pass `k > 1` to batch the initial exploration:
 ```rust
 // K=30 arms, k=3 per round → initial coverage in ~10 rounds.
 let cfg = RouterConfig::default().with_coverage(0.02, 1);
-let d = router.select(3, seed);
+let d = router.select(3, 0);
 ```
 
 ## Usage
 
 ```toml
 [dependencies]
-muxer = "0.3.5"
+muxer = "0.3.6"
 ```
 
 If you only want the deterministic `Window` + `select_mab*` core (no stochastic bandits), disable default features:
 
 ```toml
 [dependencies]
-muxer = { version = "0.3.5", default-features = false }
+muxer = { version = "0.3.6", default-features = false }
 ```
 
 ## Development

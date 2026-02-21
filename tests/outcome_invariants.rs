@@ -153,27 +153,33 @@ fn set_last_junk_level_soft_junk_only() {
 // estimation uncertainty and average detection delay proportionally.
 
 proptest! {
-    /// Wilson half-width is (weakly) decreasing in the number of trials.
+    /// Wilson half-width is (weakly) decreasing when n grows with the success
+    /// FRACTION held exactly constant (exact proportional scaling).
     ///
-    /// This directly tests the "more sampling → lower estimation uncertainty"
-    /// claim from the two-clocks section.
+    /// The property "more sampling → tighter interval" holds only when the
+    /// observed rate stays fixed — that is, `s_large = s_small * m` and
+    /// `n_large = n_small * m` for integer multiplier `m`.  Holding just the
+    /// count fixed (different fraction) can widen the interval toward p=0.5.
+    ///
+    /// This tests the "more sampling → lower estimation uncertainty" claim.
     #[test]
-    fn wilson_half_width_decreases_with_more_trials(
-        successes_frac in 0.0f64..=1.0,
+    fn wilson_half_width_decreases_with_proportional_scaling(
+        successes in 0u64..50,
         n_small in 5u64..50,
-        n_large in 50u64..500,
+        multiplier in 2u64..8,
         z in prop_oneof![Just(1.0f64), Just(1.645), Just(1.96)],
     ) {
-        let s_small = (successes_frac * n_small as f64).round() as u64;
-        let s_large = (successes_frac * n_large as f64).round() as u64;
+        let s_small = successes.min(n_small);
+        let n_large = n_small * multiplier;
+        let s_large = s_small * multiplier; // exact same fraction
 
         for mode in [RateBoundMode::Upper, RateBoundMode::Lower, RateBoundMode::None] {
             let (_, hw_small) = apply_rate_bound(s_small, n_small, z, mode);
             let (_, hw_large) = apply_rate_bound(s_large, n_large, z, mode);
             prop_assert!(
                 hw_small >= hw_large - 1e-10,
-                "half_width should decrease with more trials: \
-                 n_small={n_small} hw={hw_small:.6} vs n_large={n_large} hw={hw_large:.6} (mode={mode:?})"
+                "half_width should decrease with proportional scaling: \
+                 {s_small}/{n_small} hw={hw_small:.6} vs {s_large}/{n_large} hw={hw_large:.6} (mode={mode:?})"
             );
         }
     }
@@ -382,6 +388,37 @@ fn quality_weight_influences_arm_selection() {
     // With quality weight: "a" should score higher due to quality bonus.
     let sel = select_mab(&arms, &summaries, cfg_with_quality);
     assert_eq!(sel.chosen, "a", "arm with higher quality score should be preferred");
+}
+
+proptest! {
+    /// Higher mean_quality_score on arm A vs arm B, all else equal and with
+    /// quality_weight > 0 and exploration_c=0: A should always be chosen.
+    #[test]
+    fn quality_weight_is_monotone(
+        q_a in 0.6f64..1.0,
+        q_b in 0.0f64..0.5,
+        quality_weight in 0.1f64..2.0,
+    ) {
+        use muxer::{select_mab, MabConfig, Summary};
+        use std::collections::BTreeMap;
+
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let mut summaries = BTreeMap::new();
+        summaries.insert("a".to_string(), Summary {
+            calls: 100, ok: 90, junk: 0, hard_junk: 0, cost_units: 5, elapsed_ms_sum: 5000,
+            mean_quality_score: Some(q_a),
+        });
+        summaries.insert("b".to_string(), Summary {
+            calls: 100, ok: 90, junk: 0, hard_junk: 0, cost_units: 5, elapsed_ms_sum: 5000,
+            mean_quality_score: Some(q_b),
+        });
+
+        let cfg = MabConfig { exploration_c: 0.0, quality_weight, ..MabConfig::default() };
+        let sel = select_mab(&arms, &summaries, cfg);
+        prop_assert_eq!(&sel.chosen, "a",
+            "arm with quality={} should beat arm with quality={} (weight={})",
+            q_a, q_b, quality_weight);
+    }
 }
 
 // ---------------------------------------------------------------------------
