@@ -12,6 +12,7 @@
 //! vector that doesn't fit the arm-only interface.  Use the `contextual`
 //! feature's `LinUcb::decide(arms, context)` directly.
 
+#[cfg(feature = "stochastic")]
 use crate::Decision;
 
 /// Common interface for stateful stochastic bandit policies.
