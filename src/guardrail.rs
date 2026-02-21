@@ -113,6 +113,7 @@ mod tests {
             hard_junk: 0,
             cost_units: 0,
             elapsed_ms_sum,
+            mean_quality_score: None,
         }
     }
 

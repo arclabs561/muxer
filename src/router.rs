@@ -557,6 +557,24 @@ impl Router {
         self.total_observations += 1;
     }
 
+    /// Update the most recent outcome's continuous quality score (delayed assessment).
+    ///
+    /// Call this after downstream scoring completes — same pattern as
+    /// [`set_last_junk_level`].  The value is clamped to `[0.0, 1.0]`.
+    ///
+    /// With `MabConfig::quality_weight > 0`, this gradient signal influences
+    /// arm selection alongside the binary ok/junk rates.
+    pub fn set_last_quality_score(&mut self, arm: &str, score: f64) {
+        if let Some(w) = self.windows.get_mut(arm) {
+            w.set_last_quality_score(score);
+        }
+        if let Some(ref mut m) = self.monitored {
+            if let Some(mw) = m.get_mut(arm) {
+                mw.set_last_quality_score(score);
+            }
+        }
+    }
+
     /// Update the most recent outcome's junk label (delayed quality assessment).
     ///
     /// Mirrors [`Window::set_last_junk_level`] across all maintained windows.

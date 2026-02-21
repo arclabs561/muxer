@@ -19,6 +19,7 @@ An `Outcome` has three caller-defined quality fields plus cost and latency:
 - `ok`: the call produced a usable result
 - `junk`: quality was below your threshold — low F1, empty extraction, low-confidence score. Also set when `hard_junk=true` (hard failure is a subset of junk, tracked and penalized separately)
 - `hard_junk`: the call failed entirely (error, timeout, parse failure) — implies `junk=true`
+- `quality_score: Option<f64>`: optional continuous quality signal `[0, 1]` (higher = better). Set after scoring via `Window::set_last_quality_score` or `Router::set_last_quality_score`. When `MabConfig::quality_weight > 0`, this gradient signal influences arm selection alongside the binary rates.
 - `cost_units`: caller-defined cost proxy (token count, API credits, examples processed, etc.)
 - `elapsed_ms`: wall-clock time
 
@@ -354,14 +355,14 @@ let d = router.select(3, seed);
 
 ```toml
 [dependencies]
-muxer = "0.3.2"
+muxer = "0.3.5"
 ```
 
 If you only want the deterministic `Window` + `select_mab*` core (no stochastic bandits), disable default features:
 
 ```toml
 [dependencies]
-muxer = { version = "0.3.2", default-features = false }
+muxer = { version = "0.3.5", default-features = false }
 ```
 
 ## Development

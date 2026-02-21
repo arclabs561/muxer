@@ -26,6 +26,7 @@ fn main() {
                     hard_junk: 0,
                     cost_units: 50,
                     elapsed_ms_sum: 5000,
+                    mean_quality_score: None,
                 },
             );
             summaries.insert(
@@ -37,6 +38,7 @@ fn main() {
                     hard_junk: 0,
                     cost_units: 50,
                     elapsed_ms_sum: 5000,
+                    mean_quality_score: None,
                 },
             );
         } else {
@@ -49,6 +51,7 @@ fn main() {
                     hard_junk: 0,
                     cost_units: 50,
                     elapsed_ms_sum: 5000,
+                    mean_quality_score: None,
                 },
             );
             summaries.insert(
@@ -60,6 +63,7 @@ fn main() {
                     hard_junk: 0,
                     cost_units: 50,
                     elapsed_ms_sum: 5000,
+                    mean_quality_score: None,
                 },
             );
         }

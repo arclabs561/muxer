@@ -893,6 +893,7 @@ mod tests {
                 hard_junk: 0,
                 cost_units: 0,
                 elapsed_ms_sum: 10,
+                mean_quality_score: None,
             },
         );
         m.insert(
@@ -904,6 +905,7 @@ mod tests {
                 hard_junk: 0,
                 cost_units: 0,
                 elapsed_ms_sum: 10,
+                mean_quality_score: None,
             },
         );
         let gd = exp3ix_decide_persisted_guardrailed(
@@ -945,6 +947,7 @@ mod tests {
                     hard_junk: 0,
                     cost_units: 0,
                     elapsed_ms_sum: 10,
+                    mean_quality_score: None,
                 },
             );
         }
@@ -1088,6 +1091,7 @@ mod tests {
             hard_junk: 0,
             cost_units: 0,
             elapsed_ms_sum: 0,
+            mean_quality_score: None,
         };
 
         let mut total_mab = 0.0;

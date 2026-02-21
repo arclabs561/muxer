@@ -24,6 +24,7 @@ fn main() {
                 hard_junk: 0,
                 cost_units: 200,      // mean 2.0
                 elapsed_ms_sum: 5000, // mean 50ms
+                mean_quality_score: None,
             },
         ),
         (
@@ -35,6 +36,7 @@ fn main() {
                 hard_junk: 0,
                 cost_units: 100,      // mean 1.0
                 elapsed_ms_sum: 5000, // mean 50ms
+                mean_quality_score: None,
             },
         ),
     ]);

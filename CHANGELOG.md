@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.5]
+
+### Added
+
+- **`Summary::mean_quality_score: Option<f64>`** — pre-computed mean quality
+  score from `Window::summary()`.  `None` when no outcomes have `quality_score`
+  set.  Backward-compatible: defaults to `None` in serde and struct `Default`.
+- **`MabConfig::quality_weight: f64`** (default `0.0`) — when non-zero, adds
+  `quality_weight × mean_quality_score` to `objective_success` in `select_mab`
+  and `select_mab_monitored_*`.  Completes the gradient-signal loop opened in 0.3.4.
+- **`MonitoredWindow::set_last_quality_score`** — delayed quality labeling
+  propagated to both baseline and recent windows.
+- **`Router::set_last_quality_score`** — same, via the Router front door.
+- 4 new tests in `tests/outcome_invariants.rs`: `mean_quality_score` None/average,
+  `set_last_quality_score` clamping, and `quality_weight` selection influence.
+
 ## [0.3.2]
 
 ### Fixed

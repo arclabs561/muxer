@@ -49,6 +49,7 @@ mod tests {
             hard_junk,
             cost_units: 0,
             elapsed_ms_sum: 0,
+            mean_quality_score: None,
         }
     }
 

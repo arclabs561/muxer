@@ -215,6 +215,12 @@ impl MonitoredWindow {
         self.recent.set_last_junk_level(junk, hard_junk);
     }
 
+    /// Best-effort: set the continuous quality score for the most recent outcome in both windows.
+    pub fn set_last_quality_score(&mut self, score: f64) {
+        self.baseline.set_last_quality_score(score);
+        self.recent.set_last_quality_score(score);
+    }
+
     /// Summary of the recent window (what selection should use by default).
     pub fn recent_summary(&self) -> Summary {
         self.recent.summary()

@@ -636,6 +636,21 @@ impl Window {
             cost_units = cost_units.saturating_add(o.cost_units);
             elapsed_ms_sum = elapsed_ms_sum.saturating_add(o.elapsed_ms);
         }
+        // Compute mean quality score from outcomes that have it set.
+        let mut quality_sum = 0.0_f64;
+        let mut quality_count = 0u64;
+        for o in &self.buf {
+            if let Some(q) = o.quality_score {
+                quality_sum += q;
+                quality_count += 1;
+            }
+        }
+        let mean_quality_score = if quality_count > 0 {
+            Some(quality_sum / quality_count as f64)
+        } else {
+            None
+        };
+
         Summary {
             calls: n,
             ok,
@@ -643,6 +658,7 @@ impl Window {
             hard_junk,
             cost_units,
             elapsed_ms_sum,
+            mean_quality_score,
         }
     }
 }
@@ -663,6 +679,12 @@ pub struct Summary {
     pub cost_units: u64,
     /// Sum of `elapsed_ms` over calls.
     pub elapsed_ms_sum: u64,
+    /// Mean quality score over outcomes that had `quality_score` set, or `None`.
+    ///
+    /// Populated by [`Window::summary`].  When constructing `Summary` directly
+    /// (not via `Window`), set this to reflect a pre-computed quality estimate.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub mean_quality_score: Option<f64>,
 }
 
 impl Summary {
@@ -736,6 +758,12 @@ pub struct MabConfig {
     pub junk_weight: f64,
     /// Penalty weight for hard_junk_rate (0 disables).
     pub hard_junk_weight: f64,
+    /// Bonus weight for mean quality score (`quality_score` field on `Outcome`).
+    ///
+    /// When non-zero and quality scores have been recorded, adds
+    /// `quality_weight * mean_quality_score` to `objective_success`.
+    /// Higher quality scores push an arm toward selection; 0 disables.
+    pub quality_weight: f64,
     /// Optional constraint: discard arms whose windowed junk_rate exceeds this.
     pub max_junk_rate: Option<f64>,
     /// Optional constraint: discard arms whose windowed hard_junk_rate exceeds this.
@@ -832,6 +860,7 @@ impl Default for MabConfig {
             latency_weight: 0.0,
             junk_weight: 0.0,
             hard_junk_weight: 0.0,
+            quality_weight: 0.0,
             max_junk_rate: None,
             max_hard_junk_rate: None,
             max_mean_cost_units: None,
@@ -1180,11 +1209,11 @@ where
 /// let mut summaries = BTreeMap::new();
 /// summaries.insert(
 ///     "a".to_string(),
-///     Summary { calls: 10, ok: 9, junk: 0, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900 }
+///     Summary { calls: 10, ok: 9, junk: 0, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900, mean_quality_score: None }
 /// );
 /// summaries.insert(
 ///     "b".to_string(),
-///     Summary { calls: 10, ok: 9, junk: 2, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900 }
+///     Summary { calls: 10, ok: 9, junk: 2, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900, mean_quality_score: None }
 /// );
 ///
 /// let sel = select_mab(&arms, &summaries, MabConfig::default());
@@ -1244,7 +1273,12 @@ pub fn select_mab_explain(
         let soft_junk_rate = s.soft_junk_rate();
 
         let ucb = cfg.exploration_c * ((total_calls.ln() / n).sqrt());
-        let objective_success = ok_rate + ucb;
+        let quality_bonus = if cfg.quality_weight > 0.0 {
+            cfg.quality_weight * s.mean_quality_score.unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let objective_success = ok_rate + ucb + quality_bonus;
 
         let mean_cost = s.mean_cost_units();
         let mean_lat = s.mean_elapsed_ms();
@@ -1593,7 +1627,12 @@ pub fn select_mab_monitored_explain_with_summaries(
         let cusum_used = cusum_score.unwrap_or(0.0);
 
         let ucb = cfg.exploration_c * ((total_calls.ln() / n).sqrt());
-        let objective_success = ok_rate_used + ucb;
+        let quality_bonus = if cfg.quality_weight > 0.0 {
+            cfg.quality_weight * s.mean_quality_score.unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let objective_success = ok_rate_used + ucb + quality_bonus;
 
         let mean_cost = s.mean_cost_units();
         let mean_lat = s.mean_elapsed_ms();
@@ -2019,6 +2058,7 @@ mod tests {
             hard_junk,
             cost_units,
             elapsed_ms_sum,
+            mean_quality_score: None,
         }
     }
 
@@ -2090,6 +2130,7 @@ mod tests {
                 hard_junk: 0,
                 cost_units: 0,
                 elapsed_ms_sum: 1000,
+                mean_quality_score: None,
             },
         );
         all.insert(
@@ -2101,6 +2142,7 @@ mod tests {
                 hard_junk: 0,
                 cost_units: 0,
                 elapsed_ms_sum: 1000,
+                mean_quality_score: None,
             },
         );
 
