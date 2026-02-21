@@ -24,6 +24,7 @@ use crate::pick_random_subset;
 /// Configuration for control arm reservation.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Default)]
 pub struct ControlConfig {
     /// Enable control arm selection.
     pub enabled: bool,
@@ -33,11 +34,6 @@ pub struct ControlConfig {
     pub control_k: usize,
 }
 
-impl Default for ControlConfig {
-    fn default() -> Self {
-        Self { enabled: false, control_k: 0 }
-    }
-}
 
 impl ControlConfig {
     /// Create a config with `control_k` enabled.

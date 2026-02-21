@@ -1203,6 +1203,7 @@ pub fn simulate_cusum_null_max_scores(
 /// # }
 /// ```
 #[cfg(feature = "stochastic")]
+#[allow(clippy::too_many_arguments)]
 pub fn calibrate_cusum_threshold(
     p0: &[f64],
     alts: &[Vec<f64>],

@@ -158,6 +158,14 @@ Example showing "constraints first, then weights":
 cargo run --example mab_constraints_tuning
 ```
 
+### Router — full lifecycle (select / observe / triage / acknowledge)
+
+```bash
+cargo run --example router_quickstart
+```
+
+This covers: basic two-arm routing, quality divergence, triage detection, acknowledgment, large-K batch exploration (K=20 in 7 rounds with k=3), and dynamic arm management. No `--features` flag needed.
+
 ### Multi-pick selection with a latency guardrail
 
 `select_mab_k_guardrailed_explain_full` selects up to `k` unique arms per decision, applying

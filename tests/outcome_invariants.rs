@@ -84,7 +84,7 @@ proptest! {
             (soft - expected).abs() < 1e-12,
             "soft={soft} expected={expected}"
         );
-        prop_assert!(soft >= 0.0 && soft <= 1.0 + 1e-12, "soft_junk_rate out of range: {soft}");
+        prop_assert!((0.0..=1.0 + 1e-12).contains(&soft), "soft_junk_rate out of range: {soft}");
     }
 
     /// All rates are in [0, 1].
@@ -187,7 +187,7 @@ proptest! {
         let trials = trials.max(successes);
         for mode in [RateBoundMode::Upper, RateBoundMode::Lower, RateBoundMode::None] {
             let (rate, hw) = apply_rate_bound(successes, trials, z, mode);
-            prop_assert!(rate.is_finite() && rate >= 0.0 && rate <= 1.0 + 1e-12,
+            prop_assert!(rate.is_finite() && (0.0..=1.0 + 1e-12).contains(&rate),
                 "rate={rate} out of range (successes={successes}, trials={trials})");
             prop_assert!(hw.is_finite() && hw >= 0.0,
                 "hw={hw} invalid (successes={successes}, trials={trials})");
