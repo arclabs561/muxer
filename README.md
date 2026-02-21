@@ -52,7 +52,7 @@ Every routing decision involves three objectives that generally compete:
 - **Wall time** $t$: global decision steps.
 - **Sample time** $n_k$: observations from arm $k$.
 
-Detection delay in wall time scales as $\text{delay}_{wall} \approx \text{delay}_{samples} / \text{rate}_k$. `CoverageConfig` sets a minimum sampling-rate floor, which is the direct lever for bounding wall-clock detection delay.
+Detection delay in wall time scales as `delay_wall ≈ delay_samples / rate_k`. `CoverageConfig` sets a minimum sampling-rate floor, which is the direct lever for bounding wall-clock detection delay.
 
 **The non-contextual collapse.** In the non-contextual case with a static allocation, estimation error and average detection delay are both $O(1/n_k)$ in the per-arm sample count. They are structurally proportional — the same lever (how often you sample an arm) drives both. This means there is no free-lunch between estimation and average detection: the Pareto surface collapses to a 1-D curve parameterized by $n_k$.
 
