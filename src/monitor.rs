@@ -219,6 +219,44 @@ impl MonitoredWindow {
     pub fn recent_summary(&self) -> Summary {
         self.recent.summary()
     }
+
+    /// Number of outcomes currently in the baseline window.
+    pub fn baseline_len(&self) -> usize {
+        self.baseline.len()
+    }
+
+    /// Number of outcomes currently in the recent window.
+    pub fn recent_len(&self) -> usize {
+        self.recent.len()
+    }
+
+    /// Acknowledge a confirmed change: promote recent observations into the baseline,
+    /// then clear the recent window.
+    ///
+    /// Call this after investigating and confirming a regression on this arm.
+    /// The recent window becomes part of the new baseline; subsequent observations
+    /// build a fresh recent window so drift detection can track further changes.
+    ///
+    /// This is the standard post-detection protocol:
+    /// 1. [`TriageSession::reset_arm`] — resets the CUSUM bank.
+    /// 2. This method — resets the monitoring windows.
+    pub fn acknowledge_change(&mut self) {
+        for o in self.recent.iter().copied() {
+            self.baseline.push(o);
+        }
+        self.recent = Window::new(self.recent.cap());
+    }
+
+    /// Merge recent observations into the baseline without clearing the recent window.
+    ///
+    /// Use when you want the baseline to absorb new data while keeping recent
+    /// observations for ongoing drift comparison (e.g., a soft acknowledgment
+    /// that does not restart the drift sensor).
+    pub fn promote_recent_to_baseline(&mut self) {
+        for o in self.recent.iter().copied() {
+            self.baseline.push(o);
+        }
+    }
 }
 
 /// Drift computation output.
@@ -1058,6 +1096,155 @@ pub fn adjusted_rates(summary: Summary, cfg: UncertaintyConfig) -> AdjustedRates
         hard_junk_rate,
         hard_junk_half,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Convenience CUSUM threshold calibration via Monte Carlo null simulation
+// ---------------------------------------------------------------------------
+
+/// Simulate null max-scores for a CUSUM bank over `m` rounds.
+///
+/// Feeds `n_trials` independent null sequences (each of length `m`) through a
+/// `CusumCatBank`, recording the maximum CUSUM score per trial.  The resulting
+/// distribution can be fed directly to [`calibrate_threshold_from_max_scores`].
+///
+/// # Arguments
+///
+/// - `p0`: null (pre-change) categorical distribution (must be a valid simplex).
+/// - `alts`: alternative distributions for the CUSUM bank.
+/// - `m`: horizon in sample-time rounds (number of outcomes per null trial).
+/// - `cusum_alpha`: Dirichlet smoothing for the CUSUM detector.
+/// - `min_n`: minimum observations before the detector can alarm.
+/// - `n_trials`: number of Monte Carlo null trials.
+/// - `seed`: RNG seed for reproducibility.
+///
+/// Returns `Err` if the bank cannot be initialised (e.g. invalid simplex).
+#[cfg(feature = "stochastic")]
+pub fn simulate_cusum_null_max_scores(
+    p0: &[f64],
+    alts: &[Vec<f64>],
+    m: u64,
+    cusum_alpha: f64,
+    min_n: u64,
+    n_trials: usize,
+    seed: u64,
+) -> Result<Vec<f64>, logp::Error> {
+    use rand::SeedableRng;
+    use rand::Rng;
+
+    if n_trials == 0 || m == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Build cumulative CDF for sampling from p0.
+    let sum: f64 = p0.iter().sum();
+    let cdf: Vec<f64> = {
+        let mut c = Vec::with_capacity(p0.len());
+        let mut acc = 0.0;
+        for &v in p0 {
+            acc += v / sum;
+            c.push(acc.min(1.0));
+        }
+        c
+    };
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+    let mut max_scores = Vec::with_capacity(n_trials);
+
+    for _ in 0..n_trials {
+        let mut bank = CusumCatBank::new(p0, alts, cusum_alpha, min_n, f64::INFINITY, 1e-9)?;
+        let mut max_score = 0.0_f64;
+        for _ in 0..m {
+            // Sample one outcome from p0.
+            let u: f64 = rng.random();
+            let idx = cdf.partition_point(|&c| c < u).min(p0.len() - 1);
+            bank.update(idx);
+            max_score = max_score.max(bank.score_max());
+        }
+        max_scores.push(max_score);
+    }
+    Ok(max_scores)
+}
+
+/// Calibrate a CUSUM threshold to satisfy `P[τ < m] ≤ alpha` under the null.
+///
+/// Combines [`simulate_cusum_null_max_scores`] with
+/// [`calibrate_threshold_from_max_scores`] into a single convenience call.
+///
+/// # Arguments
+///
+/// - `p0`: null categorical distribution.
+/// - `alts`: CUSUM alternative distributions.
+/// - `alpha`: target false-alarm rate (e.g. `0.05` for 5%).
+/// - `m`: survival horizon (rounds).  The returned threshold satisfies
+///   approximately `P[alarm within m null rounds] ≤ alpha`.
+/// - `n_trials`: Monte Carlo sample count (1000–10000 typical).
+/// - `cusum_alpha`: Dirichlet smoothing.
+/// - `min_n`: minimum observations before detector can alarm.
+/// - `seed`: RNG seed.
+/// - `require_wilson`: if true, require the Wilson upper bound ≤ alpha
+///   (more conservative; needs larger `n_trials`).
+///
+/// Returns the [`ThresholdCalibration`] result, or `Err` if the CUSUM bank
+/// cannot be initialised.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # #[cfg(feature = "stochastic")]
+/// # {
+/// use muxer::monitor::calibrate_cusum_threshold;
+///
+/// let p0 = vec![0.85, 0.05, 0.05, 0.05];
+/// let alts = vec![vec![0.40, 0.10, 0.40, 0.10]];
+/// let cal = calibrate_cusum_threshold(&p0, &[alts[0].clone()], 0.05, 500, 2000, 1e-3, 20, 42, false)
+///     .expect("calibration");
+/// println!("threshold = {:.2}, fa_hat = {:.3}", cal.threshold, cal.fa_hat);
+/// # }
+/// ```
+#[cfg(feature = "stochastic")]
+pub fn calibrate_cusum_threshold(
+    p0: &[f64],
+    alts: &[Vec<f64>],
+    alpha: f64,
+    m: u64,
+    n_trials: usize,
+    cusum_alpha: f64,
+    min_n: u64,
+    seed: u64,
+    require_wilson: bool,
+) -> Result<ThresholdCalibration, logp::Error> {
+    let mut max_scores = simulate_cusum_null_max_scores(p0, alts, m, cusum_alpha, min_n, n_trials, seed)?;
+    if max_scores.is_empty() {
+        return Ok(ThresholdCalibration {
+            threshold: 0.0,
+            fa_hat: 1.0,
+            fa_wilson_hi: 1.0,
+            trials: 0,
+            grid_satisfied: false,
+        });
+    }
+
+    // Build a grid from quantiles of the null max-score distribution.
+    let mut sorted = max_scores.clone();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let n = sorted.len();
+    let mut grid: Vec<f64> = (0..=200)
+        .map(|i| {
+            let idx = ((i as f64 / 200.0) * n as f64) as usize;
+            sorted[idx.min(n - 1)]
+        })
+        .collect();
+    grid.sort_by(|a, b| a.total_cmp(b));
+    grid.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+
+    Ok(calibrate_threshold_from_max_scores(
+        &mut max_scores,
+        &grid,
+        alpha,
+        1.96,
+        require_wilson,
+    ))
 }
 
 #[cfg(test)]

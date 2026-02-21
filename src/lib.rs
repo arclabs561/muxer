@@ -241,6 +241,15 @@ pub use decision::*;
 mod alloc;
 pub use alloc::*;
 
+mod utils;
+pub use utils::*;
+
+mod control;
+pub use control::*;
+
+mod router;
+pub use router::*;
+
 mod guardrail;
 pub use guardrail::*;
 
@@ -287,7 +296,10 @@ pub use triage::*;
 
 pub use monitor::{
     DriftConfig, DriftDecision, DriftMetric, MonitoredWindow, RateBoundMode, UncertaintyConfig,
+    ThresholdCalibration, calibrate_threshold_from_max_scores,
 };
+#[cfg(feature = "stochastic")]
+pub use monitor::{calibrate_cusum_threshold, simulate_cusum_null_max_scores};
 
 /// Per-round details for multi-pick MAB selection with an external latency guardrail.
 #[derive(Debug, Clone)]

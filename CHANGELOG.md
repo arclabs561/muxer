@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.3.0]
+
+### Added
+
+- **`Router`** — stateful routing session that owns all per-arm state and
+  exposes a three-method interface: `select(k, seed)` / `observe(arm, outcome)` /
+  `acknowledge_change(arm)`.  Handles the full normal → triage → acknowledge
+  lifecycle.  Supports `add_arm` / `remove_arm` for dynamic arm management.
+  Efficient for large K: with `k > 1`, K=30 arms reach initial coverage in ~10
+  rounds; `CoverageConfig` prevents starvation.
+- **`RouterConfig`** — single builder-friendly config that collapses `MabConfig`,
+  `DriftConfig`, `CoverageConfig`, `LatencyGuardrailConfig`, `TriageSessionConfig`,
+  and `ControlConfig` into one struct with `with_*` builder methods.
+- **`RouterMode`** — `Normal | Triage { alarmed_arms }` enum returned by
+  `Router::mode()` and embedded in `RouterDecision`.
+- **`RouterDecision`** — output of `Router::select`: chosen arms, current mode,
+  pre-picks, control picks, eligible arms, and triage cells.
+- **`MonitoredWindow::acknowledge_change`** — promotes the recent window into the
+  baseline and clears it; completes the post-detection protocol.
+- **`MonitoredWindow::promote_recent_to_baseline`** — soft merge (no clear).
+- **`MonitoredWindow::baseline_len` / `recent_len`** — window size accessors.
+- **`calibrate_cusum_threshold`** (feature `stochastic`) — convenience Monte Carlo
+  calibration: simulate null max-scores, build a grid, call
+  `calibrate_threshold_from_max_scores`.  Answers "what threshold gives
+  `P[alarm within m rounds] ≤ α`?"
+- **`simulate_cusum_null_max_scores`** (feature `stochastic`) — underlying Monte
+  Carlo simulator; useful when you want to reuse the null samples across grid sweeps.
+- **`ThresholdCalibration`** and **`calibrate_threshold_from_max_scores`** promoted
+  to top-level re-exports (were monitor-internal).
+- **`ControlConfig`** / **`pick_control_arms`** / **`split_control_budget`** —
+  reserve a deterministic-random fraction of picks as a selection-bias anchor.
+- **`suggested_window_cap(throughput, change_rate)`** — SW-UCB–derived window
+  size guidance: returns `sqrt(throughput / change_rate)` clamped to `[10, 10_000]`.
+- **`suggested_window_cap_for_k(k, total_throughput, change_rate)`** — per-arm
+  variant for large-K deployments.
+
 ## [0.2.0]
 
 ### Added

@@ -40,6 +40,10 @@ This crate also includes:
 - **contextual cell triage** (`ContextualCoverageTracker` / `contextual_worst_first_pick_k`) — lift triage to `(arm, context-bin)` pairs so localised regressions don't average away
 - **combined detect + triage sessions** (`TriageSession`) — wires per-arm CUSUM detection and per-cell investigation into one stateful session
 - **`softmax_map`** — stable score → probability helper for traffic splitting
+- **`Router`** — stateful session that owns all per-arm state and handles the full lifecycle (`select` / `observe` / `acknowledge_change`); supports dynamic arm add/remove and large K
+- **threshold calibration** (`calibrate_cusum_threshold`) — Monte Carlo calibration: "what CUSUM threshold gives `P[alarm within m rounds] ≤ α`?"
+- **window size guidance** (`suggested_window_cap`) — SW-UCB–derived: `sqrt(throughput / change_rate)`
+- **control arms** (`ControlConfig` / `pick_control_arms`) — reserve deterministic-random picks as a selection-bias anchor
 - **novelty helpers** (`novelty_pick_unseen`), **prior smoothing** (`apply_prior_counts_to_summary`), and **pipeline glue** (`PipelineOrder` / `PolicyPlan`) for building custom routing harnesses
 
 ## Which policy should I use?
@@ -295,18 +299,53 @@ Reusable bits extracted from these experiments live in `muxer::monitor`, notably
 - [Changelog](CHANGELOG.md)
 - [Mini-experiments / research probes](examples/EXPERIMENTS.md)
 
+## Quickstart (Router)
+
+The `Router` struct owns all per-arm state and handles the full lifecycle in three calls:
+
+```rust
+use muxer::{Router, RouterConfig, Outcome};
+
+let arms = vec!["backend-a".to_string(), "backend-b".to_string()];
+let mut router = Router::new(arms, RouterConfig::default()).unwrap();
+
+loop {
+    let d = router.select(1, seed);          // pick an arm
+    let arm = d.primary().unwrap().to_string();
+
+    // ... make the call, evaluate quality ...
+    let outcome = Outcome { ok: true, junk: false, hard_junk: false,
+                            cost_units: 5, elapsed_ms: 120 };
+    router.observe(&arm, outcome);           // record result
+
+    // If quality degrades, triage mode fires automatically:
+    if router.mode().is_triage() {
+        // d.triage_cells contains (arm, context-bin) cells to investigate
+        router.acknowledge_change(&arm);     // reset after investigation
+    }
+}
+```
+
+For larger arm counts, pass `k > 1` to batch the initial exploration:
+
+```rust
+// K=30 arms, k=3 per round → initial coverage in ~10 rounds.
+let cfg = RouterConfig::default().with_coverage(0.02, 1);
+let d = router.select(3, seed);
+```
+
 ## Usage
 
 ```toml
 [dependencies]
-muxer = "0.2.0"
+muxer = "0.3.0"
 ```
 
 If you only want the deterministic `Window` + `select_mab*` core (no stochastic bandits), disable default features:
 
 ```toml
 [dependencies]
-muxer = { version = "0.2.0", default-features = false }
+muxer = { version = "0.3.0", default-features = false }
 ```
 
 ## Development
