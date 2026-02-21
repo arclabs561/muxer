@@ -832,3 +832,248 @@ where
         scores,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn arms2() -> Vec<String> {
+        vec!["a".to_string(), "b".to_string()]
+    }
+
+    fn arms3() -> Vec<String> {
+        vec!["a".to_string(), "b".to_string(), "c".to_string()]
+    }
+
+    fn guard_strict(max_ms: f64) -> LatencyGuardrail {
+        LatencyGuardrail {
+            max_mean_ms: Some(max_ms),
+            require_measured: true,
+            allow_fewer: false,
+        }
+    }
+
+    fn guard_soft(max_ms: f64) -> LatencyGuardrail {
+        LatencyGuardrail {
+            max_mean_ms: Some(max_ms),
+            require_measured: false,
+            allow_fewer: true,
+        }
+    }
+
+    // NoveltyFirst: unseen arm bypasses require_measured guardrail —
+    // the key semantic difference vs GuardrailFirst.
+    // Uses three arms so the guardrail has a passing arm ("fast") and doesn't fall back.
+    #[test]
+    fn novelty_first_unseen_bypasses_require_measured() {
+        let arms = vec!["unseen".to_string(), "slow".to_string(), "fast".to_string()];
+        let plan = policy_plan_generic(
+            42,
+            &arms,
+            3,
+            true,
+            CoverageConfig::default(),
+            guard_strict(50.0),
+            PipelineOrder::NoveltyFirst,
+            |b| match b {
+                "unseen" => (0, 0),    // 0 calls → novelty pick
+                "slow"   => (10, 1000), // mean 100ms > 50ms
+                "fast"   => (10, 200),  // mean 20ms < 50ms
+                _        => (0, 0),
+            },
+        );
+        assert!(
+            plan.prechosen.contains(&"unseen".to_string()),
+            "NoveltyFirst: unseen arm should be prechosen despite require_measured"
+        );
+        assert!(
+            plan.eligible.contains(&"fast".to_string()),
+            "fast arm should be eligible after guardrail"
+        );
+        assert!(
+            !plan.eligible.contains(&"slow".to_string()),
+            "slow arm (100ms > 50ms) must not be eligible"
+        );
+    }
+
+    // GuardrailFirst: unseen arm is blocked when require_measured=true.
+    #[test]
+    fn guardrail_first_blocks_unseen_with_require_measured() {
+        let arms = vec!["unseen".to_string(), "fast".to_string()];
+        let plan = policy_plan_generic(
+            42,
+            &arms,
+            2,
+            true,
+            CoverageConfig::default(),
+            guard_strict(50.0),
+            PipelineOrder::GuardrailFirst,
+            |b| {
+                if b == "unseen" {
+                    (0, 0)
+                } else {
+                    (10, 200) // mean 20ms — fast
+                }
+            },
+        );
+        assert!(
+            !plan.prechosen.contains(&"unseen".to_string()),
+            "GuardrailFirst: unseen arm must not bypass require_measured"
+        );
+        assert!(
+            plan.eligible.contains(&"fast".to_string()),
+            "measured fast arm should be eligible"
+        );
+    }
+
+    // GuardrailFirst: all arms unmeasured → stop_early immediately.
+    #[test]
+    fn guardrail_first_all_unmeasured_stops_early() {
+        let plan = policy_plan_generic(
+            42,
+            &arms2(),
+            2,
+            true,
+            CoverageConfig::default(),
+            LatencyGuardrail {
+                max_mean_ms: Some(50.0),
+                require_measured: true,
+                allow_fewer: true,
+            },
+            PipelineOrder::GuardrailFirst,
+            |_| (0, 0),
+        );
+        assert!(plan.stop_early);
+        assert!(plan.prechosen.is_empty());
+        assert!(plan.eligible.is_empty());
+    }
+
+    // NoveltyFirst: unseen arm picked for novelty; remaining arms go through guardrail.
+    #[test]
+    fn novelty_first_guardrail_applies_to_remainder() {
+        // "a" is unseen; "b" is fast; "c" is slow.
+        let arms = arms3();
+        let plan = policy_plan_generic(
+            42,
+            &arms,
+            3,
+            true,
+            CoverageConfig::default(),
+            guard_soft(50.0),
+            PipelineOrder::NoveltyFirst,
+            |b| match b {
+                "a" => (0, 0),   // unseen → novelty pick
+                "b" => (5, 100), // mean 20ms — fast
+                "c" => (5, 750), // mean 150ms — slow
+                _ => (0, 0),
+            },
+        );
+        assert!(plan.prechosen.contains(&"a".to_string()), "unseen arm prechosen");
+        assert!(plan.eligible.contains(&"b".to_string()), "fast arm eligible");
+        assert!(!plan.eligible.contains(&"c".to_string()), "slow arm filtered");
+    }
+
+    // policy_fill_generic: prechosen fills k without calling pick_rest.
+    #[test]
+    fn policy_fill_generic_prechosen_fills_without_algorithm() {
+        let arms = arms2();
+        let fill = policy_fill_generic(
+            42,
+            &arms,
+            1,
+            true,
+            CoverageConfig::default(),
+            LatencyGuardrail::default(),
+            PipelineOrder::NoveltyFirst,
+            |b| if b == "a" { (0, 0) } else { (5, 100) },
+            |_eligible, _k| panic!("pick_rest must not be called when prechosen fills k"),
+        );
+        assert_eq!(fill.chosen, vec!["a".to_string()]);
+        assert!(!fill.stopped_early);
+        assert!(!fill.fallback_used);
+    }
+
+    // policy_fill_generic: prechosen + algorithm together when prechosen < k.
+    #[test]
+    fn policy_fill_generic_combines_prechosen_and_algorithm() {
+        let arms = arms3();
+        let fill = policy_fill_generic(
+            42,
+            &arms,
+            2,
+            true,
+            CoverageConfig::default(),
+            LatencyGuardrail::default(),
+            PipelineOrder::NoveltyFirst,
+            |b| if b == "a" { (0, 0) } else { (5, 100) },
+            |eligible, _k| eligible.to_vec(),
+        );
+        assert_eq!(fill.chosen.len(), 2);
+        assert!(fill.chosen.contains(&"a".to_string()), "prechosen novelty arm included");
+        // uniqueness
+        let mut s = fill.chosen.clone();
+        s.sort();
+        s.dedup();
+        assert_eq!(s.len(), fill.chosen.len(), "chosen must be unique");
+    }
+
+    // GuardrailFirst with stop_early stops even if prechosen is empty.
+    #[test]
+    fn guardrail_first_stop_early_halts_fill() {
+        let arms = arms2();
+        let fill = policy_fill_generic(
+            42,
+            &arms,
+            2,
+            false,
+            CoverageConfig::default(),
+            LatencyGuardrail {
+                max_mean_ms: Some(10.0),
+                require_measured: true,
+                allow_fewer: true,
+            },
+            PipelineOrder::GuardrailFirst,
+            |_| (0, 0), // all unmeasured → stop_early
+            |_eligible, _k| unreachable!("must not reach algorithm"),
+        );
+        assert!(fill.stopped_early);
+        assert!(fill.chosen.is_empty());
+    }
+
+    // guardrail_filter_observed: filters by mean latency, falls back when all filtered.
+    #[test]
+    fn guardrail_filter_observed_filters_and_falls_back() {
+        let arms = arms2();
+        // Both arms above threshold → fallback to full set.
+        let (eligible, stop_early) = guardrail_filter_observed(
+            42,
+            &arms,
+            LatencyGuardrail {
+                max_mean_ms: Some(10.0),
+                require_measured: false,
+                allow_fewer: false,
+            },
+            |_| (1, 100.0), // mean 100ms
+        );
+        assert!(!stop_early);
+        assert_eq!(eligible, arms, "fallback returns original arms");
+    }
+
+    // guardrail_filter_observed_strict: never falls back, returns empty + stop_early.
+    #[test]
+    fn guardrail_filter_observed_strict_returns_empty_no_fallback() {
+        let arms = arms2();
+        let (eligible, stop_early) = guardrail_filter_observed_strict(
+            42,
+            &arms,
+            LatencyGuardrail {
+                max_mean_ms: Some(10.0),
+                require_measured: false,
+                allow_fewer: true,
+            },
+            |_| (1, 100.0),
+        );
+        assert!(stop_early);
+        assert!(eligible.is_empty());
+    }
+}

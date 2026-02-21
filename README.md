@@ -6,7 +6,7 @@ Deterministic, multi-objective routing primitives for "provider selection" probl
 
 You have a small set of arms (model versions, inference endpoints, backends, data sources — anything you choose between repeatedly) and calls where you evaluate quality after the fact. After each call you label the result: did it succeed? was the output good enough? was it completely broken? You define those thresholds; muxer tracks the rates and routes future calls accordingly.
 
-You want an **online policy** that:
+Naive approaches fall short in predictable ways: always-best-arm starves new and recovering arms so regressions go undetected; round-robin wastes calls on arms you know are degraded; cooldown-on-failure misses slow quality drift that never triggers a hard error. You want an **online policy** that:
 
 - **explores** new or recently-changed arms
 - **avoids regressions** (routes away from arms with rising failure or quality-degradation rates)
@@ -17,12 +17,12 @@ You want an **online policy** that:
 An `Outcome` has three caller-defined quality fields plus cost and latency:
 
 - `ok`: the call produced a usable result
-- `junk`: the call succeeded but output quality was below your threshold (low F1, empty extraction, low-confidence score, etc.)
-- `hard_junk`: the call failed entirely (error, timeout, parse failure)
+- `junk`: quality was below your threshold — low F1, empty extraction, low-confidence score. Also set when `hard_junk=true` (hard failure is a subset of junk, tracked and penalized separately)
+- `hard_junk`: the call failed entirely (error, timeout, parse failure) — implies `junk=true`
 - `cost_units`: caller-defined cost proxy (token count, API credits, examples processed, etc.)
 - `elapsed_ms`: wall-clock time
 
-The core selection idea is:
+The framework is designed for small arm counts (typically 2–10) and moderate window sizes (hundreds to low thousands of observations). The core selection idea is:
 
 - maintain a small sliding window of recent `Outcome`s per arm
 - compute a Pareto frontier over ok rate, junk rate, cost, and latency

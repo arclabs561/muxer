@@ -1,6 +1,7 @@
 use muxer::{
     context_bin, select_mab_explain, ContextBinConfig, ContextualCoverageTracker, MabConfig,
-    Outcome, StickyConfig, StickyMab, Window, WorstFirstConfig,
+    Outcome, OutcomeIdx, StickyConfig, StickyMab, TriageSession, TriageSessionConfig, Window,
+    WorstFirstConfig, worst_first_pick_k,
 };
 use std::collections::BTreeMap;
 
@@ -266,4 +267,91 @@ fn contextual_tracker_pick_k_targets_degraded_bins() {
     assert!(!top_explore);
     assert_eq!(top_cell.arm, "provider_b");
     assert_eq!(top_cell.context_bin, bin_degraded);
+}
+
+/// Routing lifecycle: normal selection → regression detected → triage mode.
+///
+/// Demonstrates the three-mode lifecycle described in the README:
+/// 1. Normal mode: `select_mab` prefers the healthy arm.
+/// 2. One arm degrades — `TriageSession` detects it (CUSUM alarms).
+/// 3. Triage mode: `worst_first_pick_k` routes extra investigation traffic
+///    to the alarmed arm, not the healthy one.
+#[test]
+fn routing_lifecycle_normal_then_detect_then_triage() {
+    let arms = vec!["healthy".to_string(), "degraded".to_string()];
+
+    // --- Phase 1: Normal mode ---
+    // Both arms have clean history; select_mab prefers healthy due to lower junk rate.
+    let mut w_healthy = Window::new(50);
+    let mut w_degraded = Window::new(50);
+
+    let clean = Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100 };
+    let bad   = Outcome { ok: true, junk: true,  hard_junk: false, cost_units: 1, elapsed_ms: 100 };
+
+    for _ in 0..20 { w_healthy.push(clean); }
+    for _ in 0..20 { w_degraded.push(clean); }
+
+    let summaries = std::collections::BTreeMap::from([
+        ("healthy".to_string(),  w_healthy.summary()),
+        ("degraded".to_string(), w_degraded.summary()),
+    ]);
+    let d = select_mab_explain(&arms, &summaries, MabConfig::default());
+    // Both arms clean → deterministic tie-break by name ("degraded" < "healthy" alphabetically,
+    // but explore-first or scalarization may vary; just check it's a valid arm).
+    assert!(arms.contains(&d.selection.chosen));
+
+    // --- Phase 2: Arm "degraded" starts producing hard failures ---
+    // Feed TriageSession: healthy arm stays clean, degraded arm accumulates hard junk.
+    let mut session = TriageSession::new(&arms, TriageSessionConfig {
+        min_n: 10,
+        threshold: 3.0,
+        ..TriageSessionConfig::default()
+    }).unwrap();
+
+    // Seed with baseline observations.
+    for _ in 0..20 {
+        session.observe("healthy",  OutcomeIdx::OK,        &[0.1]);
+        session.observe("degraded", OutcomeIdx::OK,        &[0.1]);
+    }
+    // Inject hard failures on "degraded" — should trigger CUSUM alarm.
+    for _ in 0..30 {
+        session.observe("degraded", OutcomeIdx::HARD_JUNK, &[0.1]);
+    }
+
+    let alarmed = session.alarmed_arms();
+    assert!(
+        alarmed.contains(&"degraded".to_string()),
+        "CUSUM should alarm on the degraded arm after sustained hard failures"
+    );
+    assert!(
+        !alarmed.contains(&"healthy".to_string()),
+        "healthy arm must not be alarmed"
+    );
+
+    // --- Phase 3: Triage mode — worst_first routes to the degraded arm ---
+    // Build summary windows reflecting the degraded state.
+    let mut w_h = Window::new(50);
+    let mut w_d = Window::new(50);
+    for _ in 0..30 { w_h.push(clean); }
+    for _ in 0..10 { w_d.push(clean); }
+    for _ in 0..20 { w_d.push(Outcome { ok: false, junk: true, hard_junk: true, cost_units: 1, elapsed_ms: 100 }); }
+
+    let wf_cfg = WorstFirstConfig { exploration_c: 1.0, hard_weight: 3.0, soft_weight: 1.0 };
+    let s_h = w_h.summary();
+    let s_d = w_d.summary();
+
+    let picks = worst_first_pick_k(
+        42,
+        &arms,
+        2,
+        wf_cfg,
+        |_| 10u64,
+        |b| {
+            let s = if b == "healthy" { s_h } else { s_d };
+            (s.calls, s.hard_junk_rate(), s.soft_junk_rate())
+        },
+    );
+
+    assert_eq!(picks[0].0, "degraded",
+        "worst_first should prioritize the arm with the highest badness score");
 }
