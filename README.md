@@ -4,19 +4,29 @@ Deterministic, multi-objective routing primitives for "provider selection" probl
 
 ## What problem this solves
 
-You have a small set of arms (providers/models/backends) and repeated calls that produce outcomes (success/failure/degraded), plus cost + latency. You want an **online policy** that:
+You have a small set of arms (model versions, inference endpoints, backends, data sources — anything you choose between repeatedly) and calls where you evaluate quality after the fact. After each call you label the result: did it succeed? was the output good enough? was it completely broken? You define those thresholds; muxer tracks the rates and routes future calls accordingly.
+
+You want an **online policy** that:
 
 - **explores** new or recently-changed arms
-- **avoids regressions** (sudden quality or reliability degradation)
+- **avoids regressions** (routes away from arms with rising failure or quality-degradation rates)
 - is **deterministic by default** (same stats/config → same choice), so it's easy to debug
 
 ## What it is
 
+An `Outcome` has three caller-defined quality fields plus cost and latency:
+
+- `ok`: the call produced a usable result
+- `junk`: the call succeeded but output quality was below your threshold (low F1, empty extraction, low-confidence score, etc.)
+- `hard_junk`: the call failed entirely (error, timeout, parse failure)
+- `cost_units`: caller-defined cost proxy (token count, API credits, examples processed, etc.)
+- `elapsed_ms`: wall-clock time
+
 The core selection idea is:
 
-- maintain a small sliding window of recent outcomes per provider (ok/fail/degraded, cost, latency)
-- compute a Pareto frontier over the objectives
-- pick a single provider deterministically via scalarization + stable tie-break
+- maintain a small sliding window of recent `Outcome`s per arm
+- compute a Pareto frontier over ok rate, junk rate, cost, and latency
+- pick deterministically via scalarization + stable tie-break
 
 This crate also includes:
 
@@ -38,6 +48,16 @@ This crate also includes:
 - **`ThompsonSampling`**: when you can provide a **single reward** per call (in `[0, 1]`) and want a classic explore/exploit policy (seedable, optionally decayed).
 - **`Exp3Ix`**: when reward is **non-stationary / adversarial-ish** and you still want a probabilistic policy (seedable, optionally decayed).
 - **`LinUcb` (feature `contextual`)**: when you have a per-request feature vector (e.g. cheap "difficulty" features, embeddings, metadata) and want a contextual policy.
+
+## Routing lifecycle
+
+A typical deployment has three modes:
+
+1. **Normal** (`select_mab` / `ThompsonSampling` / `Exp3Ix`): route to the best arm while exploring. This runs on every call.
+2. **Regression investigation** (`worst_first_pick_k`): after monitoring fires on an arm, route extra traffic there to characterize the change. `TriageSession` automates the detect → investigate handoff.
+3. **Control** (`pick_random_subset`): reserve a small fraction of calls as a random baseline to anchor quality estimates and detect selection bias.
+
+`CoverageConfig` provides a floor that bridges modes 1 and 3: it ensures no arm is so starved that you'd miss a regression in it.
 
 ## Three goals for sampling
 
@@ -80,11 +100,13 @@ use std::collections::BTreeMap;
 
 let arms = vec!["a".to_string(), "b".to_string()];
 let mut summaries = BTreeMap::new();
+// arm "a": 9/10 ok, 0 junk (quality above threshold)
 summaries.insert("a".to_string(), Summary { calls: 10, ok: 9, junk: 0, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900 });
+// arm "b": same ok rate, but 2 results fell below quality threshold
 summaries.insert("b".to_string(), Summary { calls: 10, ok: 9, junk: 2, hard_junk: 0, cost_units: 10, elapsed_ms_sum: 900 });
 
 let sel = select_mab(&arms, &summaries, MabConfig::default());
-assert_eq!(sel.chosen, "a"); // lower junk when all else is equal
+assert_eq!(sel.chosen, "a"); // lower junk rate wins when all else is equal
 ```
 
 ### Online routing loop (Window ingestion)
@@ -116,9 +138,9 @@ cargo run --example end_to_end_router --features stochastic
 
 This same scenario has a CI-checked regression test in `tests/e2e_metrics.rs` and logs whether constraint fallback was used.
 
-### Window ingestion with delayed junk labeling
+### Window ingestion with delayed quality labeling
 
-If your "junk" classification is only known after downstream parsing/validation, you can update the most recent outcome:
+In most real-world routing, quality is known only after processing: you call the arm, receive a response, then score it (compute F1, run a parser, check embedding similarity) and label it junk if it falls below your threshold. The pattern is: push the `Outcome` immediately with `junk: false`, then call `set_last_junk_level` once scoring completes.
 
 ```bash
 cargo run --example window_delayed_junk_label
