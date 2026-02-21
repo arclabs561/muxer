@@ -628,7 +628,7 @@ fn uniform_spacing_minimizes_worst_case_delay() {
 // VII. Information-Directed Sampling connection
 // ============================================================================
 //
-// IDS (Russo & Van Roy 2014) selects actions by minimizing the information ratio:
+// IDS (Russo & Van Roy 2014, arXiv:1403.5556) selects actions by minimizing the information ratio:
 //   Gamma = (expected regret)^2 / (information gain about optimality)
 //
 // This is a two-objective scalarization: regret vs. information.

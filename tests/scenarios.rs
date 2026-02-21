@@ -286,7 +286,7 @@ fn routing_lifecycle_normal_then_detect_then_triage() {
     let mut w_degraded = Window::new(50);
 
     let clean = Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100 };
-    let bad   = Outcome { ok: true, junk: true,  hard_junk: false, cost_units: 1, elapsed_ms: 100 };
+    let _bad  = Outcome { ok: true, junk: true,  hard_junk: false, cost_units: 1, elapsed_ms: 100 };
 
     for _ in 0..20 { w_healthy.push(clean); }
     for _ in 0..20 { w_degraded.push(clean); }

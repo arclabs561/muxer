@@ -1,25 +1,44 @@
 //! `muxer`: deterministic, multi-objective bandit-style routing primitives.
 //!
-//! This crate is designed for “provider routing” style problems:
-//! you have a small set of arms (providers) and repeated calls that produce
-//! outcomes (ok/fail, cost, latency, “junk”).
+//! Designed for “arm selection” problems: you have a small set of arms
+//! (model versions, inference endpoints, backends, data sources — anything
+//! you choose between repeatedly) and calls where you evaluate quality after
+//! the fact.  You define what constitutes ok, degraded, or broken for your
+//! domain; `muxer` tracks the rates and routes accordingly.
 //!
-//! Goals:
+//! An [`Outcome`] carries three caller-defined quality fields:
+//! - `ok`: the call produced a usable result.
+//! - `junk`: quality was below your threshold (`hard_junk=true` implies `junk=true`).
+//! - `hard_junk`: the call failed entirely — a harsher subset of junk, penalized separately.
+//!
+//! Plus `cost_units` (caller-defined cost proxy) and `elapsed_ms` (wall-clock time).
+//!
+//! **Goals:**
 //! - **Deterministic by default**: same stats + config → same choice.
-//! - **Non-stationarity friendly**: prefer **sliding-window** summaries over lifetime averages.
-//! - **Multi-objective**: choose on a Pareto frontier, then deterministic scalarization.
+//! - **Non-stationarity friendly**: sliding-window summaries, not lifetime averages.
+//! - **Multi-objective**: Pareto frontier over ok/junk/cost/latency, then scalarization.
+//! - **Small K**: designed for 2–10 arms; not intended for K in the hundreds.
 //!
-//! Included policies:
-//! - `select_mab`: deterministic Pareto + scalarization selection from windowed summaries.
-//! - `ThompsonSampling`: seedable Thompson sampling for scalar rewards in `[0, 1]` (with optional decay).
-//! - `Exp3Ix`: seedable EXP3-IX for adversarial / fast-shifting scalar rewards in `[0, 1]` (with optional decay).
-//! - `softmax_map`: stable score→probability helper for traffic splitting.
-//! - (feature `contextual`) `LinUcb`: contextual bandit (linear UCB) for per-request routing using feature vectors.
+//! **Selection policies:**
+//! - [`select_mab`] / [`select_mab_explain`] / [`select_mab_monitored_explain`]:
+//!   deterministic Pareto + scalarization from windowed summaries.
+//! - [`ThompsonSampling`]: seedable Thompson sampling for scalar rewards in `[0, 1]`.
+//! - [`Exp3Ix`]: seedable EXP3-IX for adversarial / fast-shifting rewards.
+//! - [`softmax_map`]: stable score → probability helper for traffic splitting.
+//! - (feature `contextual`) [`LinUcb`]: linear contextual bandit.
 //!
-//! Non-goals:
-//! - This is not a full bandit “platform” (no storage, OPE pipelines, dashboards, etc.).
-//! - The `contextual` feature is intentionally a small, pragmatic policy module, not a full framework.
-
+//! **Operational primitives:**
+//! - [`TriageSession`]: detect-then-triage — per-arm CUSUM detection wired to
+//!   per-cell (`arm × context-bin`) investigation.
+//! - [`WorstFirstConfig`] / [`worst_first_pick_k`]: post-detection investigation routing.
+//! - [`CoverageConfig`] / [`coverage_pick_under_sampled`]: maintenance sampling floor.
+//! - [`LatencyGuardrailConfig`] / [`apply_latency_guardrail`]: hard pre-filter by mean latency.
+//! - [`PipelineOrder`] / [`policy_plan_generic`] / [`policy_fill_generic`]: harness glue.
+//!
+//! **Non-goals:**
+//! - Not a full bandit platform (no storage, OPE pipelines, dashboards).
+//! - `contextual` is intentionally a small, pragmatic policy module.
+//!
 //!
 //! # The Three Objectives and the Objective Manifold
 //!
@@ -54,6 +73,13 @@
 //! **one-dimensional curve** parameterized by n.  This yields the product identity
 //! `R_T * D_avg = C * Delta * T / delta^2` for the restricted class of uniform
 //! schedules.
+//!
+//! **Categorical note.** The formula above uses Gaussian notation (`sigma^2`, mean
+//! shift `delta`).  `muxer` operates on categorical outcomes (ok/junk/hard_junk),
+//! where detection delay scales as `h / KL(p1 || p0)` in sample time rather than
+//! `2*b*sigma^2 / delta^2`.  The proportionality structure — MSE and average
+//! detection delay both `O(1/n_k)` — holds identically; only the constants change.
+//! See [`pare::sensitivity`][pare] for the general form.
 //!
 //! **Caveat: adaptive policies.** This clean proportionality holds exactly only for
 //! static (non-adaptive) schedules.  Adaptive policies (UCB, Thompson Sampling) break
@@ -133,8 +159,8 @@
 //! the realized trajectory), not a fixed distribution.  Reasoning about it requires
 //! either working with the expected design measure (which loses adaptivity) or a
 //! conditional analysis that respects the filtration (which is harder and may break
-//! clean proportionality results).  See Hadad et al. 2021 for the observed vs.
-//! expected Fisher information distinction in adaptive experiments.
+//! clean proportionality results).  See Hadad et al. (arXiv:1911.02768) for the
+//! observed vs. expected Fisher information distinction in adaptive experiments.
 //!
 //! ## Related multi-objective bandit frameworks
 //!
@@ -144,16 +170,22 @@
 //! - **Constrained / safe bandits** handle multiple objectives via Lagrangian
 //!   relaxation (hard constraints on secondary objectives).  `muxer`'s `max_junk_rate`,
 //!   `max_drift`, etc. are BwK-style anytime constraints in this spirit.
-//! - **Pareto bandits** (Drugan & Nowe) aim to identify the Pareto front of arms
-//!   when each arm has a vector-valued reward.  `muxer`'s `pare`-based frontier
+//!   (Badanidiyuru, Kleinberg & Slivkins 2013, FOCS; arXiv:1305.2545)
+//! - **Pareto bandits** (Drugan & Nowé, IJCNN 2013) aim to identify the Pareto front
+//!   of arms when each arm has a vector-valued reward.  `muxer`'s `pare`-based frontier
 //!   computation is the selection-time analogue.
-//! - **Information-Directed Sampling** (Russo & Van Roy) scalarizes the regret/information
-//!   tradeoff via the information ratio.  Extending this to three objectives (adding
-//!   detection power) is an open problem; the objective manifold framework suggests the
-//!   extension is non-trivial only in the contextual case with worst-case detection.
+//! - **Information-Directed Sampling** (Russo & Van Roy 2014, arXiv:1403.5556)
+//!   scalarizes the regret/information tradeoff via the information ratio.  Extending
+//!   this to three objectives (adding detection power) is an open problem; the objective
+//!   manifold framework suggests the extension is non-trivial only in the contextual
+//!   case with worst-case detection.
 //! - **Multi-objective RL** explores scalarization and Pareto-based approaches in the
 //!   sequential decision setting.  `muxer`'s deterministic scalarization (after Pareto
 //!   filtering) is a pragmatic instance of this.
+//! - **Adaptive experiment design** (Hadad, Hirshberg, Zhan, Wager & Athey 2021,
+//!   arXiv:1911.02768) studies the distinction between observed and expected Fisher
+//!   information in adaptive experiments — the same lens used in the design measure
+//!   analysis above.
 
 #![forbid(unsafe_code)]
 
