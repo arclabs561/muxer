@@ -613,7 +613,7 @@ impl Window {
     /// Best-effort: set the continuous quality score for the most recent outcome.
     ///
     /// Call this after downstream scoring completes (same pattern as
-    /// [`set_last_junk_level`]).  The value is clamped to `[0.0, 1.0]`.
+    /// [`Window::set_last_junk_level`]).  The value is clamped to `[0.0, 1.0]`.
     pub fn set_last_quality_score(&mut self, score: f64) {
         if let Some(last) = self.buf.back_mut() {
             last.quality_score = Some(score.clamp(0.0, 1.0));

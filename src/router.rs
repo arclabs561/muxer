@@ -384,7 +384,7 @@ impl Router {
 
     /// Select up to `k` arms for this decision round.
     ///
-    /// Does not mutate any window state.  Call [`observe`] afterwards to record
+    /// Does not mutate any window state.  Call [`Router::observe`] afterwards to record
     /// outcomes.
     ///
     /// ### Large K
@@ -572,7 +572,7 @@ impl Router {
     /// Update the most recent outcome's continuous quality score (delayed assessment).
     ///
     /// Call this after downstream scoring completes — same pattern as
-    /// [`set_last_junk_level`].  The value is clamped to `[0.0, 1.0]`.
+    /// [`Router::set_last_junk_level`].  The value is clamped to `[0.0, 1.0]`.
     ///
     /// With `MabConfig::quality_weight > 0`, this gradient signal influences
     /// arm selection alongside the binary ok/junk rates.
@@ -654,7 +654,7 @@ impl Router {
         &self.arms
     }
 
-    /// Total observations recorded via [`observe`].
+    /// Total observations recorded via [`Router::observe`].
     pub fn total_observations(&self) -> u64 {
         self.total_observations
     }

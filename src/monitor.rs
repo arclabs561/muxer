@@ -244,7 +244,7 @@ impl MonitoredWindow {
     /// build a fresh recent window so drift detection can track further changes.
     ///
     /// This is the standard post-detection protocol:
-    /// 1. [`TriageSession::reset_arm`] — resets the CUSUM bank.
+    /// 1. [`crate::TriageSession::reset_arm`] — resets the CUSUM bank.
     /// 2. This method — resets the monitoring windows.
     pub fn acknowledge_change(&mut self) {
         for o in self.recent.iter().copied() {
