@@ -1,10 +1,11 @@
-//! `muxer`: deterministic, multi-objective bandit-style routing primitives.
+//! `muxer`: deterministic, multi-objective routing primitives for
+//! piecewise-stationary multi-armed bandit problems with small action sets.
 //!
-//! Designed for “arm selection” problems: you have a small set of arms
-//! (model versions, inference endpoints, backends, data sources — anything
-//! you choose between repeatedly) and calls where you evaluate quality after
-//! the fact.  You define what constitutes ok, degraded, or broken for your
-//! domain; `muxer` tracks the rates and routes accordingly.
+//! Given `K` arms (model versions, inference endpoints, backends, or any
+//! discrete action set selected repeatedly), the agent observes
+//! vector-valued outcomes per call and selects the next arm.  Reward
+//! distributions are piecewise-stationary: they may change at unknown
+//! times, and the agent must detect and adapt to these changes.
 //!
 //! An [`Outcome`] carries three caller-defined quality fields:
 //! - `ok`: the call produced a usable result.
