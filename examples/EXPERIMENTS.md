@@ -12,6 +12,20 @@ starvation, detector inertia, false alarms, and “fast on mean” vs “reliabl
 - `cargo run --example bqcd_sampling --features stochastic`
   - shows why “focus” without coverage can look great on mean and bad on det_rate/p90.
 
+## Applied harness examples
+
+These are intentionally domain-flavored, offline loops that mirror how external systems
+use `muxer` for matrix routing (slice selection + backend selection + feedback):
+
+- `cargo run --example matrix_harness`
+  - generic eval matrix (`task x dataset x backend`) with coverage + guardrails.
+- `cargo run --example pcap_triage_harness`
+  - network-security/PCAP triage (`dataset x protocol x environment`) with protocol compatibility.
+- `cargo run --example synthetic_drift_harness`
+  - controlled drift world where one backend regresses on hard slices after a known epoch.
+- `cargo run --example ad_auction_harness`
+  - recommender/ad-auction traffic cells (`objective x geo x device`) with post-privacy-shift drift.
+
 ## How to read the output
 
 - **`det_rate` / `ok`**: fraction of trials that alarmed after the change within the horizon.

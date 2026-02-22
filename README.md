@@ -191,6 +191,10 @@ cargo run --example decision_unified                             # unified decis
 cargo run --example window_delayed_junk_label                    # delayed quality labeling
 cargo run --example mab_constraints_tuning                       # constraint + weight tuning
 cargo run --example contextual_propensity_logging --features contextual
+cargo run --example matrix_harness                               # task x dataset x backend harness loop
+cargo run --example pcap_triage_harness                          # network security/PCAP triage harness
+cargo run --example synthetic_drift_harness                      # controlled synthetic drift harness
+cargo run --example ad_auction_harness                           # recommender/ad auction harness
 ```
 
 Mini-experiments (trade-offs and failure modes): [examples/EXPERIMENTS.md](examples/EXPERIMENTS.md).
