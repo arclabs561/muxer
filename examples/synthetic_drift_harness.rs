@@ -122,8 +122,7 @@ fn synthetic_outcome(round: u64, backend: &str, slice: SynthSlice) -> Outcome {
         _ => 80,
     };
     let hardness_latency = if slice.is_hard() { 95 } else { 20 };
-    let jitter =
-        (stable_hash64(round ^ 0x1234_7788, &format!("{backend}|{}|j", slice.id())) % 45) as u64;
+    let jitter = stable_hash64(round ^ 0x1234_7788, &format!("{backend}|{}|j", slice.id())) % 45;
 
     let base_cost = match backend {
         "tiny_rule" => 1,

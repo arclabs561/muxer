@@ -127,8 +127,7 @@ fn simulated_outcome(round: u64, model: &str, slice: AdSlice) -> Outcome {
         _ => 25,
     };
     let mobile_ms = if slice.device == "mobile" { 14 } else { 6 };
-    let jitter =
-        (stable_hash64(round ^ 0xADAD_CC03, &format!("{model}|{}|j", slice.id())) % 18) as u64;
+    let jitter = stable_hash64(round ^ 0xADAD_CC03, &format!("{model}|{}|j", slice.id())) % 18;
 
     let base_cost = match model {
         "rules_fallback" => 1,

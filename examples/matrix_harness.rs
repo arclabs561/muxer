@@ -133,8 +133,7 @@ fn simulated_outcome(round: u64, backend: &str, slice: Slice) -> Outcome {
         "coref" => 240,
         _ => 0,
     };
-    let jitter =
-        (stable_hash64(round ^ 0xD15E_A5E, &format!("{backend}|{}|j", slice.id())) % 120) as u64;
+    let jitter = stable_hash64(round ^ 0x0D15_EA5E, &format!("{backend}|{}|j", slice.id())) % 120;
 
     let base_cost = match backend {
         "heuristic" => 2,
@@ -223,10 +222,13 @@ fn main() {
 
     for round in 0u64..90 {
         // Choose an under-sampled matrix slice first (task x dataset facet).
-        let under =
-            coverage_pick_under_sampled(round ^ 0x51_1CE, &slice_ids, 1, slice_coverage, |sid| {
-                slice_calls.get(sid).copied().unwrap_or(0)
-            });
+        let under = coverage_pick_under_sampled(
+            round ^ 0x0005_11CE,
+            &slice_ids,
+            1,
+            slice_coverage,
+            |sid| slice_calls.get(sid).copied().unwrap_or(0),
+        );
         let slice_id = under
             .first()
             .cloned()

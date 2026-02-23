@@ -144,8 +144,7 @@ fn simulated_outcome(round: u64, engine: &str, slice: PcapSlice) -> Outcome {
         "tls" => 130,
         _ => 50,
     };
-    let jitter =
-        (stable_hash64(round ^ 0xCA11_BA9E, &format!("{engine}|{}|j", slice.id())) % 60) as u64;
+    let jitter = stable_hash64(round ^ 0xCA11_BA9E, &format!("{engine}|{}|j", slice.id())) % 60;
 
     let base_cost = match engine {
         "suricata_sig" => 1,
