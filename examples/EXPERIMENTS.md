@@ -25,6 +25,8 @@ use `muxer` for matrix routing (slice selection + backend selection + feedback):
   - controlled drift world where one backend regresses on hard slices after a known epoch.
 - `cargo run --example ad_auction_harness`
   - recommender/ad-auction traffic cells (`objective x geo x device`) with post-privacy-shift drift.
+- `cargo run --example fraud_scoring_harness`
+  - payments risk traffic cells (`channel x region x segment`) with post-shift scorer degradation.
 
 ## How to read the output
 
