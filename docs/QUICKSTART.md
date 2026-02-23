@@ -89,6 +89,8 @@ arm-b  calls=50  ok_rate=0.84  junk_rate=0.12  quality=0.65
 | Synthetic drift harness pattern | `cargo run --example synthetic_drift_harness` |
 | Recsys/ad-auction harness pattern | `cargo run --example ad_auction_harness` |
 | Payments fraud harness pattern | `cargo run --example fraud_scoring_harness` |
+| Search ranking harness pattern | `cargo run --example search_ranking_harness` |
+| Medical triage harness pattern | `cargo run --example medical_triage_harness` |
 | Theoretical background (BQCD, two clocks) | `examples/EXPERIMENTS.md` |
 | Full API reference | `https://docs.rs/muxer` |
 | Changelog | `CHANGELOG.md` |

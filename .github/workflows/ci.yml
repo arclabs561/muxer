@@ -44,6 +44,8 @@ jobs:
           cargo run -p muxer --example synthetic_drift_harness
           cargo run -p muxer --example ad_auction_harness
           cargo run -p muxer --example fraud_scoring_harness
+          cargo run -p muxer --example search_ranking_harness
+          cargo run -p muxer --example medical_triage_harness
 
       - name: clippy (no default features)
         run: cargo clippy -p muxer --all-targets --no-default-features -- -D warnings

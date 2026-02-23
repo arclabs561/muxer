@@ -196,6 +196,8 @@ cargo run --example pcap_triage_harness                          # network secur
 cargo run --example synthetic_drift_harness                      # controlled synthetic drift harness
 cargo run --example ad_auction_harness                           # recommender/ad auction harness
 cargo run --example fraud_scoring_harness                        # payments fraud scoring harness
+cargo run --example search_ranking_harness                       # search ranking harness
+cargo run --example medical_triage_harness                       # medical triage harness
 ```
 
 Mini-experiments (trade-offs and failure modes): [examples/EXPERIMENTS.md](examples/EXPERIMENTS.md).
