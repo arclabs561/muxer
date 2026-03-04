@@ -1,5 +1,9 @@
 # muxer
 
+[![crates.io](https://img.shields.io/crates/v/muxer.svg)](https://crates.io/crates/muxer)
+[![Documentation](https://docs.rs/muxer/badge.svg)](https://docs.rs/muxer)
+[![CI](https://github.com/arclabs561/muxer/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/muxer/actions/workflows/ci.yml)
+
 Deterministic, multi-objective routing for piecewise-stationary multi-armed bandit problems with small action sets.
 
 ## Problem setting
