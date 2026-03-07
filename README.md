@@ -237,4 +237,4 @@ cargo clippy -p muxer --all-targets -- -D warnings
 
 ## License
 
-See [LICENSE](LICENSE).
+Licensed under MIT or Apache-2.0 ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)).
