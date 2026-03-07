@@ -7,6 +7,8 @@ license = "MIT OR Apache-2.0"
 publish = true
 description = "Deterministic, multi-objective bandit-style routing primitives (windowed stats + Pareto selection)."
 repository = "https://github.com/arclabs561/muxer"
+keywords = ["bandit", "routing", "multi-armed-bandit", "pareto", "multi-objective"]
+categories = ["algorithms", "science"]
 homepage = "https://github.com/arclabs561/muxer"
 documentation = "https://docs.rs/muxer"
 

@@ -32,7 +32,7 @@
 //! - [`BanditPolicy`] (feature `stochastic`): common `decide`/`update_reward` trait
 //!   for `ThompsonSampling` and `Exp3Ix` — enables generic policy code.
 //! - [`softmax_map`]: stable score → probability helper for traffic splitting.
-//! - (feature `contextual`) [`LinUcb`]: linear contextual bandit.
+//! - (feature `contextual`) `LinUcb`: linear contextual bandit.
 //!
 //! **Operational primitives:**
 //! - [`TriageSession`]: detect-then-triage — per-arm CUSUM detection wired to
