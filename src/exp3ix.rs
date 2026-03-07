@@ -64,8 +64,11 @@ pub struct Exp3Ix {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Exp3IxState {
+    /// Arm names aligned with the other vectors.
     pub arms: Vec<String>,
+    /// Per-arm selection count.
     pub uses: Vec<u64>,
+    /// Per-arm cumulative importance-weighted loss estimate.
     pub cum_loss_hat: Vec<f64>,
     /// Probability distribution aligned with `arms`.
     ///

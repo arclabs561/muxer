@@ -243,67 +243,92 @@ use std::collections::{BTreeMap, VecDeque};
 const TIEBREAK_EPS: f64 = 1e-12;
 
 mod decision;
-pub use decision::*;
+pub use decision::{Decision, DecisionNote, DecisionPolicy};
 
 mod policy;
 #[cfg(feature = "stochastic")]
 pub use policy::BanditPolicy;
 
 mod alloc;
-pub use alloc::*;
+pub use alloc::softmax_map;
 
 mod utils;
-pub use utils::*;
+pub use utils::{suggested_window_cap, suggested_window_cap_for_k};
 
 mod control;
-pub use control::*;
+pub use control::{pick_control_arms, split_control_budget, ControlConfig};
 
 mod router;
-pub use router::*;
+pub use router::{Router, RouterConfig, RouterDecision, RouterMode, RouterSnapshot};
 
 mod guardrail;
-pub use guardrail::*;
+pub use guardrail::{apply_latency_guardrail, LatencyGuardrailConfig, LatencyGuardrailDecision};
 
 pub mod monitor;
 
 mod coverage;
-pub use coverage::*;
+pub use coverage::{coverage_pick_under_sampled, coverage_pick_under_sampled_idx, CoverageConfig};
 
 #[cfg(feature = "stochastic")]
 mod exp3ix;
 #[cfg(feature = "stochastic")]
-pub use exp3ix::*;
+pub use exp3ix::{
+    exp3ix_decide_k_persisted_guardrailed_explain_full, exp3ix_decide_persisted,
+    exp3ix_decide_persisted_guardrailed, exp3ix_decide_persisted_with_prob,
+    exp3ix_update_persisted, log_exp3ix_guardrailed_typed, log_exp3ix_k_rounds_typed, Exp3Ix,
+    Exp3IxConfig, Exp3IxGuardrailedDecision, Exp3IxKExplain, Exp3IxKRound, Exp3IxKRoundLog,
+    Exp3IxKStop, Exp3IxRoundLog, Exp3IxState,
+};
 
 #[cfg(feature = "stochastic")]
 mod thompson;
 #[cfg(feature = "stochastic")]
-pub use thompson::*;
+pub use thompson::{
+    thompson_decide_persisted, thompson_update_persisted, BetaStats, ThompsonConfig,
+    ThompsonSampling, ThompsonState,
+};
 
 #[cfg(feature = "contextual")]
 mod contextual;
 #[cfg(feature = "contextual")]
-pub use contextual::*;
+pub use contextual::{LinUcb, LinUcbArmState, LinUcbConfig, LinUcbScore, LinUcbState};
 
 mod sticky;
-pub use sticky::*;
+pub use sticky::{mab_scalar_score, DecisionReason, ExplainedSelection, StickyConfig, StickyMab};
 
 mod stable_hash;
-pub use stable_hash::*;
+pub use stable_hash::{stable_hash64, stable_hash64_u64};
 
 mod novelty;
-pub use novelty::*;
+pub use novelty::{novelty_pick_unseen, pick_random_subset};
 
 mod prior;
-pub use prior::*;
+pub use prior::apply_prior_counts_to_summary;
 
 mod worst_first;
-pub use worst_first::*;
+pub use worst_first::{
+    context_bin, contextual_worst_first_pick_k, contextual_worst_first_pick_one,
+    worst_first_pick_k, worst_first_pick_one, CellStats, ContextBinConfig, ContextualCell,
+    ContextualCoverageTracker, WorstFirstConfig,
+};
 
 mod harness;
-pub use harness::*;
+pub use harness::{
+    guardrail_filter_observed, guardrail_filter_observed_elapsed, guardrail_filter_observed_strict,
+    guardrail_filter_observed_strict_elapsed, policy_fill_generic,
+    policy_fill_k_observed_guardrail_first_with,
+    policy_fill_k_observed_guardrail_first_with_coverage, policy_fill_k_observed_with,
+    policy_fill_k_observed_with_coverage, policy_plan_generic, policy_plan_observed,
+    policy_plan_observed_guardrail_first, policy_plan_observed_guardrail_first_with_coverage,
+    policy_plan_observed_with_coverage, select_k_without_replacement_by,
+    select_k_without_replacement_by_with_meta, LatencyGuardrail, PipelineOrder, PolicyFill,
+    PolicyPlan,
+};
+#[cfg(feature = "contextual")]
+pub use harness::{policy_fill_k_contextual, ContextualPolicyFill};
 
 mod triage;
-pub use triage::*;
+pub use triage::{ArmTriageState, OutcomeIdx, TriageSession, TriageSessionConfig};
 
 #[cfg(feature = "stochastic")]
 pub use monitor::{calibrate_cusum_threshold, simulate_cusum_null_max_scores};
@@ -357,31 +382,41 @@ pub struct MabKSelection {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MabKRoundLog {
+    /// Zero-indexed round number within the multi-pick sequence.
     pub round: usize,
+    /// Arms still available at the start of this round.
     pub remaining: Vec<String>,
+    /// Arms that passed the latency guardrail for this round.
     pub guardrail_eligible: Vec<String>,
+    /// Whether the guardrail fell back to the full remaining set (all arms filtered).
     pub guardrail_fallback_used: bool,
+    /// Whether the guardrail requested early stop (no eligible arms, `allow_fewer=false`).
     pub guardrail_stop_early: bool,
+    /// Arm chosen in this round (`None` if the round produced no pick).
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub chosen: Option<String>,
+    /// Whether the pick was an explore-first selection (`Some(true)` when an arm had zero calls).
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub explore_first: Option<bool>,
+    /// Whether constraints eliminated all arms and the selector fell back (`None` when no constraints configured).
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub constraints_fallback_used: Option<bool>,
+    /// Arms eligible after applying constraints (`None` when no constraints configured).
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub constraints_eligible_arms: Option<Vec<String>>,
+    /// Top-scoring candidates for this round (for audit logging).
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -393,25 +428,29 @@ pub struct MabKRoundLog {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LogTopCandidate {
+    /// Arm name.
     pub arm: String,
     /// Score used for sorting (meaning depends on policy).
     pub score: f64,
-    /// Optional call count (present for MAB).
+    /// Call count from the summary window (present for MAB).
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub calls: Option<u64>,
+    /// Success rate (present for MAB).
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub ok_rate: Option<f64>,
+    /// Junk rate (present for MAB).
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub junk_rate: Option<f64>,
+    /// Hard junk rate (present for MAB).
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")

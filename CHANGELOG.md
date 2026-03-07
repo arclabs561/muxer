@@ -82,6 +82,10 @@
   and arm B with `quality_score ∈ [0, 0.5]` — all else equal, `quality_weight > 0`
   always selects A.  Runs 100 random cases.
 
+## [0.3.4] / [0.3.3]
+
+Not published (internal iterations, changes folded into 0.3.5).
+
 ## [0.3.5]
 
 ### Added

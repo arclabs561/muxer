@@ -704,7 +704,7 @@ impl Router {
         eligible: &[String],
         need: usize,
         sum_snap: &BTreeMap<String, Summary>,
-        seed: u64,
+        _seed: u64,
     ) -> Vec<String> {
         if eligible.is_empty() || need == 0 {
             return Vec::new();
@@ -713,11 +713,10 @@ impl Router {
         let mut remaining: Vec<String> = eligible.to_vec();
         let mut picks: Vec<String> = Vec::new();
 
-        for round in 0..need {
+        for _round in 0..need {
             if remaining.is_empty() {
                 break;
             }
-            let round_seed = seed ^ (round as u64).wrapping_mul(0x9E37_79B9);
 
             // Pass the full monitored map directly — select_mab_monitored_explain_with_summaries
             // iterates over `remaining` and ignores arms not present in the map.
@@ -734,7 +733,6 @@ impl Router {
                 select_mab_explain(&remaining, sum_snap, self.cfg.mab)
             };
 
-            let _ = round_seed; // suppress unused warning
             let pick = d.selection.chosen.clone();
             remaining.retain(|a| a != &pick);
             picks.push(pick);

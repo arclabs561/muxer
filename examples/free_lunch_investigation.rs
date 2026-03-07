@@ -364,7 +364,7 @@ fn main() {
         let p_true_b0_ok_clean = normalize_cat(scenario.b_before.p)[0];
         let est_abs_err_b_before = (est_b_before.unwrap_or(0.5) - p_true_b0_ok_clean).abs();
 
-        if seed.is_multiple_of(10_000) {
+        if seed % 10_000 == 0 {
             eprintln!(
                 "debug: gap={gap_label} policy={} mean_reward={:.4} det_catkl={:?} det_cusum={:?} frac_B={:.3} est_err_b0={:.3}",
                 policy.name(),
