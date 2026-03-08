@@ -204,12 +204,6 @@ impl MonitoredWindow {
     }
 
     /// Best-effort: mutate the most recent outcome in both windows.
-    pub fn set_last_junk(&mut self, junk: bool) {
-        self.baseline.set_last_junk(junk);
-        self.recent.set_last_junk(junk);
-    }
-
-    /// Best-effort: mutate the most recent outcome in both windows.
     pub fn set_last_junk_level(&mut self, junk: bool, hard_junk: bool) {
         self.baseline.set_last_junk_level(junk, hard_junk);
         self.recent.set_last_junk_level(junk, hard_junk);
@@ -251,17 +245,6 @@ impl MonitoredWindow {
             self.baseline.push(o);
         }
         self.recent = Window::new(self.recent.cap());
-    }
-
-    /// Merge recent observations into the baseline without clearing the recent window.
-    ///
-    /// Use when you want the baseline to absorb new data while keeping recent
-    /// observations for ongoing drift comparison (e.g., a soft acknowledgment
-    /// that does not restart the drift sensor).
-    pub fn promote_recent_to_baseline(&mut self) {
-        for o in self.recent.iter().copied() {
-            self.baseline.push(o);
-        }
     }
 }
 

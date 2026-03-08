@@ -36,7 +36,7 @@ pub enum PipelineOrder {
 }
 
 /// Re-export `LatencyGuardrailConfig` under the harness-friendly name used by some routers.
-pub type LatencyGuardrail = LatencyGuardrailConfig;
+pub(crate) type LatencyGuardrail = LatencyGuardrailConfig;
 
 /// Planned policy result for a single selection step.
 ///
@@ -306,117 +306,6 @@ where
         prechosen.push(b);
     }
     prechosen
-}
-
-/// Compute the policy plan: novelty pre-picks + observed latency guardrail.
-///
-/// Important semantics:
-/// - Novelty picks are computed **before** the guardrail filter (so they can include unmeasured arms
-///   even when `require_measured=true`, if novelty fills all \(k\)).
-/// - If you want the guardrail to apply as a **hard constraint** to novelty/coverage picks, use the
-///   `*_guardrail_first_*` helpers below.
-pub fn policy_plan_observed<F>(
-    seed: u64,
-    arms: &[String],
-    k: usize,
-    novelty_enabled: bool,
-    guard: LatencyGuardrail,
-    observed: F,
-) -> PolicyPlan
-where
-    F: FnMut(&str) -> (u64, u64),
-{
-    policy_plan_generic(
-        seed,
-        arms,
-        k,
-        novelty_enabled,
-        CoverageConfig::default(),
-        guard,
-        PipelineOrder::NoveltyFirst,
-        observed,
-    )
-}
-
-/// Like `policy_plan_observed`, but also adds a deterministic "coverage" pre-pick stage
-/// to enforce minimum sampling quotas (useful for monitoring/change detection).
-///
-/// Delegates to [`policy_plan_generic`] with `PipelineOrder::NoveltyFirst`.
-pub fn policy_plan_observed_with_coverage<F>(
-    seed: u64,
-    arms: &[String],
-    k: usize,
-    novelty_enabled: bool,
-    coverage: CoverageConfig,
-    guard: LatencyGuardrail,
-    observed: F,
-) -> PolicyPlan
-where
-    F: FnMut(&str) -> (u64, u64),
-{
-    policy_plan_generic(
-        seed,
-        arms,
-        k,
-        novelty_enabled,
-        coverage,
-        guard,
-        PipelineOrder::NoveltyFirst,
-        observed,
-    )
-}
-
-/// Guardrail-first policy plan: apply observed guardrail first, then novelty pre-picks.
-///
-/// Delegates to [`policy_plan_generic`] with `PipelineOrder::GuardrailFirst`.
-pub fn policy_plan_observed_guardrail_first<F>(
-    seed: u64,
-    arms: &[String],
-    k: usize,
-    novelty_enabled: bool,
-    guard: LatencyGuardrail,
-    observed: F,
-) -> PolicyPlan
-where
-    F: FnMut(&str) -> (u64, u64),
-{
-    policy_plan_generic(
-        seed,
-        arms,
-        k,
-        novelty_enabled,
-        CoverageConfig::default(),
-        guard,
-        PipelineOrder::GuardrailFirst,
-        observed,
-    )
-}
-
-/// Guardrail-first policy plan with coverage: apply guardrail first, then novelty+coverage.
-///
-/// Delegates to [`policy_plan_generic`] with `PipelineOrder::GuardrailFirst`.
-pub fn policy_plan_observed_guardrail_first_with_coverage<F>(
-    seed: u64,
-    arms: &[String],
-    k: usize,
-    novelty_enabled: bool,
-    coverage: CoverageConfig,
-    guard: LatencyGuardrail,
-    observed: F,
-) -> PolicyPlan
-where
-    F: FnMut(&str) -> (u64, u64),
-{
-    policy_plan_generic(
-        seed,
-        arms,
-        k,
-        novelty_enabled,
-        coverage,
-        guard,
-        PipelineOrder::GuardrailFirst,
-        observed,
-    )
 }
 
 /// Generic policy fill: compute a plan via [`policy_plan_generic`], then fill remaining

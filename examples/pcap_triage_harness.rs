@@ -12,7 +12,7 @@
 use muxer::{
     coverage_pick_under_sampled, policy_fill_k_observed_with_coverage,
     select_k_without_replacement_by, select_mab_explain, stable_hash64, CoverageConfig,
-    LatencyGuardrail, MabConfig, Outcome, Summary, Window,
+    LatencyGuardrailConfig, MabConfig, Outcome, Summary, Window,
 };
 use std::collections::BTreeMap;
 
@@ -205,7 +205,7 @@ fn main() {
     let mut engine_windows: BTreeMap<String, Window> = BTreeMap::new();
     let mut slice_calls: BTreeMap<String, u64> = BTreeMap::new();
 
-    let guard = LatencyGuardrail {
+    let guard = LatencyGuardrailConfig {
         max_mean_ms: Some(1_300.0),
         require_measured: false,
         allow_fewer: true,

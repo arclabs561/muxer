@@ -38,7 +38,6 @@ pub(crate) fn u01_from_seed(seed: u64) -> f64 {
 }
 
 #[inline]
-#[cfg_attr(not(feature = "stochastic"), allow(dead_code))]
 pub(crate) fn splitmix64(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = x;

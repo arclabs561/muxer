@@ -361,47 +361,6 @@ impl ThompsonSampling {
     }
 }
 
-/// Persistence-aware Thompson-sampling decision helper.
-///
-/// Mirrors `exp3ix_decide_persisted`: restores state (if present), makes a decision,
-/// and returns the updated persistence snapshot.
-///
-/// The `decision_seed` controls the RNG for the current decision (via `with_seed`).
-#[cfg(feature = "stochastic")]
-pub fn thompson_decide_persisted(
-    cfg: ThompsonConfig,
-    state: Option<ThompsonState>,
-    arms_in_order: &[String],
-    temperature: f64,
-    decision_seed: u64,
-) -> Option<(crate::Decision, ThompsonState)> {
-    let mut ts = ThompsonSampling::with_seed(cfg, decision_seed);
-    if let Some(st) = state {
-        ts.restore(st);
-    }
-    let d = ts.decide_softmax_mean(arms_in_order, temperature)?;
-    let st = ts.snapshot();
-    Some((d, st))
-}
-
-/// Persistence-aware Thompson-sampling update helper.
-///
-/// Mirrors `exp3ix_update_persisted`: restores state, applies a reward update,
-/// and returns the updated snapshot.
-#[cfg(feature = "stochastic")]
-pub fn thompson_update_persisted(
-    cfg: ThompsonConfig,
-    state: ThompsonState,
-    chosen: &str,
-    reward01: f64,
-    update_seed: u64,
-) -> ThompsonState {
-    let mut ts = ThompsonSampling::with_seed(cfg, update_seed);
-    ts.restore(state);
-    ts.update_reward(chosen, reward01);
-    ts.snapshot()
-}
-
 impl Default for ThompsonSampling {
     fn default() -> Self {
         Self::new(ThompsonConfig::default())

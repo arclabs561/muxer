@@ -127,7 +127,7 @@ fn sticky_reduces_switching_under_alternating_small_advantages() {
         let summaries = BTreeMap::from([("a".to_string(), sa), ("b".to_string(), sb)]);
         let base = select_mab_explain(&arms, &summaries, cfg);
         let chosen_base = base.selection.chosen.clone();
-        let chosen_sticky = sticky.apply_mab(base).selection.chosen;
+        let chosen_sticky = sticky.apply_mab(base).chosen;
 
         if let Some(prev) = &prev_base {
             if prev != &chosen_base {

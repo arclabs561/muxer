@@ -100,7 +100,7 @@ fn sticky_bounds_switch_rate_in_stable_environment() {
             .map(|(k, w)| (k.clone(), w.summary()))
             .collect();
         let base = select_mab_explain(&arms, &summaries, cfg);
-        let chosen = sticky.apply_mab(base).selection.chosen;
+        let chosen = sticky.apply_mab(base).chosen;
 
         if let Some(p) = &prev {
             if p != &chosen {

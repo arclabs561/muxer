@@ -253,7 +253,7 @@ mod alloc;
 pub use alloc::softmax_map;
 
 mod utils;
-pub use utils::{suggested_window_cap, suggested_window_cap_for_k};
+pub use utils::suggested_window_cap;
 
 mod control;
 pub use control::{pick_control_arms, split_control_budget, ControlConfig};
@@ -272,21 +272,12 @@ pub use coverage::{coverage_pick_under_sampled, coverage_pick_under_sampled_idx,
 #[cfg(feature = "stochastic")]
 mod exp3ix;
 #[cfg(feature = "stochastic")]
-pub use exp3ix::{
-    exp3ix_decide_k_persisted_guardrailed_explain_full, exp3ix_decide_persisted,
-    exp3ix_decide_persisted_guardrailed, exp3ix_decide_persisted_with_prob,
-    exp3ix_update_persisted, log_exp3ix_guardrailed_typed, log_exp3ix_k_rounds_typed, Exp3Ix,
-    Exp3IxConfig, Exp3IxGuardrailedDecision, Exp3IxKExplain, Exp3IxKRound, Exp3IxKRoundLog,
-    Exp3IxKStop, Exp3IxRoundLog, Exp3IxState,
-};
+pub use exp3ix::{Exp3Ix, Exp3IxConfig, Exp3IxState};
 
 #[cfg(feature = "stochastic")]
 mod thompson;
 #[cfg(feature = "stochastic")]
-pub use thompson::{
-    thompson_decide_persisted, thompson_update_persisted, BetaStats, ThompsonConfig,
-    ThompsonSampling, ThompsonState,
-};
+pub use thompson::{BetaStats, ThompsonConfig, ThompsonSampling, ThompsonState};
 
 #[cfg(feature = "contextual")]
 mod contextual;
@@ -294,13 +285,15 @@ mod contextual;
 pub use contextual::{LinUcb, LinUcbArmState, LinUcbConfig, LinUcbScore, LinUcbState};
 
 mod sticky;
-pub use sticky::{mab_scalar_score, DecisionReason, ExplainedSelection, StickyConfig, StickyMab};
+pub use sticky::{StickyConfig, StickyMab};
 
 mod stable_hash;
-pub use stable_hash::{stable_hash64, stable_hash64_u64};
+pub use stable_hash::stable_hash64;
+pub(crate) use stable_hash::stable_hash64_u64;
 
 mod novelty;
-pub use novelty::{novelty_pick_unseen, pick_random_subset};
+pub use novelty::novelty_pick_unseen;
+pub(crate) use novelty::pick_random_subset;
 
 mod prior;
 pub use prior::apply_prior_counts_to_summary;
@@ -318,11 +311,8 @@ pub use harness::{
     guardrail_filter_observed_strict_elapsed, policy_fill_generic,
     policy_fill_k_observed_guardrail_first_with,
     policy_fill_k_observed_guardrail_first_with_coverage, policy_fill_k_observed_with,
-    policy_fill_k_observed_with_coverage, policy_plan_generic, policy_plan_observed,
-    policy_plan_observed_guardrail_first, policy_plan_observed_guardrail_first_with_coverage,
-    policy_plan_observed_with_coverage, select_k_without_replacement_by,
-    select_k_without_replacement_by_with_meta, LatencyGuardrail, PipelineOrder, PolicyFill,
-    PolicyPlan,
+    policy_fill_k_observed_with_coverage, policy_plan_generic, select_k_without_replacement_by,
+    PipelineOrder, PolicyFill, PolicyPlan,
 };
 #[cfg(feature = "contextual")]
 pub use harness::{policy_fill_k_contextual, ContextualPolicyFill};
@@ -336,226 +326,6 @@ pub use monitor::{
     calibrate_threshold_from_max_scores, DriftConfig, DriftDecision, DriftMetric, MonitoredWindow,
     RateBoundMode, ThresholdCalibration, UncertaintyConfig,
 };
-
-/// Per-round details for multi-pick MAB selection with an external latency guardrail.
-#[derive(Debug, Clone)]
-pub struct MabKRound {
-    /// Remaining arms at the start of the round.
-    pub remaining: Vec<String>,
-    /// Result of applying the latency guardrail to `remaining` for this round.
-    pub guardrail: LatencyGuardrailDecision,
-    /// MAB selection decision for this round (run on `guardrail.eligible`).
-    pub mab: MabSelectionDecision,
-}
-
-/// Stop information for multi-pick MAB selection.
-#[derive(Debug, Clone)]
-pub struct MabKStop {
-    /// Remaining arms at the stop point.
-    pub remaining: Vec<String>,
-    /// Result of applying the latency guardrail to `remaining` at the stop point.
-    pub guardrail: LatencyGuardrailDecision,
-}
-
-/// Output of selecting up to `k` unique arms via repeated MAB selection, including a stop record
-/// when the loop terminates early due to guardrail/emptiness.
-#[derive(Debug, Clone)]
-pub struct MabKExplain {
-    /// Chosen arms (unique, in pick order).
-    pub chosen: Vec<String>,
-    /// Per-round details (one entry per chosen arm).
-    pub rounds: Vec<MabKRound>,
-    /// Present when the loop stopped early (e.g. guardrail `stop_early=true`).
-    pub stop: Option<MabKStop>,
-}
-
-/// Output of selecting up to `k` unique arms via repeated MAB selection.
-#[derive(Debug, Clone)]
-pub struct MabKSelection {
-    /// Chosen arms (unique, in pick order).
-    pub chosen: Vec<String>,
-    /// Per-round details (one entry per chosen arm).
-    pub rounds: Vec<MabKRound>,
-}
-
-/// A compact, log-ready row for a single round of a multi-pick MAB selection.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct MabKRoundLog {
-    /// Zero-indexed round number within the multi-pick sequence.
-    pub round: usize,
-    /// Arms still available at the start of this round.
-    pub remaining: Vec<String>,
-    /// Arms that passed the latency guardrail for this round.
-    pub guardrail_eligible: Vec<String>,
-    /// Whether the guardrail fell back to the full remaining set (all arms filtered).
-    pub guardrail_fallback_used: bool,
-    /// Whether the guardrail requested early stop (no eligible arms, `allow_fewer=false`).
-    pub guardrail_stop_early: bool,
-    /// Arm chosen in this round (`None` if the round produced no pick).
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub chosen: Option<String>,
-    /// Whether the pick was an explore-first selection (`Some(true)` when an arm had zero calls).
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub explore_first: Option<bool>,
-    /// Whether constraints eliminated all arms and the selector fell back (`None` when no constraints configured).
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub constraints_fallback_used: Option<bool>,
-    /// Arms eligible after applying constraints (`None` when no constraints configured).
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub constraints_eligible_arms: Option<Vec<String>>,
-    /// Top-scoring candidates for this round (for audit logging).
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub top_candidates: Option<LogTopCandidates>,
-}
-
-/// Small “log-ready” top-candidate row, used to avoid duplicating score/prob formatting in harnesses.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct LogTopCandidate {
-    /// Arm name.
-    pub arm: String,
-    /// Score used for sorting (meaning depends on policy).
-    pub score: f64,
-    /// Call count from the summary window (present for MAB).
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub calls: Option<u64>,
-    /// Success rate (present for MAB).
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub ok_rate: Option<f64>,
-    /// Junk rate (present for MAB).
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub junk_rate: Option<f64>,
-    /// Hard junk rate (present for MAB).
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub hard_junk_rate: Option<f64>,
-    /// Mean quality score (present when `Outcome::quality_score` has been set).
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub mean_quality_score: Option<f64>,
-}
-
-/// A typed top-candidates payload for logging.
-///
-/// `kind` describes the meaning of `rows[*].score`, e.g. `"mab_scalar"` or `"exp3ix_prob"`.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct LogTopCandidates {
-    pub kind: String,
-    pub rows: Vec<LogTopCandidate>,
-}
-
-pub const LOG_SCORE_KIND_MAB_SCALAR: &str = "mab_scalar";
-pub const LOG_SCORE_KIND_EXP3IX_PROB: &str = "exp3ix_prob";
-pub const MUXER_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Extract top candidate rows from a MAB decision using the same scalarization as selection.
-pub fn log_top_candidates_mab(decision: &MabSelectionDecision, top: usize) -> Vec<LogTopCandidate> {
-    let cfg = decision.selection.config;
-    let mut rows: Vec<(f64, &CandidateDebug)> = decision
-        .selection
-        .candidates
-        .iter()
-        .map(|c| {
-            let drift = c.drift_score.unwrap_or(0.0);
-            let catkl = c.catkl_score.unwrap_or(0.0);
-            let cusum = c.cusum_score.unwrap_or(0.0);
-            let quality_bonus = cfg.quality_weight * c.mean_quality_score.unwrap_or(0.0);
-            let score = c.objective_success
-                - cfg.cost_weight * c.mean_cost_units
-                - cfg.latency_weight * c.mean_elapsed_ms
-                - cfg.hard_junk_weight * c.hard_junk_rate
-                - cfg.junk_weight * c.soft_junk_rate
-                - cfg.drift_weight * drift
-                - cfg.catkl_weight * catkl
-                - cfg.cusum_weight * cusum
-                + quality_bonus;
-            (score, c)
-        })
-        .collect();
-    rows.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
-    rows.into_iter()
-        .take(top.max(1))
-        .map(|(score, c)| LogTopCandidate {
-            arm: c.name.clone(),
-            score,
-            calls: Some(c.calls),
-            ok_rate: Some(c.ok_rate),
-            junk_rate: Some(c.junk_rate),
-            hard_junk_rate: Some(c.hard_junk_rate),
-            mean_quality_score: c.mean_quality_score,
-        })
-        .collect()
-}
-
-/// Extract top probability rows from an EXP3-IX decision.
-pub fn log_top_candidates_exp3ix(decision: &Decision, top: usize) -> Vec<LogTopCandidate> {
-    let Some(ref probs) = decision.probs else {
-        return Vec::new();
-    };
-    let mut rows: Vec<(f64, String)> = probs.iter().map(|(k, v)| (*v, k.clone())).collect();
-    rows.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    rows.into_iter()
-        .take(top.max(1))
-        .map(|(p, arm)| LogTopCandidate {
-            arm,
-            score: p,
-            calls: None,
-            ok_rate: None,
-            junk_rate: None,
-            hard_junk_rate: None,
-            mean_quality_score: None,
-        })
-        .collect()
-}
-
-/// Extract top-candidates payload for MAB with a self-describing `kind`.
-pub fn log_top_candidates_mab_typed(
-    decision: &MabSelectionDecision,
-    top: usize,
-) -> LogTopCandidates {
-    LogTopCandidates {
-        kind: LOG_SCORE_KIND_MAB_SCALAR.to_string(),
-        rows: log_top_candidates_mab(decision, top),
-    }
-}
-
-/// Extract top-candidates payload for EXP3-IX with a self-describing `kind`.
-pub fn log_top_candidates_exp3ix_typed(decision: &Decision, top: usize) -> LogTopCandidates {
-    LogTopCandidates {
-        kind: LOG_SCORE_KIND_EXP3IX_PROB.to_string(),
-        rows: log_top_candidates_exp3ix(decision, top),
-    }
-}
 
 /// A single observed outcome for an arm.
 #[derive(Debug, Clone, Copy, Default)]
@@ -630,16 +400,6 @@ impl Window {
             self.buf.pop_front();
         }
         self.buf.push_back(o);
-    }
-
-    /// Best-effort: mutate the most recent outcome.
-    ///
-    /// This is useful when an outcome's "junk" label is only known after downstream processing
-    /// (e.g. search succeeded, but extraction later looked low-signal).
-    pub fn set_last_junk(&mut self, junk: bool) {
-        if let Some(last) = self.buf.back_mut() {
-            last.junk = junk;
-        }
     }
 
     /// Best-effort: set “junk” and whether it is “hard junk” for the most recent outcome.
@@ -1801,72 +1561,6 @@ pub fn select_mab_monitored_explain_with_summaries(
     }
 }
 
-/// Multi-pick variant of monitored selection using caller-provided summaries and monitored windows.
-pub fn select_mab_k_guardrailed_monitored_explain_full<FS, FM>(
-    arms_in_order: &[String],
-    mut summaries_for: FS,
-    mut monitored_for: FM,
-    drift_cfg: DriftConfig,
-    cfg: MabConfig,
-    guardrail: LatencyGuardrailConfig,
-    k: usize,
-) -> MabKExplain
-where
-    FS: FnMut(&[String]) -> BTreeMap<String, Summary>,
-    FM: FnMut(&[String]) -> BTreeMap<String, MonitoredWindow>,
-{
-    if arms_in_order.is_empty() || k == 0 {
-        return MabKExplain {
-            chosen: Vec::new(),
-            rounds: Vec::new(),
-            stop: None,
-        };
-    }
-
-    let mut remaining: Vec<String> = arms_in_order.to_vec();
-    let mut chosen: Vec<String> = Vec::new();
-    let mut rounds: Vec<MabKRound> = Vec::new();
-    let mut stop: Option<MabKStop> = None;
-
-    for _round in 0..k.min(remaining.len()) {
-        let remaining_in = remaining.clone();
-        let summaries = summaries_for(&remaining_in);
-        let monitored = monitored_for(&remaining_in);
-
-        let gd = apply_latency_guardrail(&remaining_in, &summaries, guardrail, chosen.len());
-        if gd.stop_early || gd.eligible.is_empty() {
-            stop = Some(MabKStop {
-                remaining: remaining_in,
-                guardrail: gd,
-            });
-            break;
-        }
-
-        let d = select_mab_monitored_explain_with_summaries(
-            &gd.eligible,
-            &summaries,
-            &monitored,
-            drift_cfg,
-            cfg,
-        );
-        let pick = d.selection.chosen.clone();
-        chosen.push(pick.clone());
-        remaining.retain(|b| b != &pick);
-
-        rounds.push(MabKRound {
-            remaining: remaining_in,
-            guardrail: gd,
-            mab: d,
-        });
-    }
-
-    MabKExplain {
-        chosen,
-        rounds,
-        stop,
-    }
-}
-
 /// Unified decision envelope for deterministic MAB selection.
 ///
 /// This is a convenience wrapper around `select_mab_explain` that returns a `Decision`
@@ -1968,158 +1662,6 @@ pub fn select_mab_monitored_decide(
     }
 }
 
-/// Select up to `k` unique arms by repeatedly applying `select_mab_explain`, with an optional
-/// external latency guardrail applied each round.
-///
-/// This is intended for “thin harnesses” that want consistent guardrail semantics without
-/// re-implementing the multi-pick loop.
-///
-/// The `summaries_for` callback is invoked once per round with the *current* remaining arm set.
-pub fn select_mab_k_guardrailed_explain<F>(
-    arms_in_order: &[String],
-    mut summaries_for: F,
-    cfg: MabConfig,
-    guardrail: LatencyGuardrailConfig,
-    k: usize,
-) -> MabKSelection
-where
-    F: FnMut(&[String]) -> BTreeMap<String, Summary>,
-{
-    if arms_in_order.is_empty() || k == 0 {
-        return MabKSelection {
-            chosen: Vec::new(),
-            rounds: Vec::new(),
-        };
-    }
-
-    let mut remaining: Vec<String> = arms_in_order.to_vec();
-    let mut chosen: Vec<String> = Vec::new();
-    let mut rounds: Vec<MabKRound> = Vec::new();
-
-    for _round in 0..k.min(remaining.len()) {
-        let remaining_in = remaining.clone();
-        let summaries = summaries_for(&remaining_in);
-
-        let gd = apply_latency_guardrail(&remaining_in, &summaries, guardrail, chosen.len());
-        if gd.stop_early {
-            break;
-        }
-        if gd.eligible.is_empty() {
-            break;
-        }
-
-        let d = select_mab_explain(&gd.eligible, &summaries, cfg);
-        let pick = d.selection.chosen.clone();
-        chosen.push(pick.clone());
-        remaining.retain(|b| b != &pick);
-
-        rounds.push(MabKRound {
-            remaining: remaining_in,
-            guardrail: gd,
-            mab: d,
-        });
-    }
-
-    MabKSelection { chosen, rounds }
-}
-
-/// Like `select_mab_k_guardrailed_explain`, but also returns a stop record when the selection
-/// ends early due to guardrail semantics or an empty eligible set.
-pub fn select_mab_k_guardrailed_explain_full<F>(
-    arms_in_order: &[String],
-    mut summaries_for: F,
-    cfg: MabConfig,
-    guardrail: LatencyGuardrailConfig,
-    k: usize,
-) -> MabKExplain
-where
-    F: FnMut(&[String]) -> BTreeMap<String, Summary>,
-{
-    if arms_in_order.is_empty() || k == 0 {
-        return MabKExplain {
-            chosen: Vec::new(),
-            rounds: Vec::new(),
-            stop: None,
-        };
-    }
-
-    let mut remaining: Vec<String> = arms_in_order.to_vec();
-    let mut chosen: Vec<String> = Vec::new();
-    let mut rounds: Vec<MabKRound> = Vec::new();
-    let mut stop: Option<MabKStop> = None;
-
-    for _round in 0..k.min(remaining.len()) {
-        let remaining_in = remaining.clone();
-        let summaries = summaries_for(&remaining_in);
-
-        let gd = apply_latency_guardrail(&remaining_in, &summaries, guardrail, chosen.len());
-        if gd.stop_early || gd.eligible.is_empty() {
-            stop = Some(MabKStop {
-                remaining: remaining_in,
-                guardrail: gd,
-            });
-            break;
-        }
-
-        let d = select_mab_explain(&gd.eligible, &summaries, cfg);
-        let pick = d.selection.chosen.clone();
-        chosen.push(pick.clone());
-        remaining.retain(|b| b != &pick);
-
-        rounds.push(MabKRound {
-            remaining: remaining_in,
-            guardrail: gd,
-            mab: d,
-        });
-    }
-
-    MabKExplain {
-        chosen,
-        rounds,
-        stop,
-    }
-}
-
-/// Convert a multi-pick MAB explanation into compact, log-ready round rows.
-///
-/// This includes an additional “stop row” when selection ends early (e.g. guardrail `stop_early=true`).
-pub fn log_mab_k_rounds_typed(explain: &MabKExplain, top: usize) -> Vec<MabKRoundLog> {
-    let mut out: Vec<MabKRoundLog> = Vec::new();
-
-    for (i, r) in explain.rounds.iter().enumerate() {
-        let d = &r.mab;
-        out.push(MabKRoundLog {
-            round: i + 1,
-            remaining: r.remaining.clone(),
-            guardrail_eligible: r.guardrail.eligible.clone(),
-            guardrail_fallback_used: r.guardrail.fallback_used,
-            guardrail_stop_early: r.guardrail.stop_early,
-            chosen: Some(d.selection.chosen.clone()),
-            explore_first: Some(d.explore_first),
-            constraints_fallback_used: Some(d.constraints_fallback_used),
-            constraints_eligible_arms: Some(d.eligible_arms.clone()),
-            top_candidates: Some(log_top_candidates_mab_typed(d, top)),
-        });
-    }
-
-    if let Some(ref s) = explain.stop {
-        out.push(MabKRoundLog {
-            round: explain.rounds.len() + 1,
-            remaining: s.remaining.clone(),
-            guardrail_eligible: s.guardrail.eligible.clone(),
-            guardrail_fallback_used: s.guardrail.fallback_used,
-            guardrail_stop_early: s.guardrail.stop_early,
-            chosen: None,
-            explore_first: None,
-            constraints_fallback_used: None,
-            constraints_eligible_arms: None,
-            top_candidates: None,
-        });
-    }
-
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2187,62 +1729,6 @@ mod tests {
         };
         let sel = select_mab(&arms, &m, cfg);
         assert_eq!(sel.chosen, "b");
-    }
-
-    #[test]
-    fn mab_k_full_includes_guardrail_stop_record() {
-        let arms = vec!["a".to_string(), "b".to_string()];
-        let cfg = MabConfig::default();
-        let guardrail = LatencyGuardrailConfig {
-            max_mean_ms: Some(10.0),
-            require_measured: false,
-            allow_fewer: true,
-        };
-
-        // Both arms are "slow" so guardrail will:
-        // - fallback on round 1 (already_chosen=0)
-        // - stop early on round 2 (already_chosen>0)
-        let mut all = BTreeMap::new();
-        all.insert(
-            "a".to_string(),
-            Summary {
-                calls: 1,
-                ok: 1,
-                junk: 0,
-                hard_junk: 0,
-                cost_units: 0,
-                elapsed_ms_sum: 1000,
-                mean_quality_score: None,
-            },
-        );
-        all.insert(
-            "b".to_string(),
-            Summary {
-                calls: 1,
-                ok: 1,
-                junk: 0,
-                hard_junk: 0,
-                cost_units: 0,
-                elapsed_ms_sum: 1000,
-                mean_quality_score: None,
-            },
-        );
-
-        let ex = select_mab_k_guardrailed_explain_full(
-            &arms,
-            |_remaining| all.clone(),
-            cfg,
-            guardrail,
-            2,
-        );
-        assert_eq!(ex.chosen.len(), 1);
-        assert!(ex.stop.is_some());
-        assert!(ex.stop.as_ref().unwrap().guardrail.stop_early);
-
-        let logs = log_mab_k_rounds_typed(&ex, 3);
-        assert_eq!(logs.len(), 2);
-        assert!(logs[1].guardrail_stop_early);
-        assert!(logs[1].chosen.is_none());
     }
 
     proptest! {
@@ -2405,7 +1891,7 @@ mod tests {
         m1.insert("a".to_string(), s(10, 10, 0, 0, 0, 0));
         m1.insert("b".to_string(), s(10, 5, 0, 0, 0, 0));
         let e1 = sticky.apply_mab(select_mab_explain(&arms, &m1, cfg));
-        assert_eq!(e1.selection.chosen, "a");
+        assert_eq!(e1.chosen, "a");
         assert_eq!(sticky.dwell(), 1);
 
         // Now "b" is better, but dwell gate should keep "a" for 2 more decisions.
@@ -2414,13 +1900,13 @@ mod tests {
         m2.insert("b".to_string(), s(10, 10, 0, 0, 0, 0));
 
         let e2 = sticky.apply_mab(select_mab_explain(&arms, &m2, cfg));
-        assert_eq!(e2.selection.chosen, "a");
+        assert_eq!(e2.chosen, "a");
         let e3 = sticky.apply_mab(select_mab_explain(&arms, &m2, cfg));
-        assert_eq!(e3.selection.chosen, "a");
+        assert_eq!(e3.chosen, "a");
 
         // Next decision: allowed to switch.
         let e4 = sticky.apply_mab(select_mab_explain(&arms, &m2, cfg));
-        assert_eq!(e4.selection.chosen, "b");
+        assert_eq!(e4.chosen, "b");
         assert_eq!(sticky.dwell(), 1);
     }
 
@@ -2497,16 +1983,16 @@ mod tests {
 
         // Start on "a".
         let e1 = sticky.apply_mab(mk("a", 1.0, 1.0));
-        assert_eq!(e1.selection.chosen, "a");
+        assert_eq!(e1.chosen, "a");
         assert_eq!(sticky.previous(), Some("a"));
 
         // Candidate "b" is only slightly better: margin < 0.5 => keep "a".
         let e2 = sticky.apply_mab(mk("b", 1.0, 1.4));
-        assert_eq!(e2.selection.chosen, "a");
+        assert_eq!(e2.chosen, "a");
 
         // Candidate "b" is much better: margin >= 0.5 => switch to "b".
         let e3 = sticky.apply_mab(mk("b", 1.0, 1.7));
-        assert_eq!(e3.selection.chosen, "b");
+        assert_eq!(e3.chosen, "b");
         assert_eq!(sticky.previous(), Some("b"));
     }
 
@@ -2593,7 +2079,7 @@ mod tests {
             catkl_guard: None,
             cusum_guard: None,
         });
-        assert_eq!(e.selection.chosen, "a");
+        assert_eq!(e.chosen, "a");
         assert_eq!(sticky.previous(), Some("a"));
     }
 

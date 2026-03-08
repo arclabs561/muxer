@@ -530,15 +530,6 @@ impl ContextualCoverageTracker {
         bins.into_iter().collect()
     }
 
-    /// Sorted list of all arms observed so far.
-    pub fn observed_arms(&self) -> Vec<String> {
-        let mut arms: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for (arm, _) in self.cells.keys() {
-            arms.insert(arm.clone());
-        }
-        arms.into_iter().collect()
-    }
-
     /// Get the stats for a specific (arm, bin) cell, if any.
     pub fn get(&self, arm: &str, bin: u64) -> Option<&CellStats> {
         self.cells.get(&(arm.to_string(), bin))

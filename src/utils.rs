@@ -38,26 +38,6 @@ pub fn suggested_window_cap(throughput: u64, change_rate: f64) -> usize {
     cap.clamp(10, 10_000)
 }
 
-/// Suggest a window capacity suitable for K arms given a total budget.
-///
-/// With K arms and a total call budget T, each arm gets roughly T/K calls.
-/// This adjusts the per-arm window suggestion for larger arm counts.
-///
-/// # Example
-///
-/// ```rust
-/// use muxer::suggested_window_cap_for_k;
-///
-/// // 30 arms, 3000 total calls, expect ~1% change rate.
-/// let cap = suggested_window_cap_for_k(30, 3000, 0.01);
-/// assert!(cap >= 10);
-/// ```
-pub fn suggested_window_cap_for_k(k: usize, total_throughput: u64, change_rate: f64) -> usize {
-    let k = k.max(1) as u64;
-    let per_arm = total_throughput / k;
-    suggested_window_cap(per_arm.max(1), change_rate)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,16 +64,6 @@ mod tests {
         assert!(
             slow >= fast,
             "more frequent changes → smaller optimal window"
-        );
-    }
-
-    #[test]
-    fn suggested_window_cap_for_k_scales_down_with_more_arms() {
-        let few = suggested_window_cap_for_k(2, 1000, 0.05);
-        let many = suggested_window_cap_for_k(50, 1000, 0.05);
-        assert!(
-            few >= many,
-            "more arms share the same budget → smaller per-arm window"
         );
     }
 }

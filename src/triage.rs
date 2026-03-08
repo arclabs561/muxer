@@ -312,11 +312,6 @@ impl TriageSession {
     pub fn tracker(&self) -> &ContextualCoverageTracker {
         &self.tracker
     }
-
-    /// Mutable access to the coverage tracker (e.g. to manually inject observations).
-    pub fn tracker_mut(&mut self) -> &mut ContextualCoverageTracker {
-        &mut self.tracker
-    }
 }
 
 #[cfg(test)]

@@ -39,48 +39,6 @@ impl Default for StickyConfig {
     }
 }
 
-/// Why a decision was made.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum DecisionReason {
-    /// The base policy was in “explore-first” mode (some arm had zero observations).
-    ExploreFirst { chosen: String },
-    /// The base policy chose `chosen` without stickiness overriding it.
-    BaseChoice { chosen: String },
-    /// Stickiness kept the previous arm due to `min_dwell`.
-    KeptPreviousDwell {
-        previous: String,
-        candidate: String,
-        dwell: u64,
-        min_dwell: u64,
-    },
-    /// Stickiness kept the previous arm because the candidate advantage was too small.
-    KeptPreviousMargin {
-        previous: String,
-        candidate: String,
-        previous_score: f64,
-        candidate_score: f64,
-        margin: f64,
-        min_margin: f64,
-    },
-    /// Stickiness allowed switching to the candidate.
-    Switched {
-        previous: String,
-        candidate: String,
-        previous_score: f64,
-        candidate_score: f64,
-        margin: f64,
-    },
-}
-
-/// A selection plus decision reasons (for auditing/debugging).
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct ExplainedSelection {
-    pub selection: Selection,
-    pub reasons: Vec<DecisionReason>,
-}
-
 fn f64_or0(x: f64) -> f64 {
     if x.is_finite() {
         x
@@ -154,67 +112,50 @@ impl StickyMab {
     }
 
     /// Shared stickiness logic: given a selection, explore_first flag, apply dwell + margin gates.
-    fn apply_inner(&mut self, mut sel: Selection, explore_first: bool) -> ExplainedSelection {
-        let mut reasons: Vec<DecisionReason> = Vec::new();
-
+    /// Returns the (possibly overridden) selection and any sticky-specific notes.
+    fn apply_inner(
+        &mut self,
+        mut sel: Selection,
+        explore_first: bool,
+    ) -> (Selection, Vec<DecisionNote>) {
         if explore_first {
-            let chosen = sel.chosen.clone();
-            self.previous = Some(chosen.clone());
+            self.previous = Some(sel.chosen.clone());
             self.dwell = 1;
-            reasons.push(DecisionReason::ExploreFirst { chosen });
-            return ExplainedSelection {
-                selection: sel,
-                reasons,
-            };
+            return (sel, Vec::new());
         }
 
         let candidate = sel.chosen.clone();
         let Some(prev) = self.previous.clone() else {
-            self.previous = Some(candidate.clone());
+            self.previous = Some(candidate);
             self.dwell = 1;
-            reasons.push(DecisionReason::BaseChoice { chosen: candidate });
-            return ExplainedSelection {
-                selection: sel,
-                reasons,
-            };
+            return (sel, Vec::new());
         };
 
         // If previous is not among the considered candidates, follow the base choice.
         let scores = Self::scores_by_arm(&sel);
         let Some(prev_score) = scores.get(prev.as_str()).copied() else {
-            self.previous = Some(candidate.clone());
+            self.previous = Some(candidate);
             self.dwell = 1;
-            reasons.push(DecisionReason::BaseChoice { chosen: candidate });
-            return ExplainedSelection {
-                selection: sel,
-                reasons,
-            };
+            return (sel, Vec::new());
         };
 
         // If base choice is the previous arm, just bump dwell.
         if candidate == prev {
             self.dwell = self.dwell.saturating_add(1);
-            reasons.push(DecisionReason::BaseChoice { chosen: candidate });
-            return ExplainedSelection {
-                selection: sel,
-                reasons,
-            };
+            return (sel, Vec::new());
         }
 
         // Dwell gate.
         if self.cfg.min_dwell > 0 && self.dwell < self.cfg.min_dwell {
-            reasons.push(DecisionReason::KeptPreviousDwell {
+            let note = DecisionNote::StickyKeptPreviousDwell {
                 previous: prev.clone(),
-                candidate: candidate.clone(),
+                candidate,
                 dwell: self.dwell,
                 min_dwell: self.cfg.min_dwell,
-            });
-            sel.chosen = prev.clone();
-            self.dwell = self.dwell.saturating_add(1);
-            return ExplainedSelection {
-                selection: sel,
-                reasons,
             };
+            sel.chosen = prev;
+            self.dwell = self.dwell.saturating_add(1);
+            return (sel, vec![note]);
         }
 
         // Margin gate.
@@ -225,129 +166,71 @@ impl StickyMab {
         let margin = cand_score - prev_score;
         let min_margin = f64_or0(self.cfg.min_switch_margin);
         if min_margin > 0.0 && !(margin.is_finite() && margin >= min_margin) {
-            reasons.push(DecisionReason::KeptPreviousMargin {
+            let note = DecisionNote::StickyKeptPreviousMargin {
                 previous: prev.clone(),
-                candidate: candidate.clone(),
+                candidate,
                 previous_score: prev_score,
                 candidate_score: cand_score,
                 margin,
                 min_margin,
-            });
-            sel.chosen = prev.clone();
-            self.dwell = self.dwell.saturating_add(1);
-            return ExplainedSelection {
-                selection: sel,
-                reasons,
             };
+            sel.chosen = prev;
+            self.dwell = self.dwell.saturating_add(1);
+            return (sel, vec![note]);
         }
 
         // Allow switch.
-        reasons.push(DecisionReason::Switched {
-            previous: prev.clone(),
+        let note = DecisionNote::StickySwitched {
+            previous: prev,
             candidate: candidate.clone(),
             previous_score: prev_score,
             candidate_score: cand_score,
             margin,
-        });
-        self.previous = Some(candidate.clone());
+        };
+        self.previous = Some(candidate);
         self.dwell = 1;
-        ExplainedSelection {
-            selection: sel,
-            reasons,
-        }
+        (sel, vec![note])
     }
 
-    /// Apply stickiness to a base `Selection`.
+    /// Apply stickiness to a bare `Selection`.
     ///
     /// Uses a heuristic for explore-first detection: `candidates.len() == 1 && calls == 0`.
-    /// Prefer [`apply_mab`](Self::apply_mab) when `MabSelectionDecision` is available, since
-    /// it uses the explicit `explore_first` flag.
-    pub fn apply(&mut self, sel: Selection) -> ExplainedSelection {
+    /// Prefer [`apply_mab`](Self::apply_mab) when `MabSelectionDecision` is available.
+    pub fn apply(&mut self, sel: Selection) -> Selection {
         let explore_first = sel.candidates.len() == 1 && sel.candidates[0].calls == 0;
-        self.apply_inner(sel, explore_first)
+        let (sel, _notes) = self.apply_inner(sel, explore_first);
+        sel
     }
 
-    /// Apply stickiness using `select_mab_explain` output (recommended).
-    ///
-    /// This avoids heuristics for detecting explore-first and also provides callers access
-    /// to constraint-fallback metadata via `decision.constraints_fallback_used`.
-    pub fn apply_mab(&mut self, decision: MabSelectionDecision) -> ExplainedSelection {
-        self.apply_inner(decision.selection, decision.explore_first)
+    /// Apply stickiness to a `MabSelectionDecision`, returning the (possibly overridden) selection.
+    pub fn apply_mab(&mut self, decision: MabSelectionDecision) -> Selection {
+        let (sel, _notes) = self.apply_inner(decision.selection, decision.explore_first);
+        sel
     }
 
     /// Apply stickiness and return a unified `Decision` (recommended for logging/replay).
     ///
-    /// This is the “end of the line” decision object: it includes constraint gating metadata
-    /// and stickiness actions (kept previous / switched), so downstream systems can ingest a
-    /// single format regardless of selection policy and wrappers.
+    /// Includes constraint gating metadata and stickiness actions (kept previous / switched).
     pub fn apply_mab_decide(&mut self, decision: MabSelectionDecision) -> Decision {
         let constraints = DecisionNote::Constraints {
             eligible_arms: decision.eligible_arms.clone(),
             fallback_used: decision.constraints_fallback_used,
         };
 
-        // Explore-first bypasses stickiness gates (it seeds stickiness state).
-        if decision.explore_first {
-            return Decision {
-                policy: DecisionPolicy::Mab,
-                chosen: decision.selection.chosen.clone(),
-                probs: None,
-                notes: vec![constraints, DecisionNote::ExploreFirst],
-            };
-        }
+        let explore_first = decision.explore_first;
+        let (sel, sticky_notes) = self.apply_inner(decision.selection, explore_first);
 
-        let explained = self.apply_mab(decision);
-        let mut notes = vec![constraints, DecisionNote::DeterministicChoice];
-
-        for r in &explained.reasons {
-            match r {
-                DecisionReason::KeptPreviousDwell {
-                    previous,
-                    candidate,
-                    dwell,
-                    min_dwell,
-                } => notes.push(DecisionNote::StickyKeptPreviousDwell {
-                    previous: previous.clone(),
-                    candidate: candidate.clone(),
-                    dwell: *dwell,
-                    min_dwell: *min_dwell,
-                }),
-                DecisionReason::KeptPreviousMargin {
-                    previous,
-                    candidate,
-                    previous_score,
-                    candidate_score,
-                    margin,
-                    min_margin,
-                } => notes.push(DecisionNote::StickyKeptPreviousMargin {
-                    previous: previous.clone(),
-                    candidate: candidate.clone(),
-                    previous_score: *previous_score,
-                    candidate_score: *candidate_score,
-                    margin: *margin,
-                    min_margin: *min_margin,
-                }),
-                DecisionReason::Switched {
-                    previous,
-                    candidate,
-                    previous_score,
-                    candidate_score,
-                    margin,
-                } => notes.push(DecisionNote::StickySwitched {
-                    previous: previous.clone(),
-                    candidate: candidate.clone(),
-                    previous_score: *previous_score,
-                    candidate_score: *candidate_score,
-                    margin: *margin,
-                }),
-                // Don't copy-through these (too noisy; encoded by chosen + other notes).
-                DecisionReason::ExploreFirst { .. } | DecisionReason::BaseChoice { .. } => {}
-            }
+        let mut notes = vec![constraints];
+        if explore_first {
+            notes.push(DecisionNote::ExploreFirst);
+        } else {
+            notes.push(DecisionNote::DeterministicChoice);
         }
+        notes.extend(sticky_notes);
 
         Decision {
             policy: DecisionPolicy::Mab,
-            chosen: explained.selection.chosen,
+            chosen: sel.chosen,
             probs: None,
             notes,
         }
@@ -454,6 +337,6 @@ mod tests {
             config: cfg,
         };
         let out = sticky.apply(sel);
-        assert_eq!(out.selection.chosen, "x");
+        assert_eq!(out.chosen, "x");
     }
 }

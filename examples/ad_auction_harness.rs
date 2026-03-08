@@ -12,7 +12,7 @@
 use muxer::{
     coverage_pick_under_sampled, policy_fill_k_observed_with_coverage,
     select_k_without_replacement_by, select_mab_explain, stable_hash64, CoverageConfig,
-    LatencyGuardrail, MabConfig, Outcome, Summary, Window,
+    LatencyGuardrailConfig, MabConfig, Outcome, Summary, Window,
 };
 use std::collections::BTreeMap;
 
@@ -199,7 +199,7 @@ fn main() {
         min_fraction: 0.12,
         min_calls_floor: 1,
     };
-    let guard = LatencyGuardrail {
+    let guard = LatencyGuardrailConfig {
         max_mean_ms: Some(220.0),
         require_measured: false,
         allow_fewer: true,
