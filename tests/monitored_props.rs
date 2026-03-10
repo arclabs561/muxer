@@ -419,8 +419,7 @@ fn coverage_stage_can_bypass_require_measured_guardrail_when_it_fills_k() {
 
 #[test]
 fn novelty_guardrail_first_respects_require_measured() {
-    use muxer::policy_fill_k_observed_guardrail_first_with;
-    use muxer::LatencyGuardrailConfig;
+    use muxer::{policy_fill_generic, CoverageConfig, LatencyGuardrailConfig, PipelineOrder};
 
     // In guardrail-first mode, `require_measured=true` is a hard constraint for novelty:
     // unseen (calls==0) arms are filtered out before novelty pre-picks run.
@@ -434,16 +433,18 @@ fn novelty_guardrail_first_respects_require_measured() {
         }
     };
 
-    let fill = policy_fill_k_observed_guardrail_first_with(
+    let fill = policy_fill_generic(
         123,
         &arms,
         1,
         true, // novelty enabled
+        CoverageConfig::default(),
         LatencyGuardrailConfig {
             max_mean_ms: Some(1.0),
             require_measured: true,
             allow_fewer: true,
         },
+        PipelineOrder::GuardrailFirst,
         observed_calls,
         |eligible, _k| vec![eligible[0].clone()],
     );

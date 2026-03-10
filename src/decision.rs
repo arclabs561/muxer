@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 /// Which policy produced a decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum DecisionPolicy {
     Mab,
     Exp3Ix,
@@ -26,6 +27,7 @@ pub enum DecisionPolicy {
 /// over changing existing semantics.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum DecisionNote {
     /// Policy selected an untried arm (stable-order exploration).
     ExploreFirst,

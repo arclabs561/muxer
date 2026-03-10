@@ -94,6 +94,7 @@ use crate::{Outcome, Summary, Window};
 /// Categorical drift metric used for comparing two outcome distributions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum DriftMetric {
     /// Fisher–Rao (Rao) distance on the simplex (radians, in `[0, π]`).
     #[default]
@@ -107,6 +108,7 @@ pub enum DriftMetric {
 /// How to adjust an observed Bernoulli rate using a confidence bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum RateBoundMode {
     /// Do not adjust.
     #[default]

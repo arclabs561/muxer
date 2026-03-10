@@ -148,11 +148,6 @@ impl ThompsonSampling {
         Some((chosen, d.probs.unwrap_or_default()))
     }
 
-    /// Reset all learned state.
-    pub fn reset(&mut self) {
-        self.stats.clear();
-    }
-
     fn prior_for(&self, arm: &str) -> (f64, f64) {
         if let Some(&(a, b)) = self.cfg.priors.get(arm) {
             (a, b)

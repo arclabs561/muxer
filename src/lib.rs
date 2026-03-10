@@ -1,5 +1,5 @@
 //! `muxer`: deterministic, multi-objective routing primitives for
-//! piecewise-stationary multi-armed bandit problems with small action sets.
+//! piecewise-stationary multi-armed bandit problems.
 //!
 //! Given `K` arms (model versions, inference endpoints, backends, or any
 //! discrete action set selected repeatedly), the agent observes
@@ -39,7 +39,7 @@
 //!   per-cell (`arm × context-bin`) investigation.
 //! - [`WorstFirstConfig`] / [`worst_first_pick_k`]: post-detection investigation routing.
 //! - [`CoverageConfig`] / [`coverage_pick_under_sampled`]: maintenance sampling floor.
-//! - [`LatencyGuardrailConfig`] / [`apply_latency_guardrail`]: hard pre-filter by mean latency.
+//! - [`LatencyGuardrailConfig`]: hard pre-filter by mean latency.
 //! - [`PipelineOrder`] / [`policy_plan_generic`] / [`policy_fill_generic`]: harness glue.
 //!
 //! **Non-goals:**
@@ -242,6 +242,11 @@ use std::collections::{BTreeMap, VecDeque};
 /// threshold across all selection paths (Pareto scalarization, UCB, etc.).
 const TIEBREAK_EPS: f64 = 1e-12;
 
+/// Re-export [`logp::Error`] so callers can name the error type returned by
+/// [`Router::new`], [`Router::add_arm`], and [`TriageSession::new`] without
+/// depending on `logp` directly.
+pub use logp::Error as LogpError;
+
 mod decision;
 pub use decision::{Decision, DecisionNote, DecisionPolicy};
 
@@ -262,7 +267,7 @@ mod router;
 pub use router::{Router, RouterConfig, RouterDecision, RouterMode, RouterSnapshot};
 
 mod guardrail;
-pub use guardrail::{apply_latency_guardrail, LatencyGuardrailConfig, LatencyGuardrailDecision};
+pub use guardrail::LatencyGuardrailConfig;
 
 pub mod monitor;
 
@@ -301,7 +306,7 @@ pub use prior::apply_prior_counts_to_summary;
 mod worst_first;
 pub use worst_first::{
     context_bin, contextual_worst_first_pick_k, contextual_worst_first_pick_one,
-    worst_first_pick_k, worst_first_pick_one, CellStats, ContextBinConfig, ContextualCell,
+    worst_first_pick_k, worst_first_pick_one, ContextBinConfig, ContextualCell,
     ContextualCoverageTracker, WorstFirstConfig,
 };
 
@@ -309,16 +314,14 @@ mod harness;
 pub use harness::{
     guardrail_filter_observed, guardrail_filter_observed_elapsed, guardrail_filter_observed_strict,
     guardrail_filter_observed_strict_elapsed, policy_fill_generic,
-    policy_fill_k_observed_guardrail_first_with,
-    policy_fill_k_observed_guardrail_first_with_coverage, policy_fill_k_observed_with,
-    policy_fill_k_observed_with_coverage, policy_plan_generic, select_k_without_replacement_by,
-    PipelineOrder, PolicyFill, PolicyPlan,
+    policy_fill_k_observed_guardrail_first_with_coverage, policy_fill_k_observed_with_coverage,
+    policy_plan_generic, select_k_without_replacement_by, PipelineOrder, PolicyFill, PolicyPlan,
 };
 #[cfg(feature = "contextual")]
 pub use harness::{policy_fill_k_contextual, ContextualPolicyFill};
 
 mod triage;
-pub use triage::{ArmTriageState, OutcomeIdx, TriageSession, TriageSessionConfig};
+pub use triage::{OutcomeIdx, TriageSession, TriageSessionConfig};
 
 #[cfg(feature = "stochastic")]
 pub use monitor::{calibrate_cusum_threshold, simulate_cusum_null_max_scores};
@@ -355,6 +358,49 @@ pub struct Outcome {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub quality_score: Option<f64>,
+}
+
+impl Outcome {
+    /// Create an outcome with the `hard_junk => junk` invariant enforced.
+    ///
+    /// If `hard_junk` is true, `junk` is forced to true regardless of the
+    /// passed value.  This prevents the silent bug where `soft_junk_rate`
+    /// (`junk_rate - hard_junk_rate`) saturates to zero.
+    pub fn new(
+        ok: bool,
+        junk: bool,
+        hard_junk: bool,
+        cost_units: u64,
+        elapsed_ms: u64,
+    ) -> Self {
+        Self {
+            ok,
+            junk: junk || hard_junk,
+            hard_junk,
+            cost_units,
+            elapsed_ms,
+            quality_score: None,
+        }
+    }
+
+    /// Create an outcome with a quality score, enforcing `hard_junk => junk`.
+    pub fn with_quality(
+        ok: bool,
+        junk: bool,
+        hard_junk: bool,
+        cost_units: u64,
+        elapsed_ms: u64,
+        quality_score: f64,
+    ) -> Self {
+        Self {
+            ok,
+            junk: junk || hard_junk,
+            hard_junk,
+            cost_units,
+            elapsed_ms,
+            quality_score: Some(quality_score.clamp(0.0, 1.0)),
+        }
+    }
 }
 
 /// Sliding-window statistics for an arm.

@@ -4,7 +4,7 @@
 [![Documentation](https://docs.rs/muxer/badge.svg)](https://docs.rs/muxer)
 [![CI](https://github.com/arclabs561/muxer/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/muxer/actions/workflows/ci.yml)
 
-Deterministic, multi-objective routing for piecewise-stationary multi-armed bandit problems with small action sets.
+Deterministic, multi-objective routing for piecewise-stationary multi-armed bandit problems.
 
 ## Problem setting
 
@@ -51,7 +51,6 @@ Designed for 2--10 arms and moderate window sizes (hundreds to low thousands of 
 | **Coverage** | `CoverageConfig` | Maintenance sampling floor: keep all arms measured above a quota |
 | | `ControlConfig` / `pick_control_arms` | Reserve deterministic-random picks as a selection-bias anchor |
 | **Guardrails** | `LatencyGuardrailConfig` | Hard pre-filter by mean latency with stop-early semantics |
-| | Multi-pick (`select_mab_k_guardrailed_*`) | Select up to `k` unique arms per decision with per-round guardrails |
 | **Orchestration** | `Router` | Stateful session: owns per-arm state, full select/observe/triage lifecycle, dynamic arm add/remove |
 | | `suggested_window_cap` | SW-UCB-derived [6] window sizing: `sqrt(throughput / change_rate)` |
 | | `PipelineOrder` / `PolicyPlan` | Harness glue for composing custom routing pipelines |
@@ -105,14 +104,14 @@ See the [API docs](https://docs.rs/muxer) and [examples/EXPERIMENTS.md](examples
 
 ```toml
 [dependencies]
-muxer = "0.3.9"
+muxer = "0.3.11"
 ```
 
 Deterministic core only (no stochastic bandits):
 
 ```toml
 [dependencies]
-muxer = { version = "0.3.9", default-features = false }
+muxer = { version = "0.3.11", default-features = false }
 ```
 
 ## Quickstart
