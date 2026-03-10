@@ -104,7 +104,7 @@ See the [API docs](https://docs.rs/muxer) and [examples/EXPERIMENTS.md](examples
 
 ```toml
 [dependencies]
-muxer = "0.3.11"
+muxer = "0.3.12"
 ```
 
 Deterministic core only (no stochastic bandits):
