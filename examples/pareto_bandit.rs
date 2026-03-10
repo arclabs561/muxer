@@ -201,8 +201,8 @@ fn main() {
 
     println!("\n--- pare::ParetoFrontier (3 objectives) ---");
     println!(
-        "{:<14} {:>8} {:>10} {:>10}  {}",
-        "arm", "ok_rate", "mean_cost", "junk_rate", "status"
+        "{:<14} {:>8} {:>10} {:>10}  status",
+        "arm", "ok_rate", "mean_cost", "junk_rate"
     );
     for (name, vals, on_front) in &all_arm_objectives {
         let status = if *on_front { "FRONTIER" } else { "dominated" };

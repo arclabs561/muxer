@@ -25,6 +25,7 @@ use crate::{novelty_pick_unseen, stable_hash64, LatencyGuardrailConfig};
 /// - **`GuardrailFirst`**: the guardrail applies as a hard constraint *before* novelty/coverage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum PipelineOrder {
     /// Novelty/coverage pre-picks run first; guardrail applies to the remainder.
     /// Unseen arms can bypass `require_measured` if novelty fills all k.
@@ -34,9 +35,6 @@ pub enum PipelineOrder {
     /// run only within the guarded set.
     GuardrailFirst,
 }
-
-/// Re-export `LatencyGuardrailConfig` under the harness-friendly name used by some routers.
-pub(crate) type LatencyGuardrail = LatencyGuardrailConfig;
 
 /// Planned policy result for a single selection step.
 ///
@@ -76,7 +74,7 @@ pub struct PolicyFill {
 pub fn guardrail_filter_observed<F>(
     seed: u64,
     arms: &[String],
-    guard: LatencyGuardrail,
+    guard: LatencyGuardrailConfig,
     mut observed: F,
 ) -> (Vec<String>, bool)
 where
@@ -120,7 +118,7 @@ where
 pub fn guardrail_filter_observed_strict<F>(
     seed: u64,
     arms: &[String],
-    guard: LatencyGuardrail,
+    guard: LatencyGuardrailConfig,
     mut observed: F,
 ) -> (Vec<String>, bool)
 where
@@ -153,7 +151,7 @@ where
 pub fn guardrail_filter_observed_elapsed<F>(
     seed: u64,
     arms: &[String],
-    guard: LatencyGuardrail,
+    guard: LatencyGuardrailConfig,
     mut observed: F,
 ) -> (Vec<String>, bool)
 where
@@ -174,7 +172,7 @@ where
 pub fn guardrail_filter_observed_strict_elapsed<F>(
     seed: u64,
     arms: &[String],
-    guard: LatencyGuardrail,
+    guard: LatencyGuardrailConfig,
     mut observed: F,
 ) -> (Vec<String>, bool)
 where
@@ -202,7 +200,7 @@ pub fn policy_plan_generic<F>(
     k: usize,
     novelty_enabled: bool,
     coverage: CoverageConfig,
-    guard: LatencyGuardrail,
+    guard: LatencyGuardrailConfig,
     order: PipelineOrder,
     mut observed: F,
 ) -> PolicyPlan
@@ -323,7 +321,7 @@ pub fn policy_fill_generic<F, P>(
     k: usize,
     novelty_enabled: bool,
     coverage: CoverageConfig,
-    guard: LatencyGuardrail,
+    guard: LatencyGuardrailConfig,
     order: PipelineOrder,
     mut observed: F,
     mut pick_rest: P,
@@ -462,12 +460,13 @@ where
 }
 
 /// Delegates to [`policy_fill_generic`] with `PipelineOrder::NoveltyFirst`.
-pub fn policy_fill_k_observed_with<F, P>(
+#[cfg(feature = "contextual")]
+pub(crate) fn policy_fill_k_observed_with<F, P>(
     seed: u64,
     arms: &[String],
     k: usize,
     novelty_enabled: bool,
-    guard: LatencyGuardrail,
+    guard: LatencyGuardrailConfig,
     observed: F,
     pick_rest: P,
 ) -> PolicyFill
@@ -489,12 +488,13 @@ where
 }
 
 /// Delegates to [`policy_fill_generic`] with `PipelineOrder::GuardrailFirst`.
-pub fn policy_fill_k_observed_guardrail_first_with<F, P>(
+#[allow(dead_code)]
+pub(crate) fn policy_fill_k_observed_guardrail_first_with<F, P>(
     seed: u64,
     arms: &[String],
     k: usize,
     novelty_enabled: bool,
-    guard: LatencyGuardrail,
+    guard: LatencyGuardrailConfig,
     observed: F,
     pick_rest: P,
 ) -> PolicyFill
@@ -523,7 +523,7 @@ pub fn policy_fill_k_observed_with_coverage<F, P>(
     k: usize,
     novelty_enabled: bool,
     coverage: CoverageConfig,
-    guard: LatencyGuardrail,
+    guard: LatencyGuardrailConfig,
     observed: F,
     pick_rest: P,
 ) -> PolicyFill
@@ -552,7 +552,7 @@ pub fn policy_fill_k_observed_guardrail_first_with_coverage<F, P>(
     k: usize,
     novelty_enabled: bool,
     coverage: CoverageConfig,
-    guard: LatencyGuardrail,
+    guard: LatencyGuardrailConfig,
     observed: F,
     pick_rest: P,
 ) -> PolicyFill
@@ -679,7 +679,7 @@ pub fn policy_fill_k_contextual<F>(
     arms: &[String],
     k: usize,
     novelty_enabled: bool,
-    guard: LatencyGuardrail,
+    guard: LatencyGuardrailConfig,
     linucb: &mut crate::LinUcb,
     context: &[f64],
     observed: F,
@@ -734,16 +734,16 @@ mod tests {
         vec!["a".to_string(), "b".to_string(), "c".to_string()]
     }
 
-    fn guard_strict(max_ms: f64) -> LatencyGuardrail {
-        LatencyGuardrail {
+    fn guard_strict(max_ms: f64) -> LatencyGuardrailConfig {
+        LatencyGuardrailConfig {
             max_mean_ms: Some(max_ms),
             require_measured: true,
             allow_fewer: false,
         }
     }
 
-    fn guard_soft(max_ms: f64) -> LatencyGuardrail {
-        LatencyGuardrail {
+    fn guard_soft(max_ms: f64) -> LatencyGuardrailConfig {
+        LatencyGuardrailConfig {
             max_mean_ms: Some(max_ms),
             require_measured: false,
             allow_fewer: true,
@@ -824,7 +824,7 @@ mod tests {
             2,
             true,
             CoverageConfig::default(),
-            LatencyGuardrail {
+            LatencyGuardrailConfig {
                 max_mean_ms: Some(50.0),
                 require_measured: true,
                 allow_fewer: true,
@@ -881,7 +881,7 @@ mod tests {
             1,
             true,
             CoverageConfig::default(),
-            LatencyGuardrail::default(),
+            LatencyGuardrailConfig::default(),
             PipelineOrder::NoveltyFirst,
             |b| if b == "a" { (0, 0) } else { (5, 100) },
             |_eligible, _k| panic!("pick_rest must not be called when prechosen fills k"),
@@ -901,7 +901,7 @@ mod tests {
             2,
             true,
             CoverageConfig::default(),
-            LatencyGuardrail::default(),
+            LatencyGuardrailConfig::default(),
             PipelineOrder::NoveltyFirst,
             |b| if b == "a" { (0, 0) } else { (5, 100) },
             |eligible, _k| eligible.to_vec(),
@@ -928,7 +928,7 @@ mod tests {
             2,
             false,
             CoverageConfig::default(),
-            LatencyGuardrail {
+            LatencyGuardrailConfig {
                 max_mean_ms: Some(10.0),
                 require_measured: true,
                 allow_fewer: true,
@@ -949,7 +949,7 @@ mod tests {
         let (eligible, stop_early) = guardrail_filter_observed(
             42,
             &arms,
-            LatencyGuardrail {
+            LatencyGuardrailConfig {
                 max_mean_ms: Some(10.0),
                 require_measured: false,
                 allow_fewer: false,
@@ -967,7 +967,7 @@ mod tests {
         let (eligible, stop_early) = guardrail_filter_observed_strict(
             42,
             &arms,
-            LatencyGuardrail {
+            LatencyGuardrailConfig {
                 max_mean_ms: Some(10.0),
                 require_measured: false,
                 allow_fewer: true,

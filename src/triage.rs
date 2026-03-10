@@ -300,14 +300,6 @@ impl TriageSession {
         }
     }
 
-    /// Reset all arms' CUSUM banks and alarm states.
-    pub fn reset_all(&mut self) {
-        for (bank, alarmed) in self.banks.values_mut() {
-            bank.reset();
-            *alarmed = false;
-        }
-    }
-
     /// Read-only access to the coverage tracker.
     pub fn tracker(&self) -> &ContextualCoverageTracker {
         &self.tracker

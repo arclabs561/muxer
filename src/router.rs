@@ -184,6 +184,7 @@ impl RouterConfig {
 /// Current operating mode of the [`Router`].
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum RouterMode {
     /// Normal operation: MAB selection with coverage/novelty/guardrail.
     Normal,
@@ -345,6 +346,13 @@ impl Router {
         if self.arms.contains(&arm) {
             return Ok(());
         }
+        // Rebuild triage first so a failure doesn't leave orphan map entries.
+        if let Some(ref mut t) = self.triage {
+            let tcfg = self.cfg.triage_cfg.clone().unwrap_or_default();
+            let mut all_arms = self.arms.clone();
+            all_arms.push(arm.clone());
+            *t = TriageSession::new(&all_arms, tcfg)?;
+        }
         self.windows
             .insert(arm.clone(), Window::new(self.cfg.window_cap.max(1)));
         if let Some(ref mut m) = self.monitored {
@@ -352,13 +360,6 @@ impl Router {
                 arm.clone(),
                 MonitoredWindow::new(self.cfg.baseline_cap.max(1), self.cfg.recent_cap.max(1)),
             );
-        }
-        if let Some(ref mut t) = self.triage {
-            let tcfg = self.cfg.triage_cfg.clone().unwrap_or_default();
-            // Rebuild triage with the new arm included.
-            let mut all_arms = self.arms.clone();
-            all_arms.push(arm.clone());
-            *t = TriageSession::new(&all_arms, tcfg)?;
         }
         self.arms.push(arm);
         Ok(())
@@ -519,7 +520,7 @@ impl Router {
             |arm| obs_snap.get(arm).copied().unwrap_or((0, 0)),
             |eligible, need| {
                 // MAB selection over eligible arms.
-                self.select_mab_round(eligible, need, &sum_snap, seed ^ 0x4D41_4200)
+                self.select_mab_round(eligible, need, &sum_snap)
             },
         );
 
@@ -554,6 +555,10 @@ impl Router {
     /// The context is used for per-cell triage if [`RouterConfig::triage_cfg`]
     /// is set.  Pass `&[]` if you have no features.
     pub fn observe_with_context(&mut self, arm: &str, outcome: Outcome, context: &[f64]) {
+        let known = self.windows.contains_key(arm);
+        if !known {
+            return;
+        }
         if let Some(w) = self.windows.get_mut(arm) {
             w.push(outcome);
         }
@@ -704,7 +709,6 @@ impl Router {
         eligible: &[String],
         need: usize,
         sum_snap: &BTreeMap<String, Summary>,
-        _seed: u64,
     ) -> Vec<String> {
         if eligible.is_empty() || need == 0 {
             return Vec::new();

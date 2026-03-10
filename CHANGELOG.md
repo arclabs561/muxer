@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.3.11]
+
+### Changed
+
+- **`Outcome` constructors**: `Outcome::new()` and `Outcome::with_quality()` enforce
+  `hard_junk => junk` at construction time and clamp `quality_score` to `[0, 1]`.
+  Direct field construction still works but the invariant is the caller's responsibility.
+- **`RouterMode`, `PipelineOrder`, `DecisionPolicy`, `DecisionNote`, `DriftMetric`,
+  `RateBoundMode`** are now `#[non_exhaustive]` -- matching arms must include a wildcard.
+- **`Router::observe`** silently ignores unknown arm names instead of incrementing
+  `total_observations` (was a counter-divergence bug).
+- **`Router::add_arm`** reorders operations: triage rebuild happens before map inserts,
+  preventing orphan entries on rebuild failure.
+
+### Added
+
+- **`LogpError` re-export**: `muxer::LogpError` re-exports `logp::Error` so callers
+  can name the error type without depending on `logp` directly.
+- **5 property tests** (`tests/frontier_constraint_props.rs`): Pareto frontier
+  non-domination, chosen-on-frontier, constraint fallback correctness,
+  `Outcome::new` invariant, `Outcome::with_quality` invariant.
+
+### Removed
+
+- **`apply_latency_guardrail`** function and **`LatencyGuardrailDecision`** struct
+  (dead code -- no callers inside or outside the crate).
+- **`ThompsonSampling::reset`** and **`TriageSession::reset_all`** (dead methods).
+- **`LatencyGuardrail` type alias** (replaced by direct `LatencyGuardrailConfig` usage).
+- **~150 lines** of dead code, unused re-exports, and redundant abstractions.
+
+## [0.3.10]
+
+### Changed
+
+- **Dead code removal**: removed ~1,300 lines of duplicate abstractions and unreachable
+  code paths identified during codebase audit.
+
 ## [0.3.9]
 
 ### Changed
