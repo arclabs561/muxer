@@ -232,6 +232,7 @@
 //!   adaptive design-measure analysis.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use pare::{Direction, ParetoFrontier};
 use std::collections::{BTreeMap, VecDeque};
