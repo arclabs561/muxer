@@ -88,14 +88,7 @@ fn main() {
             let junk = ok && rng.random::<f64>() < junk_prob;
             router.observe(
                 arm,
-                Outcome {
-                    ok,
-                    junk,
-                    hard_junk: !ok,
-                    cost_units: 3,
-                    elapsed_ms: rng.random_range(50..150),
-                    quality_score: None,
-                },
+                Outcome::new(ok, junk, !ok, 3, rng.random_range(50..150)),
             );
         }
     }
@@ -118,23 +111,9 @@ fn main() {
         for arm in &d.chosen {
             let outcome = if arm == "svc-beta" {
                 // Inject hard failures on beta.
-                Outcome {
-                    ok: false,
-                    junk: true,
-                    hard_junk: true,
-                    cost_units: 3,
-                    elapsed_ms: 500,
-                    quality_score: None,
-                }
+                Outcome::failure(3, 500)
             } else {
-                Outcome {
-                    ok: true,
-                    junk: false,
-                    hard_junk: false,
-                    cost_units: 3,
-                    elapsed_ms: rng.random_range(50..150),
-                    quality_score: None,
-                }
+                Outcome::success(3, rng.random_range(50..150))
             };
             router.observe_with_context(arm, outcome, &[0.5_f64]);
         }

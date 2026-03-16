@@ -12,25 +12,11 @@
 use muxer::{Outcome, Router, RouterConfig, TriageSessionConfig};
 
 fn clean() -> Outcome {
-    Outcome {
-        ok: true,
-        junk: false,
-        hard_junk: false,
-        cost_units: 2,
-        elapsed_ms: 80,
-        quality_score: None,
-    }
+    Outcome::success(2, 80)
 }
 
 fn degraded() -> Outcome {
-    Outcome {
-        ok: false,
-        junk: true,
-        hard_junk: true,
-        cost_units: 2,
-        elapsed_ms: 300,
-        quality_score: None,
-    }
+    Outcome::failure(2, 300)
 }
 
 fn main() {
@@ -56,15 +42,7 @@ fn main() {
     println!("\n=== 2. Quality divergence ===");
 
     for _ in 0..30 {
-        router.observe(
-            "arm-b",
-            Outcome {
-                ok: true,
-                junk: true,
-                hard_junk: false,
-                ..clean()
-            },
-        );
+        router.observe("arm-b", Outcome::degraded(2, 80));
         router.observe("arm-a", clean());
     }
 

@@ -32,15 +32,7 @@ fn main() {
         let elapsed_ms = t.mean_latency_ms.saturating_add(rng.random_range(0..=250));
 
         (
-            Outcome {
-                ok,
-                // initial label is unknown (set later)
-                junk: false,
-                hard_junk: false,
-                cost_units,
-                elapsed_ms,
-                quality_score: None,
-            },
+            Outcome::new(ok, false, false, cost_units, elapsed_ms),
             is_junk,
             is_hard,
         )

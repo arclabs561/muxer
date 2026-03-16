@@ -28,8 +28,8 @@ use crate::monitor::{DriftConfig, MonitoredWindow};
 use crate::{
     policy_fill_generic, select_mab_explain, select_mab_monitored_explain_with_summaries,
     split_control_budget, worst_first_pick_k, ContextualCell, ControlConfig, CoverageConfig,
-    DriftMetric, LatencyGuardrailConfig, MabConfig, Outcome, OutcomeIdx, PipelineOrder, Summary,
-    TriageSession, TriageSessionConfig, Window, WorstFirstConfig,
+    DriftMetric, LatencyGuardrailConfig, MonitoredMabConfig, Outcome, OutcomeIdx, PipelineOrder,
+    Summary, TriageSession, TriageSessionConfig, Window, WorstFirstConfig,
 };
 use std::collections::BTreeMap;
 
@@ -45,8 +45,8 @@ use std::collections::BTreeMap;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RouterConfig {
     // --- Selection ---
-    /// MAB selection configuration (UCB weights, constraints, etc.).
-    pub mab: MabConfig,
+    /// MAB selection configuration (base weights + monitoring guards).
+    pub mab: MonitoredMabConfig,
     /// Drift config for monitored selection.
     pub drift: DriftConfig,
     /// Capacity of the sliding selection window per arm.
@@ -96,7 +96,7 @@ pub struct RouterConfig {
 impl Default for RouterConfig {
     fn default() -> Self {
         Self {
-            mab: MabConfig::default(),
+            mab: MonitoredMabConfig::default(),
             drift: DriftConfig {
                 metric: DriftMetric::Hellinger,
                 tol: 1e-9,
@@ -215,6 +215,7 @@ impl RouterMode {
 
 /// Output of a single [`Router::select`] call.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RouterDecision {
     /// Chosen arms in order (primary picks first, then MAB fills).
     pub chosen: Vec<String>,
@@ -271,8 +272,7 @@ impl RouterDecision {
 /// let d = router.select(1, 0);         // pick 1 arm
 /// let arm = d.primary().unwrap().to_string();
 /// // ... make the call ...
-/// let outcome = Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 50, quality_score: None };
-/// router.observe(&arm, outcome);       // record result
+/// router.observe(&arm, Outcome::success(1, 50)); // record result
 ///
 /// // After detecting a regression:
 /// if router.mode().is_triage() {
@@ -366,7 +366,11 @@ impl Router {
     }
 
     /// Remove an arm. Its windows and triage state are discarded.
-    pub fn remove_arm(&mut self, arm: &str) {
+    ///
+    /// Returns an error if triage is enabled and the CUSUM bank cannot be
+    /// rebuilt for the remaining arms. In that case, triage is disabled
+    /// (set to `None`) and the error is returned so the caller knows.
+    pub fn remove_arm(&mut self, arm: &str) -> Result<(), logp::Error> {
         self.arms.retain(|a| a != arm);
         self.windows.remove(arm);
         if let Some(ref mut m) = self.monitored {
@@ -375,8 +379,15 @@ impl Router {
         // TriageSession doesn't support removal; rebuild if needed.
         if self.triage.is_some() {
             let tcfg = self.cfg.triage_cfg.clone().unwrap_or_default();
-            self.triage = TriageSession::new(&self.arms, tcfg).ok();
+            match TriageSession::new(&self.arms, tcfg) {
+                Ok(t) => self.triage = Some(t),
+                Err(e) => {
+                    self.triage = None;
+                    return Err(e);
+                }
+            }
         }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -384,6 +395,11 @@ impl Router {
     // -----------------------------------------------------------------------
 
     /// Select up to `k` arms for this decision round.
+    ///
+    /// `seed` controls deterministic tie-breaking and control-arm shuffling.
+    /// Pass a monotonic counter (e.g. request ID) for reproducible selections,
+    /// or a random value for stochastic tie-breaking.  Same `seed` with the
+    /// same window state produces the same picks.
     ///
     /// Does not mutate any window state.  Call [`Router::observe`] afterwards to record
     /// outcomes.
@@ -545,19 +561,22 @@ impl Router {
 
     /// Record an outcome for an arm (no feature context).
     ///
-    /// Updates all windows and the triage detector.
-    pub fn observe(&mut self, arm: &str, outcome: Outcome) {
-        self.observe_with_context(arm, outcome, &[]);
+    /// Returns `false` if `arm` is not registered with this router (the
+    /// observation is silently dropped).  Returns `true` on success.
+    pub fn observe(&mut self, arm: &str, outcome: Outcome) -> bool {
+        self.observe_with_context(arm, outcome, &[])
     }
 
     /// Record an outcome with a feature context vector.
     ///
     /// The context is used for per-cell triage if [`RouterConfig::triage_cfg`]
     /// is set.  Pass `&[]` if you have no features.
-    pub fn observe_with_context(&mut self, arm: &str, outcome: Outcome, context: &[f64]) {
+    ///
+    /// Returns `false` if `arm` is not registered with this router.
+    pub fn observe_with_context(&mut self, arm: &str, outcome: Outcome, context: &[f64]) -> bool {
         let known = self.windows.contains_key(arm);
         if !known {
-            return;
+            return false;
         }
         if let Some(w) = self.windows.get_mut(arm) {
             w.push(outcome);
@@ -572,6 +591,7 @@ impl Router {
             t.observe(arm, idx, context);
         }
         self.total_observations += 1;
+        true
     }
 
     /// Update the most recent outcome's continuous quality score (delayed assessment).
@@ -672,6 +692,14 @@ impl Router {
             .unwrap_or_default()
     }
 
+    /// Current summaries for all arms.
+    pub fn summaries(&self) -> BTreeMap<String, Summary> {
+        self.windows
+            .iter()
+            .map(|(arm, w)| (arm.clone(), w.summary()))
+            .collect()
+    }
+
     /// Mean quality score for an arm, or `None` if no `quality_score` has been set.
     ///
     /// Convenience wrapper around [`Window::mean_quality_score`].
@@ -734,7 +762,7 @@ impl Router {
                     self.cfg.mab,
                 )
             } else {
-                select_mab_explain(&remaining, sum_snap, self.cfg.mab)
+                select_mab_explain(&remaining, sum_snap, self.cfg.mab.base)
             };
 
             let pick = d.selection.chosen.clone();
@@ -1043,7 +1071,7 @@ mod tests {
     #[test]
     fn router_remove_arm_not_selected() {
         let mut r = Router::new(arms(3), RouterConfig::default()).unwrap();
-        r.remove_arm("arm1");
+        r.remove_arm("arm1").unwrap();
         for _ in 0..100 {
             let d = r.select(1, 0);
             assert_ne!(d.chosen[0], "arm1", "removed arm must not be selected");

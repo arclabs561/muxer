@@ -36,10 +36,7 @@ for round in 0..100_u64 {
     // ... make the call ...
 
     // Step 1: record outcome immediately.
-    router.observe(&arm, Outcome {
-        ok: true, junk: false, hard_junk: false,
-        cost_units: 5, elapsed_ms: 200, quality_score: None,
-    });
+    router.observe(&arm, Outcome::success(5, 200));
 
     // Step 2 (delayed): update quality after scoring.
     router.set_last_junk_level(&arm, false, false); // or true when junk

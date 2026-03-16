@@ -6,14 +6,7 @@ fn main() {
     let mut w = Window::new(5);
 
     // Request returned OK; we don't yet know junk-ness.
-    w.push(Outcome {
-        ok: true,
-        junk: false,
-        hard_junk: false,
-        cost_units: 2,
-        elapsed_ms: 420,
-        quality_score: None,
-    });
+    w.push(Outcome::success(2, 420));
 
     // Later, downstream validation decides it was "soft junk".
     w.set_last_junk_level(true, false);

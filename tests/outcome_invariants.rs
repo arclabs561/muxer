@@ -39,14 +39,8 @@ fn arb_outcome() -> impl Strategy<Value = Outcome> {
         0u64..100,
         0u64..5_000,
     )
-        .prop_map(|(ok, junk, hard_junk, cost_units, elapsed_ms)| Outcome {
-            ok,
-            // hard_junk implies junk: callers are expected to follow this contract.
-            junk: junk || hard_junk,
-            hard_junk,
-            cost_units,
-            elapsed_ms,
-            quality_score: None,
+        .prop_map(|(ok, junk, hard_junk, cost_units, elapsed_ms)| {
+            Outcome::new(ok, junk, hard_junk, cost_units, elapsed_ms)
         })
 }
 
@@ -121,14 +115,7 @@ fn set_last_junk_level_hard_junk_cleared_when_junk_false() {
     // Contract: `set_last_junk_level(false, true)` must NOT set hard_junk,
     // because hard_junk is only meaningful when junk=true.
     let mut w = Window::new(10);
-    w.push(Outcome {
-        ok: true,
-        junk: false,
-        hard_junk: false,
-        cost_units: 0,
-        elapsed_ms: 0,
-        quality_score: None,
-    });
+    w.push(Outcome::success(0, 0));
     w.set_last_junk_level(false, true); // junk=false, hard_junk=true (invalid combo)
     let s = w.summary();
     assert_eq!(s.hard_junk, 0, "hard_junk must be cleared when junk=false");
@@ -138,14 +125,7 @@ fn set_last_junk_level_hard_junk_cleared_when_junk_false() {
 #[test]
 fn set_last_junk_level_both_set_when_both_true() {
     let mut w = Window::new(10);
-    w.push(Outcome {
-        ok: false,
-        junk: false,
-        hard_junk: false,
-        cost_units: 0,
-        elapsed_ms: 0,
-        quality_score: None,
-    });
+    w.push(Outcome::new(false, false, false, 0, 0));
     w.set_last_junk_level(true, true);
     let s = w.summary();
     assert_eq!(s.junk, 1, "junk must be 1");
@@ -156,14 +136,7 @@ fn set_last_junk_level_both_set_when_both_true() {
 fn set_last_junk_level_soft_junk_only() {
     // junk=true but hard_junk=false → soft junk only.
     let mut w = Window::new(10);
-    w.push(Outcome {
-        ok: true,
-        junk: false,
-        hard_junk: false,
-        cost_units: 0,
-        elapsed_ms: 0,
-        quality_score: None,
-    });
+    w.push(Outcome::success(0, 0));
     w.set_last_junk_level(true, false);
     let s = w.summary();
     assert_eq!(s.junk, 1);
@@ -415,14 +388,7 @@ proptest! {
 fn mean_quality_score_returns_none_with_no_scores() {
     let mut w = Window::new(10);
     for _ in 0..5 {
-        w.push(Outcome {
-            ok: true,
-            junk: false,
-            hard_junk: false,
-            cost_units: 1,
-            elapsed_ms: 50,
-            quality_score: None,
-        });
+        w.push(Outcome::success(1, 50));
     }
     assert!(w.mean_quality_score().is_none());
     let s = w.summary();
@@ -432,30 +398,9 @@ fn mean_quality_score_returns_none_with_no_scores() {
 #[test]
 fn mean_quality_score_averages_set_scores() {
     let mut w = Window::new(10);
-    w.push(Outcome {
-        ok: true,
-        junk: false,
-        hard_junk: false,
-        cost_units: 1,
-        elapsed_ms: 50,
-        quality_score: Some(0.8),
-    });
-    w.push(Outcome {
-        ok: true,
-        junk: false,
-        hard_junk: false,
-        cost_units: 1,
-        elapsed_ms: 50,
-        quality_score: Some(0.6),
-    });
-    w.push(Outcome {
-        ok: true,
-        junk: false,
-        hard_junk: false,
-        cost_units: 1,
-        elapsed_ms: 50,
-        quality_score: None,
-    });
+    w.push(Outcome::with_quality(true, false, false, 1, 50, 0.8));
+    w.push(Outcome::with_quality(true, false, false, 1, 50, 0.6));
+    w.push(Outcome::success(1, 50));
     let q = w.mean_quality_score().unwrap();
     assert!((q - 0.7).abs() < 1e-10, "mean of 0.8+0.6 = 0.7, got {q}");
     let s = w.summary();
@@ -465,14 +410,7 @@ fn mean_quality_score_averages_set_scores() {
 #[test]
 fn set_last_quality_score_clamps_and_updates() {
     let mut w = Window::new(5);
-    w.push(Outcome {
-        ok: true,
-        junk: false,
-        hard_junk: false,
-        cost_units: 0,
-        elapsed_ms: 0,
-        quality_score: None,
-    });
+    w.push(Outcome::success(0, 0));
     w.set_last_quality_score(1.5); // clamped to 1.0
     assert_eq!(w.iter().last().unwrap().quality_score, Some(1.0));
     w.set_last_quality_score(-0.5); // clamped to 0.0

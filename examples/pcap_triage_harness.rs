@@ -154,14 +154,14 @@ fn simulated_outcome(round: u64, engine: &str, slice: PcapSlice) -> Outcome {
         _ => 3,
     };
 
-    Outcome {
-        ok: !hard,
+    Outcome::with_quality(
+        !hard,
         junk,
-        hard_junk: hard,
-        cost_units: base_cost,
-        elapsed_ms: base_latency + protocol_latency + jitter,
-        quality_score: Some(quality),
-    }
+        hard,
+        base_cost,
+        base_latency + protocol_latency + jitter,
+        quality,
+    )
 }
 
 fn main() {

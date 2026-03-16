@@ -487,34 +487,6 @@ where
     )
 }
 
-/// Delegates to [`policy_fill_generic`] with `PipelineOrder::GuardrailFirst`.
-#[allow(dead_code)]
-pub(crate) fn policy_fill_k_observed_guardrail_first_with<F, P>(
-    seed: u64,
-    arms: &[String],
-    k: usize,
-    novelty_enabled: bool,
-    guard: LatencyGuardrailConfig,
-    observed: F,
-    pick_rest: P,
-) -> PolicyFill
-where
-    F: FnMut(&str) -> (u64, u64),
-    P: FnMut(&[String], usize) -> Vec<String>,
-{
-    policy_fill_generic(
-        seed,
-        arms,
-        k,
-        novelty_enabled,
-        CoverageConfig::default(),
-        guard,
-        PipelineOrder::GuardrailFirst,
-        observed,
-        pick_rest,
-    )
-}
-
 /// Delegates to [`policy_fill_generic`] with `PipelineOrder::NoveltyFirst` and caller-provided coverage.
 #[allow(clippy::too_many_arguments)]
 pub fn policy_fill_k_observed_with_coverage<F, P>(
@@ -577,7 +549,7 @@ where
 ///
 /// Callers provide a picker that can return up to `k_remaining` candidates for the current
 /// remaining set; the driver enforces de-duplication and ordering.
-pub fn select_k_without_replacement_by_with_meta<F, M>(
+pub(crate) fn select_k_without_replacement_by_with_meta<F, M>(
     seed: u64,
     items: &[String],
     k: usize,

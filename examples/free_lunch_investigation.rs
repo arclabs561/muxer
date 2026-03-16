@@ -62,39 +62,11 @@ fn main() {
 
     fn outcome_from_cat(idx: usize) -> Outcome {
         match idx {
-            0 => Outcome {
-                ok: true,
-                junk: false,
-                hard_junk: false,
-                cost_units: 0,
-                elapsed_ms: 0,
-                quality_score: None,
-            },
-            1 => Outcome {
-                ok: true,
-                junk: true,
-                hard_junk: false,
-                cost_units: 0,
-                elapsed_ms: 0,
-                quality_score: None,
-            },
-            2 => Outcome {
-                ok: true,
-                junk: true,
-                hard_junk: true,
-                cost_units: 0,
-                elapsed_ms: 0,
-                quality_score: None,
-            },
-            _ => Outcome {
-                ok: false,
-                // In muxer-style routing, operational failures are typically treated as “hard junk”.
-                junk: true,
-                hard_junk: true,
-                cost_units: 0,
-                elapsed_ms: 0,
-                quality_score: None,
-            },
+            0 => Outcome::success(0, 0),
+            1 => Outcome::degraded(0, 0),
+            2 => Outcome::new(true, true, true, 0, 0),
+            // In muxer-style routing, operational failures are typically treated as “hard junk”.
+            _ => Outcome::failure(0, 0),
         }
     }
 

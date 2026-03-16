@@ -49,14 +49,16 @@ fn f64_or0(x: f64) -> f64 {
 
 /// Compute the scalar score used for selection tie-breaking (higher is better),
 /// derived from `CandidateDebug` and `MabConfig`.
+///
+/// This covers the core multi-objective weights.  Monitoring penalty weights
+/// (drift, catKL, CUSUM) live on [`crate::MonitoredMabConfig`] and are not
+/// included here -- those scores are still present on [`CandidateDebug`] for
+/// inspection, but the sticky wrapper operates on the base selection config.
 pub fn mab_scalar_score(c: &CandidateDebug, cfg: MabConfig) -> f64 {
     let cost_w = f64_or0(cfg.cost_weight);
     let lat_w = f64_or0(cfg.latency_weight);
     let junk_w = f64_or0(cfg.junk_weight);
     let hard_w = f64_or0(cfg.hard_junk_weight);
-    let drift_w = f64_or0(cfg.drift_weight);
-    let catkl_w = f64_or0(cfg.catkl_weight);
-    let cusum_w = f64_or0(cfg.cusum_weight);
 
     f64_or0(c.objective_success)
         - cost_w * f64_or0(c.mean_cost_units)
@@ -64,9 +66,6 @@ pub fn mab_scalar_score(c: &CandidateDebug, cfg: MabConfig) -> f64 {
         // Match `select_mab` semantics: soft junk weight should not double-count hard junk.
         - junk_w * f64_or0(c.soft_junk_rate)
         - hard_w * f64_or0(c.hard_junk_rate)
-        - drift_w * f64_or0(c.drift_score.unwrap_or(0.0))
-        - catkl_w * f64_or0(c.catkl_score.unwrap_or(0.0))
-        - cusum_w * f64_or0(c.cusum_score.unwrap_or(0.0))
 }
 
 /// Stateful stickiness wrapper for deterministic `select_mab`.

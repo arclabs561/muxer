@@ -7,7 +7,7 @@ fn main() {
 fn main() {
     use muxer::{
         monitor::{DriftConfig, DriftMetric},
-        select_mab_monitored_decide, MabConfig, MonitoredWindow, Outcome,
+        select_mab_monitored_decide, MabConfig, MonitoredMabConfig, MonitoredWindow, Outcome,
     };
     use rand::rngs::StdRng;
     use rand::Rng;
@@ -27,14 +27,13 @@ fn main() {
         let ok = rng.random::<f64>() < t.ok_p;
         let junk = ok && (rng.random::<f64>() < t.junk_p);
         let hard_junk = junk && (rng.random::<f64>() < t.hard_junk_p);
-        Outcome {
+        Outcome::new(
             ok,
             junk,
             hard_junk,
-            cost_units: t.mean_cost_units.saturating_add(rng.random_range(0..=2)),
-            elapsed_ms: t.mean_latency_ms.saturating_add(rng.random_range(0..=200)),
-            quality_score: None,
-        }
+            t.mean_cost_units.saturating_add(rng.random_range(0..=2)),
+            t.mean_latency_ms.saturating_add(rng.random_range(0..=200)),
+        )
     }
 
     // Stable order is part of determinism.
@@ -103,17 +102,18 @@ fn main() {
     // Selection config:
     // - same multi-objective tuning as usual
     // - plus a drift guard and drift penalty
-    let cfg = MabConfig {
-        // Prefer low latency (so "fast" wins pre-change).
-        cost_weight: 0.10,
-        latency_weight: 0.0040,
-        junk_weight: 1.2,
-        hard_junk_weight: 2.0,
-        // monitored bits
+    let cfg = MonitoredMabConfig {
+        base: MabConfig {
+            cost_weight: 0.10,
+            latency_weight: 0.0040,
+            junk_weight: 1.2,
+            hard_junk_weight: 2.0,
+            ..MabConfig::default()
+        },
         max_drift: Some(0.12),
         drift_metric: DriftMetric::Hellinger,
         drift_weight: 2.0,
-        ..MabConfig::default()
+        ..MonitoredMabConfig::default()
     };
 
     let mut rng = StdRng::seed_from_u64(123);

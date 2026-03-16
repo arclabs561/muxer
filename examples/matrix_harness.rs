@@ -145,14 +145,14 @@ fn simulated_outcome(round: u64, backend: &str, slice: Slice) -> Outcome {
     };
     let task_cost = if slice.task == "re" { 2 } else { 0 };
 
-    Outcome {
+    Outcome::with_quality(
         ok,
         junk,
-        hard_junk: hard,
-        cost_units: base_cost + task_cost,
-        elapsed_ms: base_ms + task_ms + jitter,
-        quality_score: Some(quality),
-    }
+        hard,
+        base_cost + task_cost,
+        base_ms + task_ms + jitter,
+        quality,
+    )
 }
 
 fn main() {
