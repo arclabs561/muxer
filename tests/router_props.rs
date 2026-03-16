@@ -4,25 +4,11 @@ use muxer::{Outcome, Router, RouterConfig, RouterMode, TriageSessionConfig};
 use proptest::prelude::*;
 
 fn clean() -> Outcome {
-    Outcome {
-        ok: true,
-        junk: false,
-        hard_junk: false,
-        cost_units: 1,
-        elapsed_ms: 50,
-        quality_score: None,
-    }
+    Outcome::success(1, 50)
 }
 
 fn bad() -> Outcome {
-    Outcome {
-        ok: false,
-        junk: true,
-        hard_junk: true,
-        cost_units: 1,
-        elapsed_ms: 200,
-        quality_score: None,
-    }
+    Outcome::failure(1, 200)
 }
 
 fn arms(n: usize) -> Vec<String> {
@@ -82,14 +68,7 @@ proptest! {
     ) {
         let a = arms(n_arms);
         let mut r = Router::new(a.clone(), RouterConfig::default()).unwrap();
-        let o = Outcome {
-            ok,
-            junk: junk || hard_junk,
-            hard_junk,
-            cost_units,
-            elapsed_ms,
-            quality_score: None,
-        };
+        let o = Outcome::new(ok, junk, hard_junk, cost_units, elapsed_ms);
         // Observe on a known arm.
         r.observe(&a[0], o);
         // Observe on an unknown arm (should be a no-op, not panic).
@@ -200,17 +179,7 @@ fn router_large_k_coverage_with_monitoring() {
 #[test]
 fn router_delayed_junk_labeling_updates_windows() {
     let mut r = Router::new(arms(2), RouterConfig::default()).unwrap();
-    r.observe(
-        "arm0",
-        Outcome {
-            ok: true,
-            junk: false,
-            hard_junk: false,
-            cost_units: 1,
-            elapsed_ms: 50,
-            quality_score: None,
-        },
-    );
+    r.observe("arm0", Outcome::success(1, 50));
     // Quality discovered after the call.
     r.set_last_junk_level("arm0", true, false);
     let s = r.summary("arm0");

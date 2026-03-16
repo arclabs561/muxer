@@ -172,6 +172,74 @@ impl Exp3Ix {
         out
     }
 
+    /// Effective sample size (Kish's ESS) of the current probability distribution.
+    ///
+    /// `ESS = 1 / sum(p_i^2)`, bounded in `[1, K]`. When ESS approaches 1, one arm
+    /// dominates the policy and reward estimates for other arms are unreliable
+    /// (high importance-weight variance). When ESS equals K, the policy is uniform.
+    ///
+    /// This is the primary uncertainty diagnostic for adversarial bandits. EXP3-IX
+    /// makes no distributional assumptions, so Bayesian posteriors don't apply.
+    /// ESS measures how much effective information the importance-weighted estimator
+    /// has, which is the right notion of uncertainty for this policy class.
+    ///
+    /// Reference: Kish (1965), "Survey Sampling"; applied to bandit IPW by
+    /// Waudby-Smith et al (2022, arXiv:2210.10768).
+    pub fn effective_sample_size(&self) -> f64 {
+        if self.probs.is_empty() {
+            return 0.0;
+        }
+        let sum_sq: f64 = self.probs.iter().map(|p| p * p).sum();
+        if sum_sq > 0.0 && sum_sq.is_finite() {
+            1.0 / sum_sq
+        } else {
+            self.probs.len() as f64 // degenerate -> treat as uniform
+        }
+    }
+
+    /// Shannon entropy of the current probability distribution (nats).
+    ///
+    /// `H(p) = -sum(p_i * ln(p_i))`, bounded in `[0, ln(K)]`. Higher entropy means
+    /// the policy is more uncertain (closer to uniform). Low entropy means the policy
+    /// has converged toward one or a few arms.
+    ///
+    /// Useful as a convergence monitor: entropy that plateaus below `ln(K)` indicates
+    /// the policy has learned a preference; entropy near `ln(K)` after many rounds
+    /// suggests the arms are indistinguishable or rewards are too noisy.
+    pub fn weight_entropy(&self) -> f64 {
+        if self.probs.is_empty() {
+            return 0.0;
+        }
+        let mut h = 0.0;
+        for &p in &self.probs {
+            if p > 0.0 && p.is_finite() {
+                h -= p * p.ln();
+            }
+        }
+        if h.is_finite() {
+            h
+        } else {
+            0.0
+        }
+    }
+
+    /// Effective number of arms: `exp(entropy)`, bounded in `[1, K]`.
+    ///
+    /// A single scalar summarizing how "decided" the policy is:
+    /// - Near 1.0: effectively committed to one arm.
+    /// - Near K: effectively uniform (maximum uncertainty).
+    ///
+    /// This is the exponential of Shannon entropy (the "perplexity" of the distribution).
+    pub fn effective_arms(&self) -> f64 {
+        let h = self.weight_entropy();
+        let ea = h.exp();
+        if ea.is_finite() {
+            ea.clamp(1.0, self.probs.len().max(1) as f64)
+        } else {
+            1.0
+        }
+    }
+
     /// Capture a persistence snapshot of the current EXP3-IX state.
     ///
     /// Callers should prefer calling this after `probabilities(...)` or `decide(...)` so
@@ -240,7 +308,7 @@ impl Exp3Ix {
 
     /// Deterministic decision from a filtered eligible set.
     ///
-    /// This is designed for callers (like `anno`) that:
+    /// This is designed for callers that:
     /// - keep persistent EXP3-IX state across process runs
     /// - apply external hard constraints (e.g. latency guardrail) that shrink the eligible set
     /// - want a deterministic decision given a seed, without persisting RNG state
@@ -494,6 +562,101 @@ mod tests {
         let p = ex.probabilities(&arms);
         let s: f64 = p.values().sum();
         assert!((s - 1.0).abs() < 1e-9, "sum={}", s);
+    }
+
+    #[test]
+    fn ess_is_k_when_uniform() {
+        let mut ex = Exp3Ix::default();
+        let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let _ = ex.probabilities(&arms); // initialize
+        let ess = ex.effective_sample_size();
+        assert!(
+            (ess - 3.0).abs() < 1e-9,
+            "uniform 3 arms should give ESS=3, got {}",
+            ess
+        );
+    }
+
+    #[test]
+    fn ess_decreases_as_policy_converges() {
+        let mut ex = Exp3Ix::new(Exp3IxConfig {
+            horizon: 200,
+            seed: 0,
+            decay: 1.0,
+            ..Exp3IxConfig::default()
+        });
+        let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let _ = ex.probabilities(&arms);
+        let ess_before = ex.effective_sample_size();
+
+        // Train heavily on "a".
+        for _ in 0..100 {
+            let chosen = ex.select(&arms).unwrap().clone();
+            let r = if chosen == "a" { 1.0 } else { 0.0 };
+            ex.update_reward(&chosen, r);
+        }
+        let ess_after = ex.effective_sample_size();
+        assert!(
+            ess_after < ess_before,
+            "ESS should decrease: before={}, after={}",
+            ess_before,
+            ess_after
+        );
+    }
+
+    #[test]
+    fn entropy_bounds() {
+        let mut ex = Exp3Ix::default();
+        let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let _ = ex.probabilities(&arms);
+
+        let h = ex.weight_entropy();
+        let max_h = (3.0f64).ln();
+        // Uniform -> entropy = ln(3).
+        assert!(
+            (h - max_h).abs() < 1e-9,
+            "uniform entropy should be ln(3)={}, got {}",
+            max_h,
+            h
+        );
+
+        let ea = ex.effective_arms();
+        assert!(
+            (ea - 3.0).abs() < 1e-9,
+            "uniform effective_arms should be 3, got {}",
+            ea
+        );
+    }
+
+    #[test]
+    fn effective_arms_decreases_with_convergence() {
+        let mut ex = Exp3Ix::new(Exp3IxConfig {
+            horizon: 200,
+            seed: 0,
+            decay: 1.0,
+            ..Exp3IxConfig::default()
+        });
+        let arms = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        ];
+        let _ = ex.probabilities(&arms);
+        let ea_before = ex.effective_arms();
+
+        for _ in 0..100 {
+            let chosen = ex.select(&arms).unwrap().clone();
+            let r = if chosen == "a" { 1.0 } else { 0.0 };
+            ex.update_reward(&chosen, r);
+        }
+        let ea_after = ex.effective_arms();
+        assert!(
+            ea_after < ea_before,
+            "effective_arms should decrease: before={}, after={}",
+            ea_before,
+            ea_after
+        );
     }
 
     #[test]
@@ -786,6 +949,45 @@ mod tests {
                 }
                 let r = rewards.get(i).copied().unwrap_or(0.5);
                 ex.update_reward(chosen, r);
+            }
+        }
+
+        #[test]
+        fn exp3ix_uncertainty_metrics_are_well_formed(
+            seed in any::<u64>(),
+            horizon in 1usize..5000,
+            decay in 0.01f64..1.0f64,
+            steps in 0usize..200,
+            rewards in proptest::collection::vec(0.0f64..1.0f64, 0..200),
+        ) {
+            let cfg = Exp3IxConfig { seed, horizon, confidence_delta: None, decay };
+            let mut ex = Exp3Ix::new(cfg);
+            let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+            let k = arms.len() as f64;
+            let _ = ex.probabilities(&arms);
+
+            for i in 0..steps {
+                // ESS in [1, K].
+                let ess = ex.effective_sample_size();
+                prop_assert!(ess.is_finite(), "ESS not finite at step {}", i);
+                prop_assert!(ess >= 1.0 - 1e-9, "ESS < 1: {} at step {}", ess, i);
+                prop_assert!(ess <= k + 1e-9, "ESS > K: {} at step {}", ess, i);
+
+                // Entropy in [0, ln(K)].
+                let h = ex.weight_entropy();
+                prop_assert!(h.is_finite(), "entropy not finite at step {}", i);
+                prop_assert!(h >= -1e-9, "entropy < 0: {} at step {}", h, i);
+                prop_assert!(h <= k.ln() + 1e-9, "entropy > ln(K): {} at step {}", h, i);
+
+                // Effective arms in [1, K].
+                let ea = ex.effective_arms();
+                prop_assert!(ea.is_finite(), "effective_arms not finite at step {}", i);
+                prop_assert!(ea >= 1.0 - 1e-9, "effective_arms < 1: {} at step {}", ea, i);
+                prop_assert!(ea <= k + 1e-9, "effective_arms > K: {} at step {}", ea, i);
+
+                let chosen = ex.select(&arms).unwrap().clone();
+                let r = rewards.get(i).copied().unwrap_or(0.5);
+                ex.update_reward(&chosen, r);
             }
         }
     }

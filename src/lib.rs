@@ -7,7 +7,7 @@
 //! distributions are piecewise-stationary: they may change at unknown
 //! times, and the agent must detect and adapt to these changes.
 //!
-//! An [`Outcome`] carries three caller-defined quality fields:
+//! An [`Outcome`] carries four caller-defined quality fields:
 //! - `ok`: the call produced a usable result.
 //! - `junk`: quality was below your threshold (`hard_junk=true` implies `junk=true`).
 //! - `hard_junk`: the call failed entirely — a harsher subset of junk, penalized separately.
@@ -243,11 +243,6 @@ use std::collections::{BTreeMap, VecDeque};
 /// threshold across all selection paths (Pareto scalarization, UCB, etc.).
 const TIEBREAK_EPS: f64 = 1e-12;
 
-/// Re-export [`logp::Error`] so callers can name the error type returned by
-/// [`Router::new`], [`Router::add_arm`], and [`TriageSession::new`] without
-/// depending on `logp` directly.
-pub use logp::Error as LogpError;
-
 mod decision;
 pub use decision::{Decision, DecisionNote, DecisionPolicy};
 
@@ -313,8 +308,7 @@ pub use worst_first::{
 
 mod harness;
 pub use harness::{
-    guardrail_filter_observed, guardrail_filter_observed_elapsed, guardrail_filter_observed_strict,
-    guardrail_filter_observed_strict_elapsed, policy_fill_generic,
+    guardrail_filter_observed, guardrail_filter_observed_elapsed, policy_fill_generic,
     policy_fill_k_observed_guardrail_first_with_coverage, policy_fill_k_observed_with_coverage,
     policy_plan_generic, select_k_without_replacement_by, PipelineOrder, PolicyFill, PolicyPlan,
 };
@@ -327,13 +321,14 @@ pub use triage::{OutcomeIdx, TriageSession, TriageSessionConfig};
 #[cfg(feature = "stochastic")]
 pub use monitor::{calibrate_cusum_threshold, simulate_cusum_null_max_scores};
 pub use monitor::{
-    calibrate_threshold_from_max_scores, DriftConfig, DriftDecision, DriftMetric, MonitoredWindow,
-    RateBoundMode, ThresholdCalibration, UncertaintyConfig,
+    calibrate_threshold_from_max_scores, DriftConfig, DriftMetric, MonitoredWindow, RateBoundMode,
+    ThresholdCalibration, UncertaintyConfig,
 };
 
 /// A single observed outcome for an arm.
 #[derive(Debug, Clone, Copy, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
 pub struct Outcome {
     /// Whether the request succeeded for this arm.
     pub ok: bool,
@@ -354,10 +349,7 @@ pub struct Outcome {
     ///
     /// `None` (the default) means "not measured". Set via
     /// [`Window::set_last_quality_score`] when scoring completes after the call.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub quality_score: Option<f64>,
 }
 
@@ -367,17 +359,54 @@ impl Outcome {
     /// If `hard_junk` is true, `junk` is forced to true regardless of the
     /// passed value.  This prevents the silent bug where `soft_junk_rate`
     /// (`junk_rate - hard_junk_rate`) saturates to zero.
-    pub fn new(
-        ok: bool,
-        junk: bool,
-        hard_junk: bool,
-        cost_units: u64,
-        elapsed_ms: u64,
-    ) -> Self {
+    pub fn new(ok: bool, junk: bool, hard_junk: bool, cost_units: u64, elapsed_ms: u64) -> Self {
         Self {
             ok,
             junk: junk || hard_junk,
             hard_junk,
+            cost_units,
+            elapsed_ms,
+            quality_score: None,
+        }
+    }
+
+    /// Create a successful outcome (ok=true, no junk).
+    ///
+    /// This is the most common case: the call succeeded with no quality issues.
+    pub fn success(cost_units: u64, elapsed_ms: u64) -> Self {
+        Self {
+            ok: true,
+            junk: false,
+            hard_junk: false,
+            cost_units,
+            elapsed_ms,
+            quality_score: None,
+        }
+    }
+
+    /// Create a failed outcome (ok=false, hard_junk=true, junk=true).
+    ///
+    /// Use for complete failures: errors, timeouts, parse failures.
+    pub fn failure(cost_units: u64, elapsed_ms: u64) -> Self {
+        Self {
+            ok: false,
+            junk: true,
+            hard_junk: true,
+            cost_units,
+            elapsed_ms,
+            quality_score: None,
+        }
+    }
+
+    /// Create a degraded-but-ok outcome (ok=true, junk=true, hard_junk=false).
+    ///
+    /// Use for soft quality failures: the call succeeded but the result
+    /// was below the caller's quality threshold.
+    pub fn degraded(cost_units: u64, elapsed_ms: u64) -> Self {
+        Self {
+            ok: true,
+            junk: true,
+            hard_junk: false,
             cost_units,
             elapsed_ms,
             quality_score: None,
@@ -401,6 +430,34 @@ impl Outcome {
             elapsed_ms,
             quality_score: Some(quality_score.clamp(0.0, 1.0)),
         }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Outcome {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct Raw {
+            ok: bool,
+            junk: bool,
+            hard_junk: bool,
+            cost_units: u64,
+            elapsed_ms: u64,
+            #[serde(default)]
+            quality_score: Option<f64>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        Ok(Outcome {
+            ok: raw.ok,
+            junk: raw.junk || raw.hard_junk,
+            hard_junk: raw.hard_junk,
+            cost_units: raw.cost_units,
+            elapsed_ms: raw.elapsed_ms,
+            quality_score: raw.quality_score.map(|s| s.clamp(0.0, 1.0)),
+        })
     }
 }
 
@@ -616,6 +673,12 @@ impl Summary {
 }
 
 /// Configuration knobs for deterministic MAB-style selection.
+///
+/// Contains the core multi-objective weights and hard constraints used by
+/// all selection paths ([`select_mab`], [`select_mab_explain`], [`select_mab_decide`]).
+///
+/// For monitored selection APIs (`select_mab_monitored_*`), use [`MonitoredMabConfig`]
+/// which wraps this with additional monitoring-specific guards.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MabConfig {
@@ -641,86 +704,6 @@ pub struct MabConfig {
     pub max_hard_junk_rate: Option<f64>,
     /// Optional constraint: discard arms whose windowed mean_cost_units exceeds this.
     pub max_mean_cost_units: Option<f64>,
-
-    /// Optional drift guard: discard arms whose drift score exceeds this.
-    ///
-    /// Only applies in monitored selection APIs (e.g. `select_mab_monitored_*`).
-    pub max_drift: Option<f64>,
-
-    /// Drift metric used when applying `max_drift`.
-    ///
-    /// Only applies in monitored selection APIs.
-    pub drift_metric: DriftMetric,
-
-    /// Penalty weight for drift (0 disables). Larger means "avoid arms that recently changed."
-    ///
-    /// Only applies in monitored selection APIs.
-    pub drift_weight: f64,
-
-    /// Rate uncertainty configuration for Wilson bounds.
-    ///
-    /// Only applies in monitored selection APIs.
-    pub uncertainty: UncertaintyConfig,
-
-    /// Optional categorical KL guard: discard arms whose `S = n_recent * KL(q_recent || p0_baseline)`
-    /// exceeds this threshold.
-    ///
-    /// Only applies in monitored selection APIs.
-    pub max_catkl: Option<f64>,
-
-    /// Dirichlet smoothing pseudo-count (alpha) used for categorical KL monitoring.
-    ///
-    /// Only applies in monitored selection APIs.
-    pub catkl_alpha: f64,
-
-    /// Minimum baseline samples required before categorical KL monitoring applies.
-    ///
-    /// Only applies in monitored selection APIs.
-    pub catkl_min_baseline: u64,
-
-    /// Minimum recent samples required before categorical KL monitoring applies.
-    ///
-    /// Only applies in monitored selection APIs.
-    pub catkl_min_recent: u64,
-
-    /// Penalty weight for categorical KL score (0 disables).
-    ///
-    /// Only applies in monitored selection APIs.
-    pub catkl_weight: f64,
-
-    /// Optional categorical CUSUM guard: discard arms whose CUSUM score over the recent window
-    /// exceeds this threshold.
-    ///
-    /// Only applies in monitored selection APIs.
-    pub max_cusum: Option<f64>,
-
-    /// Dirichlet smoothing pseudo-count (alpha) used when building categorical CUSUM `p0/p1`.
-    ///
-    /// Only applies in monitored selection APIs.
-    pub cusum_alpha: f64,
-
-    /// Minimum baseline samples required before categorical CUSUM monitoring applies.
-    ///
-    /// Only applies in monitored selection APIs.
-    pub cusum_min_baseline: u64,
-
-    /// Minimum recent samples required before categorical CUSUM monitoring applies.
-    ///
-    /// Only applies in monitored selection APIs.
-    pub cusum_min_recent: u64,
-
-    /// Alternative distribution `p1` for categorical CUSUM over `muxer`'s 4 outcome-categories:
-    /// `[ok_clean, ok_soft_junk, ok_hard_junk, fail]`.
-    ///
-    /// If `None`, a conservative default is used that biases toward `hard_junk`/`fail`.
-    ///
-    /// Only applies in monitored selection APIs.
-    pub cusum_alt_p: Option<[f64; 4]>,
-
-    /// Penalty weight for categorical CUSUM score (0 disables).
-    ///
-    /// Only applies in monitored selection APIs.
-    pub cusum_weight: f64,
 }
 
 impl Default for MabConfig {
@@ -735,6 +718,55 @@ impl Default for MabConfig {
             max_junk_rate: None,
             max_hard_junk_rate: None,
             max_mean_cost_units: None,
+        }
+    }
+}
+
+/// Extended configuration for monitored MAB selection.
+///
+/// Includes all base [`MabConfig`] fields plus monitoring-specific guards
+/// (drift, categorical KL, CUSUM) that only apply in `select_mab_monitored_*` APIs.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct MonitoredMabConfig {
+    /// Base selection configuration.
+    pub base: MabConfig,
+    /// Optional drift guard: discard arms whose drift score exceeds this.
+    pub max_drift: Option<f64>,
+    /// Drift metric used when applying `max_drift`.
+    pub drift_metric: DriftMetric,
+    /// Penalty weight for drift (0 disables).
+    pub drift_weight: f64,
+    /// Rate uncertainty configuration for Wilson bounds.
+    pub uncertainty: UncertaintyConfig,
+    /// Optional categorical KL guard threshold.
+    pub max_catkl: Option<f64>,
+    /// Dirichlet smoothing pseudo-count for categorical KL.
+    pub catkl_alpha: f64,
+    /// Minimum baseline samples for categorical KL.
+    pub catkl_min_baseline: u64,
+    /// Minimum recent samples for categorical KL.
+    pub catkl_min_recent: u64,
+    /// Penalty weight for categorical KL score (0 disables).
+    pub catkl_weight: f64,
+    /// Optional categorical CUSUM guard threshold.
+    pub max_cusum: Option<f64>,
+    /// Dirichlet smoothing pseudo-count for CUSUM.
+    pub cusum_alpha: f64,
+    /// Minimum baseline samples for CUSUM.
+    pub cusum_min_baseline: u64,
+    /// Minimum recent samples for CUSUM.
+    pub cusum_min_recent: u64,
+    /// Alternative distribution for CUSUM.
+    pub cusum_alt_p: Option<[f64; 4]>,
+    /// Penalty weight for CUSUM score (0 disables).
+    pub cusum_weight: f64,
+}
+
+impl Default for MonitoredMabConfig {
+    fn default() -> Self {
+        Self {
+            base: MabConfig::default(),
             max_drift: None,
             drift_metric: DriftMetric::default(),
             drift_weight: 0.0,
@@ -750,6 +782,15 @@ impl Default for MabConfig {
             cusum_min_recent: 20,
             cusum_alt_p: None,
             cusum_weight: 0.0,
+        }
+    }
+}
+
+impl From<MabConfig> for MonitoredMabConfig {
+    fn from(base: MabConfig) -> Self {
+        Self {
+            base,
+            ..Self::default()
         }
     }
 }
@@ -1260,7 +1301,7 @@ pub fn select_mab_monitored_explain(
     arms_in_order: &[String],
     monitored: &BTreeMap<String, MonitoredWindow>,
     drift_cfg: DriftConfig,
-    cfg: MabConfig,
+    cfg: MonitoredMabConfig,
 ) -> MabSelectionDecision {
     let summaries: BTreeMap<String, Summary> = monitored
         .iter()
@@ -1286,11 +1327,13 @@ pub fn select_mab_monitored_explain_with_summaries(
     summaries: &BTreeMap<String, Summary>,
     monitored: &BTreeMap<String, MonitoredWindow>,
     drift_cfg: DriftConfig,
-    cfg: MabConfig,
+    cfg: MonitoredMabConfig,
 ) -> MabSelectionDecision {
+    let base = &cfg.base;
+
     // Apply base hard constraints first (same semantics as `select_mab_explain`).
     let (eligible_arms, constraints_fallback_used) =
-        apply_base_constraints(arms_in_order, summaries, &cfg);
+        apply_base_constraints(arms_in_order, summaries, base);
     let arms_in_order: &[String] = &eligible_arms;
 
     // Explore first (stable order).
@@ -1299,7 +1342,7 @@ pub fn select_mab_monitored_explain_with_summaries(
         .find(|a| summaries.get(*a).copied().unwrap_or_default().calls == 0)
         .cloned();
     if let Some(chosen) = explore_choice {
-        return explore_first_decision(chosen, eligible_arms, constraints_fallback_used, cfg);
+        return explore_first_decision(chosen, eligible_arms, constraints_fallback_used, *base);
     }
 
     // Apply drift guard (optional) over the constraint-eligible set.
@@ -1509,7 +1552,7 @@ pub fn select_mab_monitored_explain_with_summaries(
         });
         let cusum_used = cusum_score.unwrap_or(0.0);
 
-        let ucb = cfg.exploration_c * ((total_calls.ln() / n).sqrt());
+        let ucb = base.exploration_c * ((total_calls.ln() / n).sqrt());
         let objective_success = ok_rate_used + ucb;
 
         let mean_cost = s.mean_cost_units();
@@ -1549,23 +1592,23 @@ pub fn select_mab_monitored_explain_with_summaries(
             -catkl_used,
             -cusum_used,
         ];
-        if cfg.quality_weight > 0.0 {
+        if base.quality_weight > 0.0 {
             pt.push(mean_q);
         }
         frontier_points.push(pt);
         frontier_names_in_order.push(a.clone());
     }
-    let dims = if cfg.quality_weight > 0.0 { 9 } else { 8 };
+    let dims = if base.quality_weight > 0.0 { 9 } else { 8 };
     let weights: [f64; 9] = [
         1.0,
-        cfg.cost_weight.max(0.0),
-        cfg.latency_weight.max(0.0),
-        cfg.hard_junk_weight.max(0.0),
-        cfg.junk_weight.max(0.0),
+        base.cost_weight.max(0.0),
+        base.latency_weight.max(0.0),
+        base.hard_junk_weight.max(0.0),
+        base.junk_weight.max(0.0),
         cfg.drift_weight.max(0.0),
         cfg.catkl_weight.max(0.0),
         cfg.cusum_weight.max(0.0),
-        cfg.quality_weight.max(0.0),
+        base.quality_weight.max(0.0),
     ];
     let (best_name, frontier_names) = choose_from_frontier(
         dims,
@@ -1594,7 +1637,7 @@ pub fn select_mab_monitored_explain_with_summaries(
         chosen: best_name,
         frontier: frontier_names,
         candidates,
-        config: cfg,
+        config: *base,
     };
 
     MabSelectionDecision {
@@ -1640,7 +1683,7 @@ pub fn select_mab_monitored_decide(
     arms_in_order: &[String],
     monitored: &BTreeMap<String, MonitoredWindow>,
     drift_cfg: DriftConfig,
-    cfg: MabConfig,
+    cfg: MonitoredMabConfig,
 ) -> Decision {
     let d = select_mab_monitored_explain(arms_in_order, monitored, drift_cfg, cfg);
 

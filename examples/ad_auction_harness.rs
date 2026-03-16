@@ -137,20 +137,20 @@ fn simulated_outcome(round: u64, model: &str, slice: AdSlice) -> Outcome {
         _ => 2,
     };
 
-    Outcome {
-        ok: !hard,
+    Outcome::with_quality(
+        !hard,
         junk,
-        hard_junk: hard,
-        cost_units: base_cost,
-        elapsed_ms: base_ms + mobile_ms + jitter,
-        quality_score: Some(if hard {
+        hard,
+        base_cost,
+        base_ms + mobile_ms + jitter,
+        if hard {
             0.0
         } else if soft {
             0.2
         } else {
             quality
-        }),
-    }
+        },
+    )
 }
 
 fn main() {

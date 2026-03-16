@@ -16,57 +16,37 @@ fn main() {
 
     // Preload windows with "recent history".
     for _ in 0..45 {
-        windows.get_mut("cheap").unwrap().push(Outcome {
-            ok: true,
-            junk: false,
-            hard_junk: false,
-            cost_units: 1,
-            elapsed_ms: 450,
-            quality_score: None,
-        });
+        windows
+            .get_mut("cheap")
+            .unwrap()
+            .push(Outcome::success(1, 450));
     }
     for _ in 0..5 {
-        windows.get_mut("cheap").unwrap().push(Outcome {
-            ok: false,
-            // Treat operational failures as "hard junk" for routing purposes.
-            junk: true,
-            hard_junk: true,
-            cost_units: 1,
-            elapsed_ms: 200,
-            quality_score: None,
-        });
+        // Treat operational failures as "hard junk" for routing purposes.
+        windows
+            .get_mut("cheap")
+            .unwrap()
+            .push(Outcome::failure(1, 200));
     }
 
     for _ in 0..45 {
-        windows.get_mut("fast").unwrap().push(Outcome {
-            ok: true,
-            junk: true,
-            hard_junk: false,
-            cost_units: 2,
-            elapsed_ms: 250,
-            quality_score: None,
-        });
+        windows
+            .get_mut("fast")
+            .unwrap()
+            .push(Outcome::degraded(2, 250));
     }
     for _ in 0..5 {
-        windows.get_mut("fast").unwrap().push(Outcome {
-            ok: true,
-            junk: false,
-            hard_junk: false,
-            cost_units: 2,
-            elapsed_ms: 260,
-            quality_score: None,
-        });
+        windows
+            .get_mut("fast")
+            .unwrap()
+            .push(Outcome::success(2, 260));
     }
 
     for _ in 0..50 {
-        windows.get_mut("reliable").unwrap().push(Outcome {
-            ok: true,
-            junk: false,
-            hard_junk: false,
-            cost_units: 4,
-            elapsed_ms: 650,
-            quality_score: None,
-        });
+        windows
+            .get_mut("reliable")
+            .unwrap()
+            .push(Outcome::success(4, 650));
     }
 
     let summaries: BTreeMap<String, _> = windows

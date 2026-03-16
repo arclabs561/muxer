@@ -20,32 +20,10 @@ fn select_mab_prefers_non_hard_junk_arm_when_window_is_hard_junk_heavy() {
     let mut wb = Window::new(50);
 
     // Arm "a" is currently producing lots of hard junk (operational failures).
-    push_n(
-        &mut wa,
-        50,
-        Outcome {
-            ok: false,
-            junk: true,
-            hard_junk: true,
-            cost_units: 1,
-            elapsed_ms: 100,
-            quality_score: None,
-        },
-    );
+    push_n(&mut wa, 50, Outcome::failure(1, 100));
 
     // Arm "b" is healthy.
-    push_n(
-        &mut wb,
-        50,
-        Outcome {
-            ok: true,
-            junk: false,
-            hard_junk: false,
-            cost_units: 1,
-            elapsed_ms: 120,
-            quality_score: None,
-        },
-    );
+    push_n(&mut wb, 50, Outcome::success(1, 120));
 
     let summaries = BTreeMap::from([
         ("a".to_string(), wa.summary()),
@@ -84,30 +62,8 @@ fn sticky_reduces_switching_under_alternating_small_advantages() {
 
         let mut wa = Window::new(60);
         let mut wb = Window::new(60);
-        push_n(
-            &mut wa,
-            60,
-            Outcome {
-                ok: true,
-                junk: false,
-                hard_junk: false,
-                cost_units: 1,
-                elapsed_ms: 100,
-                quality_score: None,
-            },
-        );
-        push_n(
-            &mut wb,
-            60,
-            Outcome {
-                ok: true,
-                junk: false,
-                hard_junk: false,
-                cost_units: 1,
-                elapsed_ms: 100,
-                quality_score: None,
-            },
-        );
+        push_n(&mut wa, 60, Outcome::success(1, 100));
+        push_n(&mut wb, 60, Outcome::success(1, 100));
 
         // Nudge success rates via counts (simulating a “near-tie” race).
         // (This is intentionally synthetic but deterministic.)
@@ -289,22 +245,8 @@ fn routing_lifecycle_normal_then_detect_then_triage() {
     let mut w_healthy = Window::new(50);
     let mut w_degraded = Window::new(50);
 
-    let clean = Outcome {
-        ok: true,
-        junk: false,
-        hard_junk: false,
-        cost_units: 1,
-        elapsed_ms: 100,
-        quality_score: None,
-    };
-    let _bad = Outcome {
-        ok: true,
-        junk: true,
-        hard_junk: false,
-        cost_units: 1,
-        elapsed_ms: 100,
-        quality_score: None,
-    };
+    let clean = Outcome::success(1, 100);
+    let _bad = Outcome::degraded(1, 100);
 
     for _ in 0..20 {
         w_healthy.push(clean);
@@ -365,14 +307,7 @@ fn routing_lifecycle_normal_then_detect_then_triage() {
         w_d.push(clean);
     }
     for _ in 0..20 {
-        w_d.push(Outcome {
-            ok: false,
-            junk: true,
-            hard_junk: true,
-            cost_units: 1,
-            elapsed_ms: 100,
-            quality_score: None,
-        });
+        w_d.push(Outcome::failure(1, 100));
     }
 
     let wf_cfg = WorstFirstConfig {

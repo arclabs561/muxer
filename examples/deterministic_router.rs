@@ -31,14 +31,7 @@ fn main() {
         let cost_units = t.mean_cost_units.saturating_add(rng.random_range(0..=2));
         let elapsed_ms = t.mean_latency_ms.saturating_add(rng.random_range(0..=200));
 
-        Outcome {
-            ok,
-            junk,
-            hard_junk,
-            cost_units,
-            elapsed_ms,
-            quality_score: None,
-        }
+        Outcome::new(ok, junk, hard_junk, cost_units, elapsed_ms)
     }
 
     // Stable arm order matters for deterministic tie-breaks.

@@ -133,20 +133,20 @@ fn synthetic_outcome(round: u64, backend: &str, slice: SynthSlice) -> Outcome {
     };
     let hard_cost = if slice.is_hard() { 2 } else { 0 };
 
-    Outcome {
-        ok: !hard,
+    Outcome::with_quality(
+        !hard,
         junk,
-        hard_junk: hard,
-        cost_units: base_cost + hard_cost,
-        elapsed_ms: base_latency + hardness_latency + jitter,
-        quality_score: Some(if hard {
+        hard,
+        base_cost + hard_cost,
+        base_latency + hardness_latency + jitter,
+        if hard {
             0.0
         } else if soft {
             0.22
         } else {
             quality
-        }),
-    }
+        },
+    )
 }
 
 fn main() {

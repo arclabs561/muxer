@@ -48,18 +48,45 @@ impl Default for ThompsonConfig {
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BetaStats {
+    /// Alpha parameter of the Beta posterior.
     pub alpha: f64,
+    /// Beta parameter of the Beta posterior.
     pub beta: f64,
+    /// Number of reward updates applied to this arm.
     pub uses: u64,
 }
 
 impl BetaStats {
+    /// Posterior mean: `alpha / (alpha + beta)`.
     pub fn expected_value(&self) -> f64 {
         let denom = self.alpha + self.beta;
         if denom <= 0.0 {
             0.5
         } else {
             self.alpha / denom
+        }
+    }
+
+    /// Posterior variance: `ab / ((a+b)^2 (a+b+1))`.
+    ///
+    /// This quantifies how uncertain the posterior is about this arm's success rate.
+    /// Useful as a convergence diagnostic (shrinks toward zero as observations accumulate)
+    /// and as a staleness signal (if it stops shrinking under decay, the environment
+    /// may be non-stationary).
+    ///
+    /// Note: under adaptive sampling, this is a Bayesian credible-interval width, not
+    /// a frequentist confidence interval. The selected arm's posterior mean is
+    /// systematically optimistic due to selection bias (Shin, Ramdas & Rinaldo 2019).
+    pub fn variance(&self) -> f64 {
+        let ab = self.alpha + self.beta;
+        if ab <= 0.0 || !ab.is_finite() {
+            return 0.25; // maximal variance for uniform
+        }
+        let v = (self.alpha * self.beta) / (ab * ab * (ab + 1.0));
+        if v.is_finite() {
+            v
+        } else {
+            0.25
         }
     }
 }
@@ -114,6 +141,89 @@ impl ThompsonSampling {
             scores.insert(a.clone(), s.expected_value());
         }
         softmax_map(&scores, temperature)
+    }
+
+    /// Per-arm probability of being the best arm, estimated by Monte Carlo.
+    ///
+    /// Draws `n_samples` from each arm's Beta posterior and counts how often each
+    /// arm's sample is the highest. Returns a distribution over arms that sums to 1.
+    ///
+    /// This is the standard A/B testing "probability of being best" metric
+    /// (Garivier & Kaufmann 2016). It answers "should I commit to this arm?" --
+    /// when `P(best) > 0.95` for some arm, further exploration has diminishing returns.
+    ///
+    /// **RNG caveat**: this method draws `n_samples * K` from the internal RNG,
+    /// advancing its state. Calling `probability_best` between `select()` calls
+    /// changes the subsequent selection sequence. If you need stable selection
+    /// determinism, call this only at diagnostic checkpoints, not in the hot path.
+    ///
+    /// Note: under adaptive sampling, the posteriors themselves carry selection bias
+    /// (Shin et al 2019), so these probabilities are calibrated only approximately.
+    /// They are diagnostic, not frequentist guarantees.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use muxer::{ThompsonConfig, ThompsonSampling};
+    ///
+    /// let arms = vec!["a".to_string(), "b".to_string()];
+    /// let mut ts = ThompsonSampling::with_seed(ThompsonConfig::default(), 42);
+    /// for _ in 0..50 {
+    ///     ts.update_reward("a", 0.9);
+    ///     ts.update_reward("b", 0.3);
+    /// }
+    /// let pbb = ts.probability_best(&arms, 10_000);
+    /// assert!(pbb["a"] > 0.9);
+    /// ```
+    pub fn probability_best(
+        &mut self,
+        arms_in_order: &[String],
+        n_samples: u32,
+    ) -> BTreeMap<String, f64> {
+        let n = n_samples.max(1) as usize;
+        for a in arms_in_order {
+            self.get_or_create_stats(a);
+        }
+
+        // Collect per-arm (alpha, beta) for sampling.
+        let params: Vec<(f64, f64)> = arms_in_order
+            .iter()
+            .map(|a| {
+                let s = self.stats.get(a).copied().unwrap_or(BetaStats {
+                    alpha: self.cfg.alpha0,
+                    beta: self.cfg.beta0,
+                    uses: 0,
+                });
+                (s.alpha, s.beta)
+            })
+            .collect();
+
+        let k = params.len();
+        if k == 0 {
+            return BTreeMap::new();
+        }
+
+        let mut wins = vec![0u64; k];
+        for _ in 0..n {
+            let mut best_val = f64::NEG_INFINITY;
+            let mut best_idx = 0;
+            for (i, &(a, b)) in params.iter().enumerate() {
+                let sample = self.sample_beta(a, b);
+                // Strict improvement only; ties go to the first arm (lower index).
+                if sample > best_val + 1e-15 {
+                    best_val = sample;
+                    best_idx = i;
+                }
+            }
+            wins[best_idx] += 1;
+        }
+
+        let mut out = BTreeMap::new();
+        let nf = n as f64;
+        for (i, a) in arms_in_order.iter().enumerate() {
+            out.insert(a.clone(), wins[i] as f64 / nf);
+        }
+        out
     }
 
     /// Select an arm by sampling from the mean-based softmax allocation, returning
@@ -482,6 +592,83 @@ mod tests {
         assert!(after > before);
     }
 
+    #[test]
+    fn variance_known_values() {
+        // Beta(1,1) = Uniform: variance = 1/(4*3) = 1/12
+        let uniform = BetaStats {
+            alpha: 1.0,
+            beta: 1.0,
+            uses: 0,
+        };
+        assert!((uniform.variance() - 1.0 / 12.0).abs() < 1e-12);
+
+        // Beta(10, 10): var = 100 / (400 * 21) = 100/8400
+        let sym = BetaStats {
+            alpha: 10.0,
+            beta: 10.0,
+            uses: 20,
+        };
+        assert!((sym.variance() - 100.0 / 8400.0).abs() < 1e-12);
+
+        // Variance shrinks with more evidence.
+        let tight = BetaStats {
+            alpha: 100.0,
+            beta: 100.0,
+            uses: 200,
+        };
+        assert!(tight.variance() < sym.variance());
+    }
+
+    #[test]
+    fn probability_best_concentrates_on_better_arm() {
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let mut ts = ThompsonSampling::with_seed(ThompsonConfig::default(), 42);
+        // Train arm "a" with high reward, "b" with low.
+        for _ in 0..100 {
+            ts.update_reward("a", 0.9);
+            ts.update_reward("b", 0.2);
+        }
+        let pbb = ts.probability_best(&arms, 10_000);
+        assert!(pbb["a"] > 0.95, "pbb[a]={}", pbb["a"]);
+        assert!(pbb["b"] < 0.05, "pbb[b]={}", pbb["b"]);
+        // Sums to 1.
+        let s: f64 = pbb.values().sum();
+        assert!((s - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn probability_best_uniform_prior_is_roughly_equal() {
+        let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let mut ts = ThompsonSampling::with_seed(ThompsonConfig::default(), 0);
+        // No updates -- all arms have uniform prior Beta(1,1).
+        let pbb = ts.probability_best(&arms, 30_000);
+        for a in &arms {
+            // Each arm should win roughly 1/3 of the time.
+            assert!(
+                (pbb[a] - 1.0 / 3.0).abs() < 0.05,
+                "pbb[{}]={}, expected ~0.333",
+                a,
+                pbb[a]
+            );
+        }
+    }
+
+    #[test]
+    fn probability_best_deterministic_with_same_seed() {
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let mut t1 = ThompsonSampling::with_seed(ThompsonConfig::default(), 99);
+        let mut t2 = ThompsonSampling::with_seed(ThompsonConfig::default(), 99);
+        for _ in 0..20 {
+            t1.update_reward("a", 0.7);
+            t1.update_reward("b", 0.4);
+            t2.update_reward("a", 0.7);
+            t2.update_reward("b", 0.4);
+        }
+        let p1 = t1.probability_best(&arms, 5_000);
+        let p2 = t2.probability_best(&arms, 5_000);
+        assert_eq!(p1, p2);
+    }
+
     proptest! {
         #[test]
         fn thompson_allocation_is_a_distribution_and_deterministic(
@@ -536,6 +723,34 @@ mod tests {
                 prop_assert!(s.beta.is_finite());
                 prop_assert!(s.alpha > 0.0);
                 prop_assert!(s.beta > 0.0);
+                // Variance must be finite and in [0, 0.25].
+                let v = s.variance();
+                prop_assert!(v.is_finite(), "variance not finite: {}", v);
+                prop_assert!(v >= 0.0 && v <= 0.25, "variance out of [0, 0.25]: {}", v);
+            }
+        }
+
+        #[test]
+        fn probability_best_is_a_distribution(
+            seed in any::<u64>(),
+            decay in 0.01f64..1.0f64,
+            rewards in proptest::collection::vec(0.0f64..1.0f64, 0..50),
+        ) {
+            let cfg = ThompsonConfig { decay, ..ThompsonConfig::default() };
+            let mut ts = ThompsonSampling::with_seed(cfg, seed);
+            let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+
+            for (i, r) in rewards.iter().enumerate() {
+                let a = &arms[i % arms.len()];
+                ts.update_reward(a, *r);
+            }
+
+            let pbb = ts.probability_best(&arms, 1_000);
+            let s: f64 = pbb.values().sum();
+            prop_assert!((s - 1.0).abs() < 1e-9, "pbb sum={}", s);
+            for v in pbb.values() {
+                prop_assert!(v.is_finite());
+                prop_assert!(*v >= 0.0 && *v <= 1.0);
             }
         }
     }

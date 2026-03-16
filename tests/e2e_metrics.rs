@@ -21,14 +21,13 @@ fn sample_outcome(rng: &mut StdRng, t: ArmTruth) -> (Outcome, bool, bool) {
     let is_junk = ok && (rng.random::<f64>() < t.junk_p);
     let is_hard = is_junk && (rng.random::<f64>() < t.hard_junk_p);
 
-    let o = Outcome {
+    let o = Outcome::new(
         ok,
-        junk: false,
-        hard_junk: false,
-        cost_units: t.cost_units.saturating_add(rng.random_range(0..=1)),
-        elapsed_ms: t.latency_ms.saturating_add(rng.random_range(0..=50)),
-        quality_score: None,
-    };
+        false,
+        false,
+        t.cost_units.saturating_add(rng.random_range(0..=1)),
+        t.latency_ms.saturating_add(rng.random_range(0..=50)),
+    );
     (o, is_junk, is_hard)
 }
 
@@ -133,22 +132,8 @@ fn constraints_hold_in_windowed_summary_when_one_arm_is_bad() {
     let mut w_good = Window::new(50);
 
     for _ in 0..50 {
-        w_bad.push(Outcome {
-            ok: false,
-            junk: true,
-            hard_junk: true,
-            cost_units: 1,
-            elapsed_ms: 100,
-            quality_score: None,
-        });
-        w_good.push(Outcome {
-            ok: true,
-            junk: false,
-            hard_junk: false,
-            cost_units: 1,
-            elapsed_ms: 120,
-            quality_score: None,
-        });
+        w_bad.push(Outcome::failure(1, 100));
+        w_good.push(Outcome::success(1, 120));
     }
 
     let summaries = BTreeMap::from([

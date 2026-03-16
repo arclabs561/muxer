@@ -1,7 +1,7 @@
 use muxer::monitor::{DriftConfig, DriftMetric};
 use muxer::{
     select_mab_monitored_explain, select_mab_monitored_explain_with_summaries, MabConfig,
-    MonitoredWindow, Outcome, Summary,
+    MonitoredMabConfig, MonitoredWindow, Outcome, Summary,
 };
 use proptest::prelude::*;
 use std::collections::BTreeMap;
@@ -24,14 +24,7 @@ fn outcome_strategy() -> impl Strategy<Value = Outcome> {
         .prop_map(|(ok, junk, hard_junk, cost_units, elapsed_ms)| {
             let junk = junk && ok;
             let hard_junk = hard_junk && junk;
-            Outcome {
-                ok,
-                junk,
-                hard_junk,
-                cost_units,
-                elapsed_ms,
-                quality_score: None,
-            }
+            Outcome::new(ok, junk, hard_junk, cost_units, elapsed_ms)
         })
 }
 
@@ -60,7 +53,7 @@ proptest! {
             let mut v: Vec<Outcome> = Vec::new();
             v.extend_from_slice(s);
             while v.len() < need {
-                v.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100, quality_score: None });
+                v.push(Outcome::success(1, 100));
             }
             fill_monitored(&mut w, &v[..need]);
             m.insert(arms[i].clone(), w);
@@ -73,15 +66,17 @@ proptest! {
             min_recent: 10,
         };
 
-        let cfg = MabConfig {
+        let cfg = MonitoredMabConfig {
+            base: MabConfig {
+                max_junk_rate: None,
+                max_hard_junk_rate: None,
+                max_mean_cost_units: None,
+                ..MabConfig::default()
+            },
             max_drift,
             drift_metric: DriftMetric::Hellinger,
             drift_weight,
-            // Avoid brittle constraints; this is about invariants.
-            max_junk_rate: None,
-            max_hard_junk_rate: None,
-            max_mean_cost_units: None,
-            ..MabConfig::default()
+            ..MonitoredMabConfig::default()
         };
 
         let d1 = select_mab_monitored_explain(&arms, &m, drift_cfg, cfg);
@@ -123,7 +118,7 @@ proptest! {
             let mut v: Vec<Outcome> = Vec::new();
             v.extend_from_slice(s);
             while v.len() < need {
-                v.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100, quality_score: None });
+                v.push(Outcome::success(1, 100));
             }
             fill_monitored(&mut w, &v[..need]);
             m.insert(arms[i].clone(), w);
@@ -132,8 +127,8 @@ proptest! {
         let drift_cfg = DriftConfig { metric: DriftMetric::Hellinger, tol: 1e-9, min_baseline: 20, min_recent: 10 };
         let (lo, hi) = if t1 <= t2 { (t1, t2) } else { (t2, t1) };
 
-        let cfg_hi = MabConfig { max_drift: Some(hi), drift_metric: DriftMetric::Hellinger, drift_weight: 0.0, ..MabConfig::default() };
-        let cfg_lo = MabConfig { max_drift: Some(lo), drift_metric: DriftMetric::Hellinger, drift_weight: 0.0, ..MabConfig::default() };
+        let cfg_hi = MonitoredMabConfig { max_drift: Some(hi), drift_metric: DriftMetric::Hellinger, drift_weight: 0.0, ..MonitoredMabConfig::default() };
+        let cfg_lo = MonitoredMabConfig { max_drift: Some(lo), drift_metric: DriftMetric::Hellinger, drift_weight: 0.0, ..MonitoredMabConfig::default() };
 
         let dhi = select_mab_monitored_explain(&arms, &m, drift_cfg, cfg_hi).drift_guard.expect("guard");
         let dlo = select_mab_monitored_explain(&arms, &m, drift_cfg, cfg_lo).drift_guard.expect("guard");
@@ -169,7 +164,7 @@ proptest! {
             let mut v: Vec<Outcome> = Vec::new();
             v.extend_from_slice(s);
             while v.len() < need {
-                v.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100, quality_score: None });
+                v.push(Outcome::success(1, 100));
             }
             fill_monitored(&mut w, &v[..need]);
             m.insert(arms[i].clone(), w);
@@ -178,8 +173,8 @@ proptest! {
         let drift_cfg = DriftConfig { metric: DriftMetric::Hellinger, tol: 1e-9, min_baseline: 20, min_recent: 10 };
         let (lo, hi) = if t1 <= t2 { (t1, t2) } else { (t2, t1) };
 
-        let cfg_hi = MabConfig { max_catkl: Some(hi), catkl_weight: 0.0, ..MabConfig::default() };
-        let cfg_lo = MabConfig { max_catkl: Some(lo), catkl_weight: 0.0, ..MabConfig::default() };
+        let cfg_hi = MonitoredMabConfig { max_catkl: Some(hi), catkl_weight: 0.0, ..MonitoredMabConfig::default() };
+        let cfg_lo = MonitoredMabConfig { max_catkl: Some(lo), catkl_weight: 0.0, ..MonitoredMabConfig::default() };
 
         let dhi = select_mab_monitored_explain(&arms, &m, drift_cfg, cfg_hi).catkl_guard.expect("guard");
         let dlo = select_mab_monitored_explain(&arms, &m, drift_cfg, cfg_lo).catkl_guard.expect("guard");
@@ -214,7 +209,7 @@ proptest! {
             let mut v: Vec<Outcome> = Vec::new();
             v.extend_from_slice(s);
             while v.len() < need {
-                v.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100, quality_score: None });
+                v.push(Outcome::success(1, 100));
             }
             fill_monitored(&mut w, &v[..need]);
             m.insert(arms[i].clone(), w);
@@ -223,8 +218,8 @@ proptest! {
         let drift_cfg = DriftConfig { metric: DriftMetric::Hellinger, tol: 1e-9, min_baseline: 20, min_recent: 10 };
         let (lo, hi) = if t1 <= t2 { (t1, t2) } else { (t2, t1) };
 
-        let cfg_hi = MabConfig { max_cusum: Some(hi), cusum_weight: 0.0, ..MabConfig::default() };
-        let cfg_lo = MabConfig { max_cusum: Some(lo), cusum_weight: 0.0, ..MabConfig::default() };
+        let cfg_hi = MonitoredMabConfig { max_cusum: Some(hi), cusum_weight: 0.0, ..MonitoredMabConfig::default() };
+        let cfg_lo = MonitoredMabConfig { max_cusum: Some(lo), cusum_weight: 0.0, ..MonitoredMabConfig::default() };
 
         let dhi = select_mab_monitored_explain(&arms, &m, drift_cfg, cfg_hi).cusum_guard.expect("guard");
         let dlo = select_mab_monitored_explain(&arms, &m, drift_cfg, cfg_lo).cusum_guard.expect("guard");
@@ -244,36 +239,15 @@ fn cusum_guard_filters_shifted_arm_when_threshold_is_tight() {
 
     let mut ws = MonitoredWindow::new(2_000, 80);
     for _ in 0..200 {
-        ws.push(Outcome {
-            ok: true,
-            junk: false,
-            hard_junk: false,
-            cost_units: 1,
-            elapsed_ms: 100,
-            quality_score: None,
-        });
+        ws.push(Outcome::success(1, 100));
     }
 
     let mut wc = MonitoredWindow::new(2_000, 80);
     for _ in 0..200 {
-        wc.push(Outcome {
-            ok: true,
-            junk: false,
-            hard_junk: false,
-            cost_units: 1,
-            elapsed_ms: 100,
-            quality_score: None,
-        });
+        wc.push(Outcome::success(1, 100));
     }
     for _ in 0..80 {
-        wc.push(Outcome {
-            ok: false,
-            junk: true,
-            hard_junk: true,
-            cost_units: 1,
-            elapsed_ms: 100,
-            quality_score: None,
-        });
+        wc.push(Outcome::failure(1, 100));
     }
 
     m.insert("stable".to_string(), ws);
@@ -285,13 +259,12 @@ fn cusum_guard_filters_shifted_arm_when_threshold_is_tight() {
         min_baseline: 20,
         min_recent: 10,
     };
-    let cfg = MabConfig {
+    let cfg = MonitoredMabConfig {
         max_cusum: Some(1.0),
         cusum_weight: 1.0,
-        // Ensure the guard applies for these window sizes.
         cusum_min_baseline: 20,
         cusum_min_recent: 10,
-        ..MabConfig::default()
+        ..MonitoredMabConfig::default()
     };
 
     let d = select_mab_monitored_explain(&arms, &m, drift_cfg, cfg);
@@ -502,38 +475,17 @@ fn drift_guard_filters_changed_arm_when_threshold_is_tight() {
     let mut ws = MonitoredWindow::new(2_000, 80);
     // stable baseline + recent
     for _ in 0..200 {
-        ws.push(Outcome {
-            ok: true,
-            junk: false,
-            hard_junk: false,
-            cost_units: 1,
-            elapsed_ms: 100,
-            quality_score: None,
-        });
+        ws.push(Outcome::success(1, 100));
     }
 
     let mut wc = MonitoredWindow::new(2_000, 80);
     // baseline clean
     for _ in 0..200 {
-        wc.push(Outcome {
-            ok: true,
-            junk: false,
-            hard_junk: false,
-            cost_units: 1,
-            elapsed_ms: 100,
-            quality_score: None,
-        });
+        wc.push(Outcome::success(1, 100));
     }
     // recent regresses hard
     for _ in 0..80 {
-        wc.push(Outcome {
-            ok: false,
-            junk: true,
-            hard_junk: true,
-            cost_units: 1,
-            elapsed_ms: 100,
-            quality_score: None,
-        });
+        wc.push(Outcome::failure(1, 100));
     }
 
     m.insert("stable".to_string(), ws);
@@ -545,11 +497,11 @@ fn drift_guard_filters_changed_arm_when_threshold_is_tight() {
         min_baseline: 20,
         min_recent: 10,
     };
-    let cfg = MabConfig {
+    let cfg = MonitoredMabConfig {
         max_drift: Some(0.05),
         drift_metric: DriftMetric::Hellinger,
         drift_weight: 1.0,
-        ..MabConfig::default()
+        ..MonitoredMabConfig::default()
     };
 
     let d = select_mab_monitored_explain(&arms, &m, drift_cfg, cfg);
@@ -593,7 +545,7 @@ proptest! {
             let mut v: Vec<Outcome> = Vec::new();
             v.extend_from_slice(s);
             while v.len() < need {
-                v.push(Outcome { ok: true, junk: false, hard_junk: false, cost_units: 1, elapsed_ms: 100, quality_score: None });
+                v.push(Outcome::success(1, 100));
             }
             fill_monitored(&mut w, &v[..need]);
             m.insert(arms[i].clone(), w);
@@ -606,7 +558,13 @@ proptest! {
             min_recent: 10,
         };
 
-        let cfg = MabConfig {
+        let cfg = MonitoredMabConfig {
+            base: MabConfig {
+                max_junk_rate: None,
+                max_hard_junk_rate: None,
+                max_mean_cost_units: None,
+                ..MabConfig::default()
+            },
             max_drift,
             drift_metric: DriftMetric::Hellinger,
             drift_weight,
@@ -614,10 +572,7 @@ proptest! {
             catkl_weight,
             max_cusum,
             cusum_weight,
-            max_junk_rate: None,
-            max_hard_junk_rate: None,
-            max_mean_cost_units: None,
-            ..MabConfig::default()
+            ..MonitoredMabConfig::default()
         };
 
         // Path A: the convenience wrapper (builds summaries internally).

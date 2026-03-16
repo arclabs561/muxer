@@ -104,14 +104,14 @@ See the [API docs](https://docs.rs/muxer) and [examples/EXPERIMENTS.md](examples
 
 ```toml
 [dependencies]
-muxer = "0.3.13"
+muxer = "0.4.0"
 ```
 
 Deterministic core only (no stochastic bandits):
 
 ```toml
 [dependencies]
-muxer = { version = "0.3.11", default-features = false }
+muxer = { version = "0.4.0", default-features = false }
 ```
 
 ## Quickstart
@@ -126,8 +126,7 @@ loop {
     let d = router.select(1, 0);
     let arm = d.primary().unwrap().to_string();
 
-    let outcome = Outcome { ok: true, junk: false, hard_junk: false,
-                            cost_units: 5, elapsed_ms: 120, quality_score: None };
+    let outcome = Outcome::success(5, 120);
     router.observe(&arm, outcome);
 
     if router.mode().is_triage() {

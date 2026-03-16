@@ -731,22 +731,8 @@ fn bridge_muxer_cusum_to_pare_sensitivity() {
     let sigma2 = 1.0_f64;
 
     // Outcome factories.
-    let ok = Outcome {
-        ok: true,
-        junk: false,
-        hard_junk: false,
-        cost_units: 1,
-        elapsed_ms: 100,
-        quality_score: None,
-    };
-    let bad = Outcome {
-        ok: false,
-        junk: true,
-        hard_junk: true,
-        cost_units: 1,
-        elapsed_ms: 100,
-        quality_score: None,
-    };
+    let ok = Outcome::success(1, 100);
+    let bad = Outcome::failure(1, 100);
 
     // Build a function that, given allocation [n_0, n_1], returns objective values.
     // We use the *scores* from muxer's actual detectors, not theoretical formulas.

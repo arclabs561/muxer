@@ -120,14 +120,13 @@ fn main() {
             let ok = rng.bernoulli(profile.ok_prob);
             let junk = rng.bernoulli(profile.junk_prob);
             let hard_junk = junk && rng.bernoulli(profile.hard_junk_prob / profile.junk_prob);
-            win.push(Outcome {
+            win.push(Outcome::new(
                 ok,
                 junk,
                 hard_junk,
-                cost_units: profile.cost_units,
-                elapsed_ms: profile.elapsed_ms,
-                quality_score: None,
-            });
+                profile.cost_units,
+                profile.elapsed_ms,
+            ));
         }
         windows.insert(profile.name.to_string(), win);
     }
