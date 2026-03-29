@@ -19,14 +19,14 @@
 //! **Goals:**
 //! - **Deterministic by default**: same stats + config → same choice.
 //! - **Non-stationarity friendly**: sliding-window summaries, not lifetime averages.
-//! - **Multi-objective**: Pareto frontier over ok/junk/cost/latency, then scalarization.
+//! - **Multi-objective**: Pareto frontier over configurable [`Objective`] dimensions,
+//!   then scalarization.  [`default_objectives`] provides ok/junk/cost/latency/quality.
 //! - **Small K**: designed for 2–10 arms; not intended for K in the hundreds.
 //!
 //! **Selection policies:**
 //! - [`select_mab`] / [`select_mab_explain`] / [`select_mab_monitored_explain`]:
-//!   deterministic Pareto + scalarization.  When [`MabConfig::quality_weight`] > 0,
-//!   `mean_quality_score` is a separate Pareto dimension (6th/9th); scalarization
-//!   adds `quality_weight × mean_quality_score` explicitly.
+//!   deterministic Pareto + scalarization over [`MabConfig::objectives`].
+//!   Each [`Objective`] defines an extraction, direction, and scalarization weight.
 //! - [`ThompsonSampling`]: seedable Thompson sampling for scalar rewards in `[0, 1]`.
 //! - [`Exp3Ix`]: seedable EXP3-IX for adversarial / fast-shifting rewards.
 //! - [`BanditPolicy`] (feature `stochastic`): common `decide`/`update_reward` trait
@@ -105,6 +105,12 @@
 //!
 //! ## The contextual revival -- and its subtlety
 //!
+//! *Note: this section synthesizes standard results from experimental design theory
+//! and quickest change detection into a combined framework.  The individual components
+//! (D-optimal sensitivity, minimax detection delay, regret sensitivity) are established;
+//! the three-way independence argument and average-vs-worst-case mechanism below are
+//! original to this crate, not a result from the cited papers.*
+//!
 //! In the **contextual** regime (per-request feature vectors via `LinUcb`), the design
 //! measure gains spatial dimensions, but objectives do **not** automatically diverge.
 //! The mechanism controlling collapse vs. revival is **average-case vs. worst-case
@@ -139,7 +145,7 @@
 //! ## Saturation principle
 //!
 //! The number of genuinely independent objectives is bounded by the effective dimension
-//! of the design space:
+//! of the design space (Ehrgott & Nickel 2002, via Helly's Theorem):
 //!
 //! ```text
 //!   dim(Pareto front) <= min(m - 1, D_eff)
@@ -147,7 +153,8 @@
 //!
 //! where `m` is the number of named objectives and `D_eff` is the design dimension
 //! (K-1 for non-contextual, ~K*M for M covariate cells, infinite for continuous
-//! covariates).  Adding objectives beyond `D_eff + 1` cannot create new tradeoffs.
+//! covariates).  Adding objectives beyond `D_eff + 1` cannot create new tradeoffs
+//! in the Pareto sense (though their weights still affect scalarization tiebreaking).
 //!
 //! The formal algebraic rank can overstate the practical number of tradeoffs.  The
 //! **effective Pareto dimension** is better measured by the singular value spectrum of
@@ -199,6 +206,12 @@
 //! sampling-rate constraints, confirming that detection delay in wall time scales as
 //! `h / (KL(p1 || p0) * rate_k)` — the formal basis for the two-clocks approximation.
 //!
+//! **Observation-cost vs detection delay.**
+//! Banerjee & Veeravalli (2012, arXiv:1211.3729) formalize the minimax tradeoff between
+//! observation cost and detection delay.  The product identity `R_T * D_avg = const`
+//! in the non-contextual collapse is a special case of their framework, where
+//! "observation cost" manifests as regret from pulling suboptimal arms.
+//!
 //! **Regret–BAI Pareto frontier.**
 //! Zhong, Cheung & Tan (2021, arXiv:2110.08627) formally prove the Pareto tradeoff
 //! between regret minimization (RM) and best-arm identification (BAI): achieving
@@ -225,11 +238,21 @@
 //! - **Information-Directed Sampling** (Russo & Van Roy 2014, arXiv:1403.5556):
 //!   scalarizes regret/information via the information ratio.  The three-objective
 //!   extension is non-trivial only in the contextual worst-case-detection regime.
-//! - **Multi-objective RL**: `muxer`'s deterministic post-Pareto scalarization is a
-//!   pragmatic instance of this literature.
 //! - **Adaptive experiment design** (Hadad et al. 2021, arXiv:1911.02768): the
 //!   observed vs. expected Fisher information distinction applies to `muxer`'s
 //!   adaptive design-measure analysis.
+//!
+//! **Pareto dimension and objective redundancy.**
+//! - **Ehrgott & Nickel (2002)**, "On the number of criteria needed to decide Pareto
+//!   optimality" (Math. Meth. Oper. Res., 55:329–345): proves via Helly's Theorem that
+//!   Pareto optimality in D design variables can be decided by at most D+1 objectives.
+//!   The saturation principle above is a direct application.
+//! - **Objective reduction** (Deb & Saxena 2005): identifies redundant objectives in
+//!   many-objective optimization.  Relevant when callers configure more objectives than
+//!   the design space supports.
+//! - **Pareto front topology** (Kobayashi et al. 2018, arXiv:1812.05222): confirms
+//!   empirically that M-objective problems have (M-1)-dimensional fronts, and provides
+//!   Bézier simplex fitting for their structure.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

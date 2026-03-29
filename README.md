@@ -122,6 +122,9 @@ cargo bench -p muxer --bench coverage
 6. A. Garivier and E. Moulines. "On Upper-Confidence Bound Policies for Switching Bandit Problems." *ALT*, 2011.
 7. R. R. Drugan and A. Nowe. "Designing multi-objective multi-armed bandits algorithms: A study." *IJCNN*, 2013.
 8. L. Besson, E. Kaufmann, O.-A. Maillard, and J. Seznec. "Efficient Change-Point Detection for Tackling Piecewise-Stationary Bandits." arXiv:1902.01575, 2019.
+9. M. Ehrgott and S. Nickel. "On the number of criteria needed to decide Pareto optimality." *Math. Meth. Oper. Res.*, 55:329--345, 2002.
+10. T. Banerjee and V. V. Veeravalli. "Data-efficient quickest change detection." arXiv:1211.3729, 2012.
+11. V. Hadad, D. A. Hirshberg, R. Zhan, S. Wager, and S. Athey. "Confidence Intervals for Policy Evaluation in Adaptive Experiments." arXiv:1911.02768, 2021.
 
 ## License
 
