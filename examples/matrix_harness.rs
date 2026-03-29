@@ -197,13 +197,13 @@ fn main() {
 
     let mab_cfg = MabConfig {
         exploration_c: 0.8,
-        junk_weight: 0.9,
-        hard_junk_weight: 1.8,
-        latency_weight: 0.0008,
-        cost_weight: 0.05,
-        quality_weight: 0.8,
         ..MabConfig::default()
-    };
+    }
+    .with_junk_weight(0.9)
+    .with_hard_junk_weight(1.8)
+    .with_latency_weight(0.0008)
+    .with_cost_weight(0.05)
+    .with_quality_weight(0.8);
     let guard = LatencyGuardrailConfig {
         max_mean_ms: Some(2_200.0),
         require_measured: false,
@@ -256,7 +256,7 @@ fn main() {
                     need,
                     |_s, rem, _k| {
                         let summaries = summaries_for_slice(rem, slice, &windows);
-                        let d = select_mab_explain(rem, &summaries, mab_cfg);
+                        let d = select_mab_explain(rem, &summaries, mab_cfg.clone());
                         vec![d.selection.chosen]
                     },
                 )

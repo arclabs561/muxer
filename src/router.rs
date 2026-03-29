@@ -759,10 +759,10 @@ impl Router {
                     sum_snap,
                     mon,
                     self.cfg.drift,
-                    self.cfg.mab,
+                    self.cfg.mab.clone(),
                 )
             } else {
-                select_mab_explain(&remaining, sum_snap, self.cfg.mab.base)
+                select_mab_explain(&remaining, sum_snap, self.cfg.mab.base.clone())
             };
 
             let pick = d.selection.chosen.clone();

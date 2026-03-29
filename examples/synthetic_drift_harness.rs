@@ -213,13 +213,13 @@ fn main() {
     };
     let mab_cfg = MabConfig {
         exploration_c: 0.8,
-        junk_weight: 1.0,
-        hard_junk_weight: 2.0,
-        quality_weight: 1.0,
-        latency_weight: 0.0009,
-        cost_weight: 0.08,
         ..MabConfig::default()
-    };
+    }
+    .with_junk_weight(1.0)
+    .with_hard_junk_weight(2.0)
+    .with_quality_weight(1.0)
+    .with_latency_weight(0.0009)
+    .with_cost_weight(0.08);
 
     let drift_epoch = 64;
     for round in 0u64..120 {
@@ -253,7 +253,7 @@ fn main() {
                     need,
                     |_s, rem, _k| {
                         let summaries = summaries_for_slice(rem, slice, &cell_windows);
-                        let d = select_mab_explain(rem, &summaries, mab_cfg);
+                        let d = select_mab_explain(rem, &summaries, mab_cfg.clone());
                         vec![d.selection.chosen]
                     },
                 )

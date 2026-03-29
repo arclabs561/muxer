@@ -7,11 +7,9 @@ fn main() {
 
     let arms = vec!["a".to_string(), "b".to_string()];
 
-    let cfg = MabConfig {
+    let cfg = MabConfig::default()
         // Make a visible trade-off so the choice is not a tie.
-        cost_weight: 0.2,
-        ..MabConfig::default()
-    };
+        .with_cost_weight(0.2);
 
     // Synthetic summaries: arm "a" is slightly more successful, arm "b" is cheaper.
     let summaries: BTreeMap<String, Summary> = BTreeMap::from([
@@ -42,7 +40,7 @@ fn main() {
     ]);
 
     // Base decision (no stickiness).
-    let base = select_mab_decide(&arms, &summaries, cfg);
+    let base = select_mab_decide(&arms, &summaries, cfg.clone());
     eprintln!("base={:?}", base);
 
     // Stickiness-wrapped decision (still unified).
@@ -50,8 +48,8 @@ fn main() {
         min_dwell: 2,
         min_switch_margin: 0.0,
     });
-    let d1 = sticky.apply_mab_decide(select_mab_explain(&arms, &summaries, cfg));
-    let d2 = sticky.apply_mab_decide(select_mab_explain(&arms, &summaries, cfg));
+    let d1 = sticky.apply_mab_decide(select_mab_explain(&arms, &summaries, cfg.clone()));
+    let d2 = sticky.apply_mab_decide(select_mab_explain(&arms, &summaries, cfg.clone()));
     let d3 = sticky.apply_mab_decide(select_mab_explain(&arms, &summaries, cfg));
 
     eprintln!("sticky t=1 {:?} (dwell={})", d1, sticky.dwell());

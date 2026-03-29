@@ -79,7 +79,7 @@ proptest! {
             ..MonitoredMabConfig::default()
         };
 
-        let d1 = select_mab_monitored_explain(&arms, &m, drift_cfg, cfg);
+        let d1 = select_mab_monitored_explain(&arms, &m, drift_cfg, cfg.clone());
         let d2 = select_mab_monitored_explain(&arms, &m, drift_cfg, cfg);
 
         let chosen1 = d1.selection.chosen.clone();
@@ -576,7 +576,7 @@ proptest! {
         };
 
         // Path A: the convenience wrapper (builds summaries internally).
-        let d_a = select_mab_monitored_explain(&arms, &m, drift_cfg, cfg);
+        let d_a = select_mab_monitored_explain(&arms, &m, drift_cfg, cfg.clone());
 
         // Path B: build summaries manually, call the inner function directly.
         let summaries: BTreeMap<String, Summary> = m

@@ -74,12 +74,12 @@ fn sticky_bounds_switch_rate_in_stable_environment() {
 
     let cfg = MabConfig {
         max_hard_junk_rate: Some(0.10),
-        cost_weight: 0.20,
-        latency_weight: 0.001,
-        junk_weight: 1.0,
-        hard_junk_weight: 2.0,
         ..MabConfig::default()
-    };
+    }
+    .with_cost_weight(0.20)
+    .with_latency_weight(0.001)
+    .with_junk_weight(1.0)
+    .with_hard_junk_weight(2.0);
 
     let mut windows: BTreeMap<String, Window> =
         arms.iter().map(|a| (a.clone(), Window::new(60))).collect();
@@ -98,7 +98,7 @@ fn sticky_bounds_switch_rate_in_stable_environment() {
             .iter()
             .map(|(k, w)| (k.clone(), w.summary()))
             .collect();
-        let base = select_mab_explain(&arms, &summaries, cfg);
+        let base = select_mab_explain(&arms, &summaries, cfg.clone());
         let chosen = sticky.apply_mab(base).chosen;
 
         if let Some(p) = &prev {

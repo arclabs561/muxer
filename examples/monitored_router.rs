@@ -103,13 +103,11 @@ fn main() {
     // - same multi-objective tuning as usual
     // - plus a drift guard and drift penalty
     let cfg = MonitoredMabConfig {
-        base: MabConfig {
-            cost_weight: 0.10,
-            latency_weight: 0.0040,
-            junk_weight: 1.2,
-            hard_junk_weight: 2.0,
-            ..MabConfig::default()
-        },
+        base: MabConfig::default()
+            .with_cost_weight(0.10)
+            .with_latency_weight(0.0040)
+            .with_junk_weight(1.2)
+            .with_hard_junk_weight(2.0),
         max_drift: Some(0.12),
         drift_metric: DriftMetric::Hellinger,
         drift_weight: 2.0,
@@ -120,7 +118,7 @@ fn main() {
     let mut chosen_counts: BTreeMap<String, u64> = BTreeMap::new();
 
     for t in 0..2_000u64 {
-        let policy = select_mab_monitored_decide(&arms, &windows, drift_cfg, cfg);
+        let policy = select_mab_monitored_decide(&arms, &windows, drift_cfg, cfg.clone());
 
         // Maintenance sampling: without *some* coverage, you can't detect changes in unpulled arms.
         // This is intentionally simple/deterministic for the demo.

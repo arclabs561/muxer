@@ -67,12 +67,12 @@ fn main() {
     let cfg_tradeoffs = MabConfig {
         max_hard_junk_rate: Some(0.20),
         max_junk_rate: Some(0.25),
-        cost_weight: 0.30,
-        latency_weight: 0.001,
-        junk_weight: 1.5,
-        hard_junk_weight: 2.0,
         ..MabConfig::default()
-    };
+    }
+    .with_cost_weight(0.30)
+    .with_latency_weight(0.001)
+    .with_junk_weight(1.5)
+    .with_hard_junk_weight(2.0);
     let d2 = select_mab_decide(&arms, &summaries, cfg_tradeoffs);
     eprintln!("tradeoffs decision={:?}", d2);
 }

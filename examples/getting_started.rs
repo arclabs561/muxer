@@ -105,9 +105,9 @@ fn main() {
 
     let cfg = MabConfig {
         exploration_c: 0.0,
-        quality_weight: 1.0,
         ..MabConfig::default()
-    };
+    }
+    .with_quality_weight(1.0);
     let summaries: BTreeMap<String, _> = router
         .arms()
         .iter()
