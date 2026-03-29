@@ -1,5 +1,37 @@
 # Changelog
 
+## [Unreleased]
+
+### Breaking
+
+- **`MabConfig` is no longer `Copy`** (now `Clone`).  It holds `Vec<Objective>`
+  instead of individual weight fields.  Pass by reference or `.clone()` where
+  needed.
+- **`MabConfig` weight fields removed**: `cost_weight`, `latency_weight`,
+  `junk_weight`, `hard_junk_weight`, `quality_weight` are replaced by
+  `objectives: Vec<Objective>`.  Use builder methods (`.with_cost_weight()`,
+  `.with_junk_weight()`, etc.) or construct objectives directly.
+- **`MonitoredMabConfig` is no longer `Copy`** (contains `MabConfig`).
+- **`CandidateDebug` fields restructured**: individual rate fields (`ok_rate`,
+  `junk_rate`, `mean_cost_units`, `objective_success`, etc.) replaced by
+  `summary: Summary` + `objective_values: Vec<ObjectiveValue>` + `score: f64`.
+- **`mab_scalar_score` signature**: removed `cfg` parameter (score is now
+  pre-computed on `CandidateDebug::score`).
+
+### Added
+
+- **Generic objectives**: `Extract` enum, `Objective` struct, `ObjectiveValue`
+  struct, `default_objectives()` function.  Callers can define custom Pareto
+  dimensions via `Extract::Custom` and `Objective::custom()`.
+- **Builder methods on `MabConfig`**: `.with_cost_weight()`,
+  `.with_latency_weight()`, `.with_junk_weight()`, `.with_hard_junk_weight()`,
+  `.with_quality_weight()`, `.with_objectives()`, `.set_weight()`.
+- **Saturation principle documentation** on `MabConfig::objectives` (Ehrgott &
+  Nickel 2002): effective Pareto dimension bounded by `min(m-1, K-1)`.
+- **Citations**: Ehrgott & Nickel 2002, Banerjee & Veeravalli 2012, Deb & Saxena
+  2005, Kobayashi et al. 2018.
+- **Provenance note**: contextual revival section flagged as original synthesis.
+
 ## [0.3.12]
 
 ### Changed
