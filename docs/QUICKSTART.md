@@ -17,7 +17,7 @@ With quality_weight=1.0: best arm is "gpt-4o"
 ```
 
 This demonstrates the 80% case — 3 arms, explore-first, delayed quality labeling —
-and shows exactly why `quality_weight` matters for breaking ties that binary rates can't.
+and shows why the quality objective matters for breaking ties that binary rates cannot.
 
 ## Two-minute version (Router API)
 
@@ -61,7 +61,7 @@ arm-b  calls=50  ok_rate=0.84  junk_rate=0.12  quality=0.65
 | Goal | Config |
 |------|--------|
 | Tune window size for your throughput | `RouterConfig::default().window_cap(suggested_window_cap(calls_per_arm, change_rate))` |
-| Use quality gradient for selection | `MabConfig { quality_weight: 0.5, ..Default::default() }` |
+| Use quality gradient for selection | `MabConfig::default().with_quality_weight(0.5)` |
 | Detect regressions automatically | `.with_monitoring(400, 80).with_triage()` |
 | Faster initial coverage (K > 10) | `router.select(3, seed)` (k=3 per round) |
 | Production CUSUM calibration | `cargo run --example router_production --features stochastic` |
