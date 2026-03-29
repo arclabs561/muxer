@@ -1539,7 +1539,7 @@ mod tests {
 
             let js = drift_simplex(&p, &q, DriftMetric::JensenShannon, tol).unwrap();
             prop_assert!(js >= -1e-12);
-            prop_assert!(js <= logp::LN_2 + 1e-9);
+            prop_assert!(js <= core::f64::consts::LN_2 + 1e-9);
         }
 
         #[test]

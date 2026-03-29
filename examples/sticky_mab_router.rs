@@ -68,7 +68,7 @@ fn main() {
             );
         }
 
-        let base = select_mab_explain(&arms, &summaries, mab_cfg);
+        let base = select_mab_explain(&arms, &summaries, mab_cfg.clone());
         let d = sticky.apply_mab_decide(base);
 
         eprintln!("t={:2} decision={:?} dwell={}", t, d, sticky.dwell());

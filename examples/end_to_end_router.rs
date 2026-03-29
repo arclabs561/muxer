@@ -85,13 +85,13 @@ fn main() {
     let cfg = MabConfig {
         // constrain bad operational behavior
         max_hard_junk_rate: Some(0.10),
-        // trade-off tuning
-        cost_weight: 0.25,
-        latency_weight: 0.0012,
-        junk_weight: 1.2,
-        hard_junk_weight: 2.0,
         ..MabConfig::default()
-    };
+    }
+    // trade-off tuning
+    .with_cost_weight(0.25)
+    .with_latency_weight(0.0012)
+    .with_junk_weight(1.2)
+    .with_hard_junk_weight(2.0);
 
     // Add stickiness to reduce flapping.
     let mut sticky = StickyMab::new(StickyConfig {
@@ -108,7 +108,7 @@ fn main() {
             .map(|(k, w)| (k.clone(), w.summary()))
             .collect();
 
-        let base = select_mab_explain(&arms, &summaries, cfg);
+        let base = select_mab_explain(&arms, &summaries, cfg.clone());
         let d = sticky.apply_mab_decide(base);
         let chosen = d.chosen.clone();
         *counts.entry(chosen.clone()).or_insert(0) += 1;

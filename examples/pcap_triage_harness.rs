@@ -222,13 +222,13 @@ fn main() {
     };
     let mab_cfg = MabConfig {
         exploration_c: 0.75,
-        junk_weight: 1.0,
-        hard_junk_weight: 2.2,
-        quality_weight: 0.9,
-        latency_weight: 0.0007,
-        cost_weight: 0.06,
         ..MabConfig::default()
-    };
+    }
+    .with_junk_weight(1.0)
+    .with_hard_junk_weight(2.2)
+    .with_quality_weight(0.9)
+    .with_latency_weight(0.0007)
+    .with_cost_weight(0.06);
 
     for round in 0u64..96 {
         let slice_pick = coverage_pick_under_sampled(
@@ -265,7 +265,7 @@ fn main() {
                     need,
                     |_s, rem, _k| {
                         let summaries = summaries_for_slice(rem, slice, &cell_windows);
-                        let d = select_mab_explain(rem, &summaries, mab_cfg);
+                        let d = select_mab_explain(rem, &summaries, mab_cfg.clone());
                         vec![d.selection.chosen]
                     },
                 )

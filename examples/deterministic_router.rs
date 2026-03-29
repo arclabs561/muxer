@@ -82,12 +82,12 @@ fn main() {
     // Heuristic selection knobs. (Tune weights for your system.)
     let cfg = MabConfig {
         exploration_c: 0.7,
-        cost_weight: 0.20,
-        latency_weight: 0.0015,
-        junk_weight: 1.5,
-        hard_junk_weight: 2.0,
         ..MabConfig::default()
-    };
+    }
+    .with_cost_weight(0.20)
+    .with_latency_weight(0.0015)
+    .with_junk_weight(1.5)
+    .with_hard_junk_weight(2.0);
 
     let mut rng = StdRng::seed_from_u64(123);
     let mut chosen_counts: BTreeMap<String, u64> = BTreeMap::new();
@@ -98,7 +98,7 @@ fn main() {
             .map(|(k, w)| (k.clone(), w.summary()))
             .collect();
 
-        let decision = select_mab_explain(&arms, &summaries, cfg);
+        let decision = select_mab_explain(&arms, &summaries, cfg.clone());
         let sel = decision.selection;
         *chosen_counts.entry(sel.chosen.clone()).or_insert(0) += 1;
 

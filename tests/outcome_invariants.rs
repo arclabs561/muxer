@@ -296,9 +296,9 @@ fn select_mab_zero_exploration_prefers_lower_junk_on_tiebreak() {
 
     let cfg = MabConfig {
         exploration_c: 0.0,
-        junk_weight: 1.0,
         ..MabConfig::default()
-    };
+    }
+    .with_junk_weight(1.0);
     let sel = select_mab(&arms, &summaries, cfg);
     assert_eq!(
         sel.chosen, "a",
@@ -457,9 +457,9 @@ fn quality_weight_influences_arm_selection() {
     };
     let cfg_with_quality = MabConfig {
         exploration_c: 0.0,
-        quality_weight: 1.0,
         ..MabConfig::default()
-    };
+    }
+    .with_quality_weight(1.0);
 
     // Without quality weight: tie-break by name ("a" < "b" → picks "a" anyway)
     let _ = select_mab(&arms, &summaries, cfg_no_quality);
@@ -495,7 +495,7 @@ proptest! {
             mean_quality_score: Some(q_b),
         });
 
-        let cfg = MabConfig { exploration_c: 0.0, quality_weight, ..MabConfig::default() };
+        let cfg = MabConfig { exploration_c: 0.0, ..MabConfig::default() }.with_quality_weight(quality_weight);
         let sel = select_mab(&arms, &summaries, cfg);
         prop_assert_eq!(&sel.chosen, "a",
             "arm with quality={} should beat arm with quality={} (weight={})",

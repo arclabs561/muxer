@@ -162,10 +162,10 @@ fn main() {
 
     let cfg = MabConfig {
         exploration_c: 0.0, // pure exploitation, no UCB bonus
-        cost_weight: 0.3,
-        junk_weight: 0.5,
         ..MabConfig::default()
-    };
+    }
+    .with_cost_weight(0.3)
+    .with_junk_weight(0.5);
 
     let selection = select_mab(&arm_names, &summaries, cfg);
     println!("\n--- muxer::select_mab ---");

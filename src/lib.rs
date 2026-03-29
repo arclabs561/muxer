@@ -672,32 +672,163 @@ impl Summary {
     }
 }
 
+/// How to extract an objective value from a [`Summary`].
+///
+/// Built-in extractors cover the standard `Outcome` fields.  For custom
+/// objectives, pre-compute the value and store it via [`Objective::value`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
+pub enum Extract {
+    /// `ok_rate + UCB exploration bonus` (requires `exploration_c` from config).
+    OkRateUcb,
+    /// `Summary::mean_cost_units()`.
+    MeanCost,
+    /// `Summary::mean_elapsed_ms()`.
+    MeanLatency,
+    /// `Summary::hard_junk_rate()`.
+    HardJunkRate,
+    /// `Summary::soft_junk_rate()` (`junk_rate - hard_junk_rate`).
+    SoftJunkRate,
+    /// `Summary::mean_quality_score` (0.0 when absent).
+    MeanQuality,
+}
+
+impl Extract {
+    /// Extract the raw value from a summary.
+    ///
+    /// `ucb` is the pre-computed UCB term; only used by `OkRateUcb`.
+    pub fn apply(self, s: &Summary, ucb: f64) -> f64 {
+        match self {
+            Self::OkRateUcb => s.ok_rate() + ucb,
+            Self::MeanCost => s.mean_cost_units(),
+            Self::MeanLatency => s.mean_elapsed_ms(),
+            Self::HardJunkRate => s.hard_junk_rate(),
+            Self::SoftJunkRate => s.soft_junk_rate(),
+            Self::MeanQuality => s.mean_quality_score.unwrap_or(0.0),
+        }
+    }
+}
+
+/// A single objective dimension for Pareto selection.
+///
+/// Each objective contributes one axis to the Pareto frontier and one
+/// term to the scalarized tiebreaker.  `direction` controls the frontier;
+/// `weight` controls scalarization (higher weight = more influence).
+///
+/// For custom objectives not derivable from [`Summary`], set `extract`
+/// to any variant and override the value via
+/// [`Objective::value`] before passing to selection.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Objective {
+    /// How to extract this objective from a `Summary`.
+    pub extract: Extract,
+    /// Whether higher values are better (`Maximize`) or worse (`Minimize`).
+    pub direction: Direction,
+    /// Scalarization weight (0 disables this objective in the tiebreaker
+    /// but it still participates in the Pareto frontier).
+    pub weight: f64,
+    /// Pre-computed value override.  When `Some`, this value is used
+    /// instead of extracting from `Summary`.  Useful for custom
+    /// objectives or monitored scores (drift, catKL, CUSUM).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub value: Option<f64>,
+}
+
+impl Objective {
+    /// Create an objective that maximizes the extracted value.
+    pub fn maximize(extract: Extract, weight: f64) -> Self {
+        Self {
+            extract,
+            direction: Direction::Maximize,
+            weight,
+            value: None,
+        }
+    }
+
+    /// Create an objective that minimizes the extracted value.
+    pub fn minimize(extract: Extract, weight: f64) -> Self {
+        Self {
+            extract,
+            direction: Direction::Minimize,
+            weight,
+            value: None,
+        }
+    }
+
+    /// Override the extracted value with a pre-computed one.
+    pub fn with_value(mut self, v: f64) -> Self {
+        self.value = Some(v);
+        self
+    }
+
+    /// Resolve the value: use the override if present, otherwise extract from summary.
+    pub fn resolve(&self, s: &Summary, ucb: f64) -> f64 {
+        self.value.unwrap_or_else(|| self.extract.apply(s, ucb))
+    }
+
+    /// Value oriented for Pareto (always maximize): negates for `Minimize` objectives.
+    pub fn pareto_value(&self, s: &Summary, ucb: f64) -> f64 {
+        let v = self.resolve(s, ucb);
+        match self.direction {
+            Direction::Maximize => v,
+            Direction::Minimize => -v,
+        }
+    }
+
+    /// Signed scalarization contribution (higher is always better).
+    pub fn scalar_contribution(&self, s: &Summary, ucb: f64) -> f64 {
+        let v = self.resolve(s, ucb);
+        match self.direction {
+            Direction::Maximize => self.weight * v,
+            Direction::Minimize => -(self.weight * v),
+        }
+    }
+}
+
+/// The default objective set for deterministic MAB selection.
+///
+/// Reproduces the pre-0.5 hardcoded behavior:
+/// - Maximize `ok_rate + UCB` (weight 1.0)
+/// - Minimize mean cost (weight 0.0 -- disabled by default)
+/// - Minimize mean latency (weight 0.0)
+/// - Minimize hard junk rate (weight 0.0)
+/// - Minimize soft junk rate (weight 0.0)
+/// - Maximize mean quality (weight 0.0)
+pub fn default_objectives() -> Vec<Objective> {
+    vec![
+        Objective::maximize(Extract::OkRateUcb, 1.0),
+        Objective::minimize(Extract::MeanCost, 0.0),
+        Objective::minimize(Extract::MeanLatency, 0.0),
+        Objective::minimize(Extract::HardJunkRate, 0.0),
+        Objective::minimize(Extract::SoftJunkRate, 0.0),
+        Objective::maximize(Extract::MeanQuality, 0.0),
+    ]
+}
+
 /// Configuration knobs for deterministic MAB-style selection.
 ///
-/// Contains the core multi-objective weights and hard constraints used by
-/// all selection paths ([`select_mab`], [`select_mab_explain`], [`select_mab_decide`]).
+/// Contains the objective list, exploration coefficient, and hard constraints
+/// used by all selection paths ([`select_mab`], [`select_mab_explain`],
+/// [`select_mab_decide`]).
 ///
 /// For monitored selection APIs (`select_mab_monitored_*`), use [`MonitoredMabConfig`]
 /// which wraps this with additional monitoring-specific guards.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MabConfig {
     /// UCB exploration coefficient.
     pub exploration_c: f64,
-    /// Penalty weight for mean cost_units (0 disables).
-    pub cost_weight: f64,
-    /// Penalty weight for mean latency in ms (0 disables).
-    pub latency_weight: f64,
-    /// Penalty weight for junk_rate (0 disables).
-    pub junk_weight: f64,
-    /// Penalty weight for hard_junk_rate (0 disables).
-    pub hard_junk_weight: f64,
-    /// Bonus weight for mean quality score (`quality_score` field on `Outcome`).
+    /// Objective dimensions for the Pareto frontier and scalarization.
     ///
-    /// When non-zero and quality scores have been recorded, adds
-    /// `quality_weight * mean_quality_score` to `objective_success`.
-    /// Higher quality scores push an arm toward selection; 0 disables.
-    pub quality_weight: f64,
+    /// Each objective defines an axis (extract + direction) and a
+    /// scalarization weight.  The default set (`default_objectives()`)
+    /// reproduces pre-0.5 behavior.
+    pub objectives: Vec<Objective>,
     /// Optional constraint: discard arms whose windowed junk_rate exceeds this.
     pub max_junk_rate: Option<f64>,
     /// Optional constraint: discard arms whose windowed hard_junk_rate exceeds this.
@@ -710,11 +841,7 @@ impl Default for MabConfig {
     fn default() -> Self {
         Self {
             exploration_c: 0.7,
-            cost_weight: 0.0,
-            latency_weight: 0.0,
-            junk_weight: 0.0,
-            hard_junk_weight: 0.0,
-            quality_weight: 0.0,
+            objectives: default_objectives(),
             max_junk_rate: None,
             max_hard_junk_rate: None,
             max_mean_cost_units: None,
@@ -722,11 +849,57 @@ impl Default for MabConfig {
     }
 }
 
+impl MabConfig {
+    /// Set the weight for an objective matching the given extractor.
+    /// If not found, the objective is not added (no-op).
+    pub fn set_weight(&mut self, extract: Extract, weight: f64) {
+        if let Some(obj) = self.objectives.iter_mut().find(|o| o.extract == extract) {
+            obj.weight = weight;
+        }
+    }
+
+    /// Builder: set cost weight.
+    pub fn with_cost_weight(mut self, w: f64) -> Self {
+        self.set_weight(Extract::MeanCost, w);
+        self
+    }
+
+    /// Builder: set latency weight.
+    pub fn with_latency_weight(mut self, w: f64) -> Self {
+        self.set_weight(Extract::MeanLatency, w);
+        self
+    }
+
+    /// Builder: set soft junk weight.
+    pub fn with_junk_weight(mut self, w: f64) -> Self {
+        self.set_weight(Extract::SoftJunkRate, w);
+        self
+    }
+
+    /// Builder: set hard junk weight.
+    pub fn with_hard_junk_weight(mut self, w: f64) -> Self {
+        self.set_weight(Extract::HardJunkRate, w);
+        self
+    }
+
+    /// Builder: set quality weight.
+    pub fn with_quality_weight(mut self, w: f64) -> Self {
+        self.set_weight(Extract::MeanQuality, w);
+        self
+    }
+
+    /// Builder: set objectives directly (replaces default set).
+    pub fn with_objectives(mut self, objectives: Vec<Objective>) -> Self {
+        self.objectives = objectives;
+        self
+    }
+}
+
 /// Extended configuration for monitored MAB selection.
 ///
 /// Includes all base [`MabConfig`] fields plus monitoring-specific guards
 /// (drift, categorical KL, CUSUM) that only apply in `select_mab_monitored_*` APIs.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MonitoredMabConfig {
     /// Base selection configuration.
@@ -795,36 +968,34 @@ impl From<MabConfig> for MonitoredMabConfig {
     }
 }
 
+/// A resolved objective value for one candidate arm.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ObjectiveValue {
+    /// The extractor that produced this value.
+    pub extract: Extract,
+    /// The resolved value (after applying overrides / uncertainty bounds).
+    pub value: f64,
+    /// The Pareto-oriented value (negated for `Minimize` objectives).
+    pub pareto_value: f64,
+    /// Scalarization contribution (signed, higher is better).
+    pub scalar_contribution: f64,
+}
+
 /// Debug row for one candidate arm.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CandidateDebug {
     /// Arm name.
     pub name: String,
-    /// Calls observed in the summary.
-    pub calls: u64,
-    /// Successes observed in the summary.
-    pub ok: u64,
-    /// Junk outcomes observed in the summary.
-    pub junk: u64,
-    /// Hard junk outcomes observed in the summary.
-    pub hard_junk: u64,
-    /// Success rate.
-    pub ok_rate: f64,
-    /// Junk rate.
-    pub junk_rate: f64,
-    /// Hard junk rate.
-    pub hard_junk_rate: f64,
-    /// Soft junk rate.
-    pub soft_junk_rate: f64,
-    /// Mean cost units per call.
-    pub mean_cost_units: f64,
-    /// Mean latency (ms) per call.
-    pub mean_elapsed_ms: f64,
+    /// Summary snapshot for this arm.
+    pub summary: Summary,
     /// UCB exploration term.
     pub ucb: f64,
-    /// Scalar objective used for the frontier’s success dimension (junk is a separate objective).
-    pub objective_success: f64,
+    /// Per-objective resolved values (in the same order as `MabConfig::objectives`).
+    pub objective_values: Vec<ObjectiveValue>,
+    /// Total scalarized score (sum of all `scalar_contribution` values).
+    pub score: f64,
 
     /// Optional drift score for this arm (present for monitored selection).
     #[cfg_attr(
@@ -867,15 +1038,6 @@ pub struct CandidateDebug {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub hard_junk_half_width: Option<f64>,
-
-    /// Mean quality score for this arm (when `Outcome::quality_score` has been set).
-    ///
-    /// Present when any outcome in the summary window had `quality_score` set.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub mean_quality_score: Option<f64>,
 }
 
 /// Output of `select_mab` (chosen arm + debugging context).
@@ -1026,30 +1188,32 @@ fn explore_first_decision(
     constraints_fallback_used: bool,
     cfg: MabConfig,
 ) -> MabSelectionDecision {
+    let zero_summary = Summary::default();
+    let obj_values: Vec<ObjectiveValue> = cfg
+        .objectives
+        .iter()
+        .map(|obj| ObjectiveValue {
+            extract: obj.extract,
+            value: 0.0,
+            pareto_value: 0.0,
+            scalar_contribution: 0.0,
+        })
+        .collect();
     let sel = Selection {
         chosen: chosen.clone(),
         frontier: vec![chosen.clone()],
         candidates: vec![CandidateDebug {
             name: chosen,
-            calls: 0,
-            ok: 0,
-            junk: 0,
-            hard_junk: 0,
-            ok_rate: 0.0,
-            junk_rate: 0.0,
-            hard_junk_rate: 0.0,
-            soft_junk_rate: 0.0,
-            mean_cost_units: 0.0,
-            mean_elapsed_ms: 0.0,
+            summary: zero_summary,
             ucb: 0.0,
-            objective_success: 0.0,
+            objective_values: obj_values,
+            score: 0.0,
             drift_score: None,
             catkl_score: None,
             cusum_score: None,
             ok_half_width: None,
             junk_half_width: None,
             hard_junk_half_width: None,
-            mean_quality_score: None,
         }],
         config: cfg,
     };
@@ -1064,23 +1228,24 @@ fn explore_first_decision(
     }
 }
 
-fn choose_from_frontier<FScore>(
-    dims: usize,
+fn choose_from_frontier(
     candidates: &[CandidateDebug],
-    frontier_points: &[Vec<f64>],
     frontier_names_in_order: &[String],
     fallback_first: Option<&String>,
-    score: FScore,
-) -> (String, Vec<String>)
-where
-    FScore: Fn(&CandidateDebug) -> f64,
-{
+) -> (String, Vec<String>) {
+    // Build Pareto frontier from the candidates' pareto_value vectors.
+    // All axes are maximize-oriented (Minimize objectives are pre-negated).
+    let dims = candidates
+        .first()
+        .map(|c| c.objective_values.len())
+        .unwrap_or(0);
     let mut frontier = ParetoFrontier::new(vec![Direction::Maximize; dims]);
-    for (i, vals) in frontier_points.iter().enumerate() {
-        frontier.push(vals.clone(), i);
+    for (i, c) in candidates.iter().enumerate() {
+        let pt: Vec<f64> = c.objective_values.iter().map(|o| o.pareto_value).collect();
+        frontier.push(pt, i);
     }
     let mut frontier_indices: Vec<usize> = if frontier.is_empty() {
-        (0..frontier_points.len()).collect()
+        (0..candidates.len()).collect()
     } else {
         frontier.points().iter().map(|p| p.data).collect()
     };
@@ -1101,9 +1266,10 @@ where
         let Some(c) = candidates.get(idx) else {
             continue;
         };
-        let s = score(c);
-        if s > best_score || ((s - best_score).abs() <= TIEBREAK_EPS && c.name < best_name) {
-            best_score = s;
+        if c.score > best_score
+            || ((c.score - best_score).abs() <= TIEBREAK_EPS && c.name < best_name)
+        {
+            best_score = c.score;
             best_name = c.name.clone();
         }
     }
@@ -1168,101 +1334,54 @@ pub fn select_mab_explain(
         return explore_first_decision(chosen, eligible_arms, constraints_fallback_used, cfg);
     }
 
-    // Only count calls for the arms actually being considered (important if `summaries`
-    // contains additional entries beyond `arms_in_order`).
     let total_calls: f64 = arms_in_order
         .iter()
         .map(|a| summaries.get(a).copied().unwrap_or_default().calls as f64)
         .sum::<f64>()
         .max(1.0);
 
-    // Pareto frontier (maximize space):
-    // - objective_success: maximize
-    // - costs/latency/junk: minimize => negate
-    //
-    // We keep the frontier computation separate from scalarization so callers can
-    // inspect "who is on the frontier" deterministically.
-    let mut frontier_points: Vec<Vec<f64>> = Vec::new();
     let mut frontier_names_in_order: Vec<String> = Vec::new();
-
     let mut candidates = Vec::new();
+
     for a in arms_in_order {
         let s = summaries.get(a).copied().unwrap_or_default();
         let n = (s.calls as f64).max(1.0);
-        let ok_rate = s.ok_rate();
-        let junk_rate = s.junk_rate();
-        let hard_junk_rate = s.hard_junk_rate();
-        let soft_junk_rate = s.soft_junk_rate();
-
         let ucb = cfg.exploration_c * ((total_calls.ln() / n).sqrt());
-        let objective_success = ok_rate + ucb;
 
-        let mean_cost = s.mean_cost_units();
-        let mean_lat = s.mean_elapsed_ms();
-        let mean_q = s.mean_quality_score.unwrap_or(0.0);
+        let obj_values: Vec<ObjectiveValue> = cfg
+            .objectives
+            .iter()
+            .map(|obj| {
+                let value = obj.resolve(&s, ucb);
+                ObjectiveValue {
+                    extract: obj.extract,
+                    value,
+                    pareto_value: obj.pareto_value(&s, ucb),
+                    scalar_contribution: obj.scalar_contribution(&s, ucb),
+                }
+            })
+            .collect();
+
+        let score: f64 = obj_values.iter().map(|o| o.scalar_contribution).sum();
 
         candidates.push(CandidateDebug {
             name: a.clone(),
-            calls: s.calls,
-            ok: s.ok,
-            junk: s.junk,
-            hard_junk: s.hard_junk,
-            ok_rate,
-            junk_rate,
-            hard_junk_rate,
-            soft_junk_rate,
-            mean_cost_units: mean_cost,
-            mean_elapsed_ms: mean_lat,
+            summary: s,
             ucb,
-            objective_success,
+            objective_values: obj_values,
+            score,
             drift_score: None,
             catkl_score: None,
             cusum_score: None,
             ok_half_width: None,
             junk_half_width: None,
             hard_junk_half_width: None,
-            mean_quality_score: s.mean_quality_score,
         });
-
-        let mut pt = vec![
-            objective_success,
-            -mean_cost,
-            -mean_lat,
-            -hard_junk_rate,
-            -soft_junk_rate,
-        ];
-        if cfg.quality_weight > 0.0 {
-            pt.push(mean_q);
-        }
-        frontier_points.push(pt);
         frontier_names_in_order.push(a.clone());
     }
 
-    let dims = if cfg.quality_weight > 0.0 { 6 } else { 5 };
-    let weights: [f64; 6] = [
-        1.0,
-        cfg.cost_weight.max(0.0),
-        cfg.latency_weight.max(0.0),
-        cfg.hard_junk_weight.max(0.0),
-        cfg.junk_weight.max(0.0),
-        cfg.quality_weight.max(0.0),
-    ];
-    let (best_name, frontier_names) = choose_from_frontier(
-        dims,
-        &candidates,
-        &frontier_points,
-        &frontier_names_in_order,
-        arms_in_order.first(),
-        |c| {
-            let q_bonus = weights[5] * c.mean_quality_score.unwrap_or(0.0);
-            c.objective_success
-                - weights[1] * c.mean_cost_units
-                - weights[2] * c.mean_elapsed_ms
-                - weights[3] * c.hard_junk_rate
-                - weights[4] * c.soft_junk_rate
-                + q_bonus
-        },
-    );
+    let (best_name, frontier_names) =
+        choose_from_frontier(&candidates, &frontier_names_in_order, arms_in_order.first());
 
     let sel = Selection {
         chosen: best_name,
@@ -1342,7 +1461,12 @@ pub fn select_mab_monitored_explain_with_summaries(
         .find(|a| summaries.get(*a).copied().unwrap_or_default().calls == 0)
         .cloned();
     if let Some(chosen) = explore_choice {
-        return explore_first_decision(chosen, eligible_arms, constraints_fallback_used, *base);
+        return explore_first_decision(
+            chosen,
+            eligible_arms,
+            constraints_fallback_used,
+            base.clone(),
+        );
     }
 
     // Apply drift guard (optional) over the constraint-eligible set.
@@ -1492,10 +1616,17 @@ pub fn select_mab_monitored_explain_with_summaries(
         .sum::<f64>()
         .max(1.0);
 
-    // Monitored Pareto frontier includes drift + catKL + CUSUM as extra objectives (minimize each).
-    let mut frontier_points: Vec<Vec<f64>> = Vec::new();
+    // Monitored Pareto frontier: base objectives (with Wilson-bounded overrides)
+    // plus monitoring objectives (drift, catKL, CUSUM).
     let mut frontier_names_in_order: Vec<String> = Vec::new();
     let mut candidates: Vec<CandidateDebug> = Vec::new();
+
+    // Build monitoring objectives to append to the base set.
+    let monitoring_objectives = [
+        Objective::minimize(Extract::MeanCost, cfg.drift_weight.max(0.0)), // placeholder extract, value overridden
+        Objective::minimize(Extract::MeanCost, cfg.catkl_weight.max(0.0)),
+        Objective::minimize(Extract::MeanCost, cfg.cusum_weight.max(0.0)),
+    ];
 
     for a in &eligible_after_cusum {
         let s = summaries.get(a).copied().unwrap_or_default();
@@ -1511,9 +1642,7 @@ pub fn select_mab_monitored_explain_with_summaries(
         let (soft_used, soft_half) =
             monitor::apply_rate_bound(soft, s.calls, z, cfg.uncertainty.junk_mode);
 
-        let junk_total_used = (soft_used + hard_used).clamp(0.0, 1.0);
-
-        // Monitoring scores from raw windows (optional).
+        // Monitoring scores from raw windows.
         let drift_score = monitored.get(a).and_then(|w| {
             monitor::drift_between_windows(
                 w.baseline(),
@@ -1525,7 +1654,6 @@ pub fn select_mab_monitored_explain_with_summaries(
             )
             .map(|x| x.score)
         });
-        let drift_used = drift_score.unwrap_or(0.0);
 
         let catkl_score = monitored.get(a).and_then(|w| {
             monitor::catkl_score_between_windows(
@@ -1537,7 +1665,6 @@ pub fn select_mab_monitored_explain_with_summaries(
                 cfg.catkl_min_recent,
             )
         });
-        let catkl_used = catkl_score.unwrap_or(0.0);
 
         let cusum_score = monitored.get(a).and_then(|w| {
             monitor::cusum_score_between_windows(
@@ -1550,94 +1677,82 @@ pub fn select_mab_monitored_explain_with_summaries(
                 Some(cusum_alt_p),
             )
         });
-        let cusum_used = cusum_score.unwrap_or(0.0);
 
         let ucb = base.exploration_c * ((total_calls.ln() / n).sqrt());
-        let objective_success = ok_rate_used + ucb;
 
-        let mean_cost = s.mean_cost_units();
-        let mean_lat = s.mean_elapsed_ms();
-        let mean_q = s.mean_quality_score.unwrap_or(0.0);
+        // Build base objective values with Wilson-bounded overrides.
+        let mut obj_values: Vec<ObjectiveValue> = base
+            .objectives
+            .iter()
+            .map(|obj| {
+                // Override rate-based extractors with Wilson-bounded values.
+                let value = match obj.extract {
+                    Extract::OkRateUcb => ok_rate_used + ucb,
+                    Extract::HardJunkRate => hard_used,
+                    Extract::SoftJunkRate => soft_used,
+                    _ => obj.resolve(&s, ucb),
+                };
+                let pv = match obj.direction {
+                    Direction::Maximize => value,
+                    Direction::Minimize => -value,
+                };
+                let sc = match obj.direction {
+                    Direction::Maximize => obj.weight * value,
+                    Direction::Minimize => -(obj.weight * value),
+                };
+                ObjectiveValue {
+                    extract: obj.extract,
+                    value,
+                    pareto_value: pv,
+                    scalar_contribution: sc,
+                }
+            })
+            .collect();
+
+        // Append monitoring objectives with pre-computed values.
+        let mon_values = [
+            drift_score.unwrap_or(0.0),
+            catkl_score.unwrap_or(0.0),
+            cusum_score.unwrap_or(0.0),
+        ];
+        for (mon_obj, &mon_val) in monitoring_objectives.iter().zip(mon_values.iter()) {
+            obj_values.push(ObjectiveValue {
+                extract: mon_obj.extract,
+                value: mon_val,
+                pareto_value: -mon_val, // minimize
+                scalar_contribution: -(mon_obj.weight * mon_val),
+            });
+        }
+
+        let score: f64 = obj_values.iter().map(|o| o.scalar_contribution).sum();
 
         candidates.push(CandidateDebug {
             name: a.clone(),
-            calls: s.calls,
-            ok: s.ok,
-            junk: s.junk,
-            hard_junk: s.hard_junk,
-            ok_rate: ok_rate_used,
-            junk_rate: junk_total_used,
-            hard_junk_rate: hard_used,
-            soft_junk_rate: soft_used,
-            mean_cost_units: mean_cost,
-            mean_elapsed_ms: mean_lat,
+            summary: s,
             ucb,
-            objective_success,
+            objective_values: obj_values,
+            score,
             drift_score,
             catkl_score,
             cusum_score,
             ok_half_width: Some(ok_half),
             junk_half_width: Some(soft_half),
             hard_junk_half_width: Some(hard_half),
-            mean_quality_score: s.mean_quality_score,
         });
-
-        let mut pt = vec![
-            objective_success,
-            -mean_cost,
-            -mean_lat,
-            -hard_used,
-            -soft_used,
-            -drift_used,
-            -catkl_used,
-            -cusum_used,
-        ];
-        if base.quality_weight > 0.0 {
-            pt.push(mean_q);
-        }
-        frontier_points.push(pt);
         frontier_names_in_order.push(a.clone());
     }
-    let dims = if base.quality_weight > 0.0 { 9 } else { 8 };
-    let weights: [f64; 9] = [
-        1.0,
-        base.cost_weight.max(0.0),
-        base.latency_weight.max(0.0),
-        base.hard_junk_weight.max(0.0),
-        base.junk_weight.max(0.0),
-        cfg.drift_weight.max(0.0),
-        cfg.catkl_weight.max(0.0),
-        cfg.cusum_weight.max(0.0),
-        base.quality_weight.max(0.0),
-    ];
+
     let (best_name, frontier_names) = choose_from_frontier(
-        dims,
         &candidates,
-        &frontier_points,
         &frontier_names_in_order,
         eligible_after_cusum.first(),
-        |c| {
-            let drift = c.drift_score.unwrap_or(0.0);
-            let catkl = c.catkl_score.unwrap_or(0.0);
-            let cusum = c.cusum_score.unwrap_or(0.0);
-            let q_bonus = weights[8] * c.mean_quality_score.unwrap_or(0.0);
-            c.objective_success
-                - weights[1] * c.mean_cost_units
-                - weights[2] * c.mean_elapsed_ms
-                - weights[3] * c.hard_junk_rate
-                - weights[4] * c.soft_junk_rate
-                - weights[5] * drift
-                - weights[6] * catkl
-                - weights[7] * cusum
-                + q_bonus
-        },
     );
 
     let sel = Selection {
         chosen: best_name,
         frontier: frontier_names,
         candidates,
-        config: *base,
+        config: base.clone(),
     };
 
     MabSelectionDecision {
@@ -1740,7 +1855,7 @@ pub fn select_mab_monitored_decide(
             ok_half_width: c.ok_half_width,
             junk_half_width: c.junk_half_width,
             hard_junk_half_width: c.hard_junk_half_width,
-            mean_quality_score: c.mean_quality_score,
+            mean_quality_score: c.summary.mean_quality_score,
         });
     }
 
@@ -1756,6 +1871,41 @@ pub fn select_mab_monitored_decide(
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    fn mk_test_candidate(name: &str, score: f64) -> CandidateDebug {
+        CandidateDebug {
+            name: name.to_string(),
+            summary: Summary::default(),
+            ucb: 0.0,
+            objective_values: vec![],
+            score,
+            drift_score: None,
+            catkl_score: None,
+            cusum_score: None,
+            ok_half_width: None,
+            junk_half_width: None,
+            hard_junk_half_width: None,
+        }
+    }
+
+    fn mk_test_candidate_with_calls(name: &str, calls: u64, score: f64) -> CandidateDebug {
+        CandidateDebug {
+            name: name.to_string(),
+            summary: Summary {
+                calls,
+                ..Summary::default()
+            },
+            ucb: 0.0,
+            objective_values: vec![],
+            score,
+            drift_score: None,
+            catkl_score: None,
+            cusum_score: None,
+            ok_half_width: None,
+            junk_half_width: None,
+            hard_junk_half_width: None,
+        }
+    }
 
     fn s(
         calls: u64,
@@ -1866,12 +2016,12 @@ mod tests {
                 ..MabConfig::default()
             };
 
-            let sel = select_mab(&arms, &m, cfg);
+            let sel = select_mab(&arms, &m, cfg.clone());
             prop_assert!(sel.chosen == "a" || sel.chosen == "b");
             prop_assert!(sel.frontier.iter().any(|x| x == &sel.chosen));
 
             // Determinism: same input -> same output.
-            let sel2 = select_mab(&arms, &m, cfg);
+            let sel2 = select_mab(&arms, &m, cfg.clone());
             prop_assert_eq!(sel.chosen, sel2.chosen);
         }
 
@@ -1919,7 +2069,7 @@ mod tests {
             m.insert("b".to_string(), sb);
 
             let cfg = MabConfig::default();
-            let sel1 = select_mab(&arms, &m, cfg);
+            let sel1 = select_mab(&arms, &m, cfg.clone());
 
             // Add an irrelevant arm to the summaries map.
             let sx = s(
@@ -1980,7 +2130,7 @@ mod tests {
         let mut m1 = BTreeMap::new();
         m1.insert("a".to_string(), s(10, 10, 0, 0, 0, 0));
         m1.insert("b".to_string(), s(10, 5, 0, 0, 0, 0));
-        let e1 = sticky.apply_mab(select_mab_explain(&arms, &m1, cfg));
+        let e1 = sticky.apply_mab(select_mab_explain(&arms, &m1, cfg.clone()));
         assert_eq!(e1.chosen, "a");
         assert_eq!(sticky.dwell(), 1);
 
@@ -1989,9 +2139,9 @@ mod tests {
         m2.insert("a".to_string(), s(10, 5, 0, 0, 0, 0));
         m2.insert("b".to_string(), s(10, 10, 0, 0, 0, 0));
 
-        let e2 = sticky.apply_mab(select_mab_explain(&arms, &m2, cfg));
+        let e2 = sticky.apply_mab(select_mab_explain(&arms, &m2, cfg.clone()));
         assert_eq!(e2.chosen, "a");
-        let e3 = sticky.apply_mab(select_mab_explain(&arms, &m2, cfg));
+        let e3 = sticky.apply_mab(select_mab_explain(&arms, &m2, cfg.clone()));
         assert_eq!(e3.chosen, "a");
 
         // Next decision: allowed to switch.
@@ -2015,52 +2165,10 @@ mod tests {
                     chosen: chosen.to_string(),
                     frontier: vec!["a".to_string(), "b".to_string()],
                     candidates: vec![
-                        CandidateDebug {
-                            name: "a".to_string(),
-                            calls: 10,
-                            ok: 0,
-                            junk: 0,
-                            hard_junk: 0,
-                            ok_rate: 0.0,
-                            junk_rate: 0.0,
-                            hard_junk_rate: 0.0,
-                            soft_junk_rate: 0.0,
-                            mean_cost_units: 0.0,
-                            mean_elapsed_ms: 0.0,
-                            ucb: 0.0,
-                            objective_success: a_score,
-                            drift_score: None,
-                            catkl_score: None,
-                            cusum_score: None,
-                            ok_half_width: None,
-                            junk_half_width: None,
-                            hard_junk_half_width: None,
-                            mean_quality_score: None,
-                        },
-                        CandidateDebug {
-                            name: "b".to_string(),
-                            calls: 10,
-                            ok: 0,
-                            junk: 0,
-                            hard_junk: 0,
-                            ok_rate: 0.0,
-                            junk_rate: 0.0,
-                            hard_junk_rate: 0.0,
-                            soft_junk_rate: 0.0,
-                            mean_cost_units: 0.0,
-                            mean_elapsed_ms: 0.0,
-                            ucb: 0.0,
-                            objective_success: b_score,
-                            drift_score: None,
-                            catkl_score: None,
-                            cusum_score: None,
-                            ok_half_width: None,
-                            junk_half_width: None,
-                            hard_junk_half_width: None,
-                            mean_quality_score: None,
-                        },
+                        mk_test_candidate_with_calls("a", 10, a_score),
+                        mk_test_candidate_with_calls("b", 10, b_score),
                     ],
-                    config: cfg,
+                    config: cfg.clone(),
                 },
                 eligible_arms: vec!["a".to_string(), "b".to_string()],
                 constraints_fallback_used: false,
@@ -2099,29 +2207,8 @@ mod tests {
             selection: Selection {
                 chosen: "old".to_string(),
                 frontier: vec!["old".to_string()],
-                candidates: vec![CandidateDebug {
-                    name: "old".to_string(),
-                    calls: 0,
-                    ok: 0,
-                    junk: 0,
-                    hard_junk: 0,
-                    ok_rate: 0.0,
-                    junk_rate: 0.0,
-                    hard_junk_rate: 0.0,
-                    soft_junk_rate: 0.0,
-                    mean_cost_units: 0.0,
-                    mean_elapsed_ms: 0.0,
-                    ucb: 0.0,
-                    objective_success: 0.0,
-                    drift_score: None,
-                    catkl_score: None,
-                    cusum_score: None,
-                    ok_half_width: None,
-                    junk_half_width: None,
-                    hard_junk_half_width: None,
-                    mean_quality_score: None,
-                }],
-                config: cfg,
+                candidates: vec![mk_test_candidate("old", 0.0)],
+                config: cfg.clone(),
             },
             eligible_arms: vec!["old".to_string()],
             constraints_fallback_used: false,
@@ -2136,28 +2223,7 @@ mod tests {
         let base = Selection {
             chosen: "a".to_string(),
             frontier: vec!["a".to_string()],
-            candidates: vec![CandidateDebug {
-                name: "a".to_string(),
-                calls: 10,
-                ok: 0,
-                junk: 0,
-                hard_junk: 0,
-                ok_rate: 0.0,
-                junk_rate: 0.0,
-                hard_junk_rate: 0.0,
-                soft_junk_rate: 0.0,
-                mean_cost_units: 0.0,
-                mean_elapsed_ms: 0.0,
-                ucb: 0.0,
-                objective_success: 0.0,
-                drift_score: None,
-                catkl_score: None,
-                cusum_score: None,
-                ok_half_width: None,
-                junk_half_width: None,
-                hard_junk_half_width: None,
-                mean_quality_score: None,
-            }],
+            candidates: vec![mk_test_candidate_with_calls("a", 10, 0.0)],
             config: cfg,
         };
         let e = sticky.apply_mab(MabSelectionDecision {

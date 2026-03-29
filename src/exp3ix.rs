@@ -849,7 +849,7 @@ mod tests {
             let mut m = BTreeMap::new();
             m.insert("a".to_string(), s);
             m.insert("b".to_string(), s);
-            let mab_choice = select_mab_explain(&arms, &m, cfg).selection.chosen;
+            let mab_choice = select_mab_explain(&arms, &m, cfg.clone()).selection.chosen;
             let r = if mab_choice == "a" { r_a } else { r_b };
             total_mab += r;
 

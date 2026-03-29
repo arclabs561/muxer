@@ -47,25 +47,12 @@ fn f64_or0(x: f64) -> f64 {
     }
 }
 
-/// Compute the scalar score used for selection tie-breaking (higher is better),
-/// derived from `CandidateDebug` and `MabConfig`.
+/// Compute the scalar score used for selection tie-breaking (higher is better).
 ///
-/// This covers the core multi-objective weights.  Monitoring penalty weights
-/// (drift, catKL, CUSUM) live on [`crate::MonitoredMabConfig`] and are not
-/// included here -- those scores are still present on [`CandidateDebug`] for
-/// inspection, but the sticky wrapper operates on the base selection config.
-pub fn mab_scalar_score(c: &CandidateDebug, cfg: MabConfig) -> f64 {
-    let cost_w = f64_or0(cfg.cost_weight);
-    let lat_w = f64_or0(cfg.latency_weight);
-    let junk_w = f64_or0(cfg.junk_weight);
-    let hard_w = f64_or0(cfg.hard_junk_weight);
-
-    f64_or0(c.objective_success)
-        - cost_w * f64_or0(c.mean_cost_units)
-        - lat_w * f64_or0(c.mean_elapsed_ms)
-        // Match `select_mab` semantics: soft junk weight should not double-count hard junk.
-        - junk_w * f64_or0(c.soft_junk_rate)
-        - hard_w * f64_or0(c.hard_junk_rate)
+/// Returns the pre-computed `CandidateDebug::score`, which is the sum of all
+/// objective scalarization contributions.
+pub fn mab_scalar_score(c: &CandidateDebug, _cfg: &MabConfig) -> f64 {
+    f64_or0(c.score)
 }
 
 /// Stateful stickiness wrapper for deterministic `select_mab`.
@@ -105,7 +92,7 @@ impl StickyMab {
     fn scores_by_arm(sel: &Selection) -> BTreeMap<&str, f64> {
         let mut out = BTreeMap::new();
         for c in &sel.candidates {
-            out.insert(c.name.as_str(), mab_scalar_score(c, sel.config));
+            out.insert(c.name.as_str(), mab_scalar_score(c, &sel.config));
         }
         out
     }
@@ -196,7 +183,7 @@ impl StickyMab {
     /// Uses a heuristic for explore-first detection: `candidates.len() == 1 && calls == 0`.
     /// Prefer [`apply_mab`](Self::apply_mab) when `MabSelectionDecision` is available.
     pub fn apply(&mut self, sel: Selection) -> Selection {
-        let explore_first = sel.candidates.len() == 1 && sel.candidates[0].calls == 0;
+        let explore_first = sel.candidates.len() == 1 && sel.candidates[0].summary.calls == 0;
         let (sel, _notes) = self.apply_inner(sel, explore_first);
         sel
     }
@@ -239,60 +226,38 @@ impl StickyMab {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CandidateDebug, MabConfig};
+    use crate::{CandidateDebug, MabConfig, Summary};
+
+    fn mk_candidate(name: &str, score: f64) -> CandidateDebug {
+        CandidateDebug {
+            name: name.to_string(),
+            summary: Summary {
+                calls: 10,
+                ..Summary::default()
+            },
+            ucb: 0.0,
+            objective_values: vec![],
+            score,
+            drift_score: None,
+            catkl_score: None,
+            cusum_score: None,
+            ok_half_width: None,
+            junk_half_width: None,
+            hard_junk_half_width: None,
+        }
+    }
 
     fn mk_sel(previous: &str, candidate: &str) -> Selection {
-        let cfg = MabConfig::default();
+        let (a_score, b_score) = if previous == "a" {
+            (1.0, 2.0)
+        } else {
+            (2.0, 1.0)
+        };
         Selection {
             chosen: candidate.to_string(),
             frontier: vec!["a".to_string(), "b".to_string()],
-            candidates: vec![
-                CandidateDebug {
-                    name: "a".to_string(),
-                    calls: 10,
-                    ok: 0,
-                    junk: 0,
-                    hard_junk: 0,
-                    ok_rate: 0.0,
-                    junk_rate: 0.0,
-                    hard_junk_rate: 0.0,
-                    soft_junk_rate: 0.0,
-                    mean_cost_units: 0.0,
-                    mean_elapsed_ms: 0.0,
-                    ucb: 0.0,
-                    objective_success: if previous == "a" { 1.0 } else { 2.0 },
-                    drift_score: None,
-                    catkl_score: None,
-                    cusum_score: None,
-                    ok_half_width: None,
-                    junk_half_width: None,
-                    hard_junk_half_width: None,
-                    mean_quality_score: None,
-                },
-                CandidateDebug {
-                    name: "b".to_string(),
-                    calls: 10,
-                    ok: 0,
-                    junk: 0,
-                    hard_junk: 0,
-                    ok_rate: 0.0,
-                    junk_rate: 0.0,
-                    hard_junk_rate: 0.0,
-                    soft_junk_rate: 0.0,
-                    mean_cost_units: 0.0,
-                    mean_elapsed_ms: 0.0,
-                    ucb: 0.0,
-                    objective_success: if previous == "a" { 2.0 } else { 1.0 },
-                    drift_score: None,
-                    catkl_score: None,
-                    cusum_score: None,
-                    ok_half_width: None,
-                    junk_half_width: None,
-                    hard_junk_half_width: None,
-                    mean_quality_score: None,
-                },
-            ],
-            config: cfg,
+            candidates: vec![mk_candidate("a", a_score), mk_candidate("b", b_score)],
+            config: MabConfig::default(),
         }
     }
 
@@ -307,33 +272,11 @@ mod tests {
         let _ = sticky.apply(mk_sel("a", "a"));
 
         // Now provide a selection that does not include "a" at all.
-        let cfg = MabConfig::default();
         let sel = Selection {
             chosen: "x".to_string(),
             frontier: vec!["x".to_string()],
-            candidates: vec![CandidateDebug {
-                name: "x".to_string(),
-                calls: 10,
-                ok: 0,
-                junk: 0,
-                hard_junk: 0,
-                ok_rate: 0.0,
-                junk_rate: 0.0,
-                hard_junk_rate: 0.0,
-                soft_junk_rate: 0.0,
-                mean_cost_units: 0.0,
-                mean_elapsed_ms: 0.0,
-                ucb: 0.0,
-                objective_success: 0.0,
-                drift_score: None,
-                catkl_score: None,
-                cusum_score: None,
-                ok_half_width: None,
-                junk_half_width: None,
-                hard_junk_half_width: None,
-                mean_quality_score: None,
-            }],
-            config: cfg,
+            candidates: vec![mk_candidate("x", 0.0)],
+            config: MabConfig::default(),
         };
         let out = sticky.apply(sel);
         assert_eq!(out.chosen, "x");

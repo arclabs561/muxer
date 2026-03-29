@@ -192,12 +192,12 @@ fn main() {
         // This intentionally creates the “starvation” failure mode unless coverage exists.
         let mab_cfg = MabConfig {
             exploration_c: 0.7,
-            cost_weight: 0.0,
-            latency_weight: 0.0,
-            junk_weight: 0.0,
-            hard_junk_weight: 0.0,
             ..MabConfig::default()
-        };
+        }
+        .with_cost_weight(0.0)
+        .with_latency_weight(0.0)
+        .with_junk_weight(0.0)
+        .with_hard_junk_weight(0.0);
 
         let guard = LatencyGuardrailConfig::default();
 
@@ -219,7 +219,7 @@ fn main() {
                         .iter()
                         .map(|(k, w)| (k.clone(), w.summary()))
                         .collect();
-                    select_mab_decide(&arms, &summaries, mab_cfg).chosen
+                    select_mab_decide(&arms, &summaries, mab_cfg.clone()).chosen
                 }
 
                 Policy::MabWithCoverage {
@@ -245,7 +245,7 @@ fn main() {
                                 .map(|(k, w)| (k.clone(), w.summary()))
                                 .collect();
                             // Deterministic selector operates only on the eligible set.
-                            vec![select_mab_decide(eligible, &summaries, mab_cfg).chosen]
+                            vec![select_mab_decide(eligible, &summaries, mab_cfg.clone()).chosen]
                         },
                     );
                     fill.chosen

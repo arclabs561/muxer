@@ -206,13 +206,13 @@ fn main() {
     };
     let cfg = MabConfig {
         exploration_c: 0.75,
-        junk_weight: 1.0,
-        hard_junk_weight: 2.0,
-        quality_weight: 1.1,
-        latency_weight: 0.003,
-        cost_weight: 0.15,
         ..MabConfig::default()
-    };
+    }
+    .with_junk_weight(1.0)
+    .with_hard_junk_weight(2.0)
+    .with_quality_weight(1.1)
+    .with_latency_weight(0.003)
+    .with_cost_weight(0.15);
 
     for round in 0u64..100 {
         let under =
@@ -242,7 +242,7 @@ fn main() {
                     need,
                     |_s, rem, _k| {
                         let summaries = summaries_for_slice(rem, slice, &cell_windows);
-                        let d = select_mab_explain(rem, &summaries, cfg);
+                        let d = select_mab_explain(rem, &summaries, cfg.clone());
                         vec![d.selection.chosen]
                     },
                 )
