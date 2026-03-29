@@ -599,7 +599,7 @@ impl Router {
     /// Call this after downstream scoring completes — same pattern as
     /// [`Router::set_last_junk_level`].  The value is clamped to `[0.0, 1.0]`.
     ///
-    /// When the quality objective has non-zero weight (see [`Extract::MeanQuality`]),
+    /// When the quality objective has non-zero weight (see [`crate::Extract::MeanQuality`]),
     /// this gradient signal influences arm selection alongside the binary ok/junk rates.
     pub fn set_last_quality_score(&mut self, arm: &str, score: f64) {
         if let Some(w) = self.windows.get_mut(arm) {

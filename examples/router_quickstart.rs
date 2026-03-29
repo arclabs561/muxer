@@ -150,7 +150,7 @@ fn main() {
         "newly added arm should be explored first"
     );
 
-    rd.remove_arm("old-b");
+    let _ = rd.remove_arm("old-b");
     for _ in 0..100 {
         let d = rd.select(1, 0);
         assert_ne!(

@@ -726,7 +726,7 @@ mod tests {
                 // Variance must be finite and in [0, 0.25].
                 let v = s.variance();
                 prop_assert!(v.is_finite(), "variance not finite: {}", v);
-                prop_assert!(v >= 0.0 && v <= 0.25, "variance out of [0, 0.25]: {}", v);
+                prop_assert!((0.0..=0.25).contains(&v), "variance out of [0, 0.25]: {}", v);
             }
         }
 

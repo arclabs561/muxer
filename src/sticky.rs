@@ -12,8 +12,7 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    CandidateDebug, Decision, DecisionNote, DecisionPolicy, MabConfig, MabSelectionDecision,
-    Selection,
+    CandidateDebug, Decision, DecisionNote, DecisionPolicy, MabSelectionDecision, Selection,
 };
 
 /// Stickiness configuration.
@@ -59,12 +58,14 @@ pub fn mab_scalar_score(c: &CandidateDebug) -> f64 {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StickyMab {
+    /// Stickiness parameters (dwell, margin).
     pub cfg: StickyConfig,
     previous: Option<String>,
     dwell: u64,
 }
 
 impl StickyMab {
+    /// Create a new stickiness wrapper with the given config.
     pub fn new(cfg: StickyConfig) -> Self {
         Self {
             cfg,
