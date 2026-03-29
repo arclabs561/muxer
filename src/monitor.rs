@@ -152,6 +152,7 @@ impl Default for UncertaintyConfig {
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DriftConfig {
+    /// Which divergence metric to use.
     pub metric: DriftMetric,
     /// Simplex validation tolerance.
     pub tol: f64,
@@ -256,6 +257,7 @@ impl MonitoredWindow {
 pub struct DriftDecision {
     /// Drift score (meaning depends on `metric`).
     pub score: f64,
+    /// Which divergence metric produced this score.
     pub metric: DriftMetric,
     /// Baseline sample count.
     pub baseline_n: u64,
@@ -344,11 +346,15 @@ pub struct CatKlDetector {
     tol: f64,
 }
 
+/// Alarm state from the categorical KL detector.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CatKlAlarm {
+    /// Number of observations since reset.
     pub n: u64,
+    /// Current `n * KL(q || p0)` score.
     pub score: f64,
+    /// Threshold at which the alarm fires.
     pub threshold: f64,
 }
 
@@ -483,11 +489,15 @@ pub struct CusumCatDetector {
     n: u64,
 }
 
+/// Alarm state from the categorical CUSUM detector.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CusumCatAlarm {
+    /// Number of observations since reset.
     pub n: u64,
+    /// Current CUSUM statistic.
     pub score: f64,
+    /// Threshold at which the alarm fires.
     pub threshold: f64,
 }
 
@@ -548,15 +558,18 @@ impl CusumCatDetector {
         })
     }
 
+    /// Reset the CUSUM statistic and observation count to zero.
     pub fn reset(&mut self) {
         self.s = 0.0;
         self.n = 0;
     }
 
+    /// Number of observations since last reset.
     pub fn n(&self) -> u64 {
         self.n
     }
 
+    /// Current CUSUM statistic value.
     pub fn score(&self) -> f64 {
         self.s
     }
@@ -1061,17 +1074,24 @@ pub fn apply_rate_bound(successes: u64, trials: u64, z: f64, mode: RateBoundMode
     (used, half)
 }
 
-/// Uncertainty-adjusted rates for a summary (returns the used rates + their half-widths).
+/// Uncertainty-adjusted rates for a summary (used rates + Wilson half-widths).
 #[derive(Debug, Clone, Copy)]
 pub struct AdjustedRates {
+    /// Wilson-bounded ok rate.
     pub ok_rate: f64,
+    /// Half-width of the Wilson interval for ok rate.
     pub ok_half: f64,
+    /// Wilson-bounded junk rate.
     pub junk_rate: f64,
+    /// Half-width of the Wilson interval for junk rate.
     pub junk_half: f64,
+    /// Wilson-bounded hard junk rate.
     pub hard_junk_rate: f64,
+    /// Half-width of the Wilson interval for hard junk rate.
     pub hard_junk_half: f64,
 }
 
+/// Compute Wilson-bounded rates for all three outcome categories.
 pub fn adjusted_rates(summary: Summary, cfg: UncertaintyConfig) -> AdjustedRates {
     let calls = summary.calls;
     let (ok_rate, ok_half) = apply_rate_bound(summary.ok, calls, cfg.z, cfg.ok_mode);
