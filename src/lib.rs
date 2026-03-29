@@ -697,8 +697,9 @@ impl Summary {
 
 /// How to extract an objective value from a [`Summary`].
 ///
-/// Built-in extractors cover the standard `Outcome` fields.  For custom
-/// objectives, pre-compute the value and store it via [`Objective::value`].
+/// Built-in extractors cover the standard `Outcome` fields.  For caller-defined
+/// objectives, use [`Extract::Custom`] and set [`Objective::value`] per arm
+/// before each selection call.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
@@ -715,12 +716,16 @@ pub enum Extract {
     SoftJunkRate,
     /// `Summary::mean_quality_score` (0.0 when absent).
     MeanQuality,
+    /// Caller-defined objective.  The value must be set via [`Objective::value`]
+    /// before each selection call; extraction returns 0.0 as fallback.
+    Custom,
 }
 
 impl Extract {
     /// Extract the raw value from a summary.
     ///
     /// `ucb` is the pre-computed UCB term; only used by `OkRateUcb`.
+    /// For `Custom`, returns 0.0 (the caller should set `Objective::value` instead).
     pub fn apply(self, s: &Summary, ucb: f64) -> f64 {
         match self {
             Self::OkRateUcb => s.ok_rate() + ucb,
@@ -729,6 +734,7 @@ impl Extract {
             Self::HardJunkRate => s.hard_junk_rate(),
             Self::SoftJunkRate => s.soft_junk_rate(),
             Self::MeanQuality => s.mean_quality_score.unwrap_or(0.0),
+            Self::Custom => 0.0,
         }
     }
 }
@@ -780,6 +786,20 @@ impl Objective {
             direction: Direction::Minimize,
             weight,
             value: None,
+        }
+    }
+
+    /// Create a caller-defined objective with a pre-set value.
+    ///
+    /// Use this for objectives not derivable from `Summary` (e.g., revenue,
+    /// domain-specific scores).  Update the value per arm before each
+    /// selection call via [`Objective::with_value`].
+    pub fn custom(direction: Direction, weight: f64, value: f64) -> Self {
+        Self {
+            extract: Extract::Custom,
+            direction,
+            weight,
+            value: Some(value),
         }
     }
 
@@ -849,8 +869,13 @@ pub struct MabConfig {
     /// Objective dimensions for the Pareto frontier and scalarization.
     ///
     /// Each objective defines an axis (extract + direction) and a
-    /// scalarization weight.  The default set (`default_objectives()`)
+    /// scalarization weight.  The default set ([`default_objectives`])
     /// reproduces pre-0.5 behavior.
+    ///
+    /// The saturation principle (Ehrgott & Nickel 2002) bounds the effective
+    /// Pareto dimension at `min(objectives.len() - 1, K - 1)` for K arms.
+    /// Objectives beyond K cannot create new Pareto tradeoffs, though their
+    /// weights still affect scalarization tiebreaking.
     pub objectives: Vec<Objective>,
     /// Optional constraint: discard arms whose windowed junk_rate exceeds this.
     pub max_junk_rate: Option<f64>,
