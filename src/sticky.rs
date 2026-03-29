@@ -47,11 +47,11 @@ fn f64_or0(x: f64) -> f64 {
     }
 }
 
-/// Compute the scalar score used for selection tie-breaking (higher is better).
+/// Returns the pre-computed scalar score for selection tie-breaking (higher is better).
 ///
-/// Returns the pre-computed `CandidateDebug::score`, which is the sum of all
-/// objective scalarization contributions.
-pub fn mab_scalar_score(c: &CandidateDebug, _cfg: &MabConfig) -> f64 {
+/// Equivalent to `c.score` with NaN-safety.  The score is the sum of all
+/// objective scalarization contributions, computed during selection.
+pub fn mab_scalar_score(c: &CandidateDebug) -> f64 {
     f64_or0(c.score)
 }
 
@@ -92,7 +92,7 @@ impl StickyMab {
     fn scores_by_arm(sel: &Selection) -> BTreeMap<&str, f64> {
         let mut out = BTreeMap::new();
         for c in &sel.candidates {
-            out.insert(c.name.as_str(), mab_scalar_score(c, &sel.config));
+            out.insert(c.name.as_str(), mab_scalar_score(c));
         }
         out
     }
