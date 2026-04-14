@@ -210,17 +210,8 @@ impl Exp3Ix {
         if self.probs.is_empty() {
             return 0.0;
         }
-        let mut h = 0.0;
-        for &p in &self.probs {
-            if p > 0.0 && p.is_finite() {
-                h -= p * p.ln();
-            }
-        }
-        if h.is_finite() {
-            h
-        } else {
-            0.0
-        }
+        let h = logp::entropy_unchecked(&self.probs);
+        if h.is_finite() { h } else { 0.0 }
     }
 
     /// Effective number of arms: `exp(entropy)`, bounded in `[1, K]`.
