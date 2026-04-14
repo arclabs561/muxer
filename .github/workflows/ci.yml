@@ -81,3 +81,9 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc -p muxer --no-deps --all-features
+
+      - name: Semver check
+        if: github.event_name == 'pull_request'
+        run: |
+          cargo install cargo-semver-checks --locked || true
+          cargo semver-checks -p muxer
