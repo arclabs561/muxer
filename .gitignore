@@ -4,3 +4,4 @@ target-*/
 proptest-regressions/
 .DS_Store
 .claude/
+Cargo.lock
