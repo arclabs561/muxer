@@ -2,7 +2,7 @@
 # https://github.com/repository-settings/app
 
 repository:
-  description: "Multi-objective bandit routing: windowed stats, Pareto selection, piecewise-stationary drift detection"
+  description: "Multi-objective bandit routing with drift detection"
   homepage: "https://docs.rs/muxer"
   private: false
   has_issues: true
