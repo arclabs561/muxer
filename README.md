@@ -6,9 +6,8 @@
 
 Multi-objective bandit routing.
 
-Given K arms (model versions, endpoints, backends), the router observes per-call outcomes (ok/junk/hard_junk, quality score, cost, latency) and selects the next arm. Reward distributions may change at unknown times.
-
-Four selection policies: `select_mab` (deterministic multi-objective Pareto), `ThompsonSampling`, `Exp3Ix` (adversarial), and `LinUcb` (contextual, feature-gated). Regression detection via CUSUM with per-arm and per-(arm, context-bin) triage. Coverage enforcement prevents arm starvation. Designed for 2--10 arms.
+Select among K arms (models, endpoints, backends) using per-call
+outcomes. Handles non-stationary reward distributions.
 
 See the [API docs](https://docs.rs/muxer) and [examples/EXPERIMENTS.md](examples/EXPERIMENTS.md) for derivations and failure modes.
 
@@ -23,7 +22,7 @@ Deterministic core only (no stochastic bandits):
 
 ```toml
 [dependencies]
-muxer = { version = "0.4.0", default-features = false }
+muxer = { version = "0.5", default-features = false }
 ```
 
 ## Quickstart
