@@ -303,6 +303,11 @@ mod thompson;
 #[cfg(feature = "stochastic")]
 pub use thompson::{BetaStats, ThompsonConfig, ThompsonSampling, ThompsonState};
 
+#[cfg(feature = "boltzmann")]
+mod boltzmann;
+#[cfg(feature = "boltzmann")]
+pub use boltzmann::{BoltzmannConfig, BoltzmannPolicy};
+
 #[cfg(feature = "contextual")]
 mod contextual;
 #[cfg(feature = "contextual")]
