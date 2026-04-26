@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.2]
+
+### Added
+
+- **`boltzmann` feature**: softmax-temperature sampling policy via
+  `kuji::gumbel_max_sample`. Adds `BoltzmannPolicy` for stochastic
+  multi-armed-bandit selection that complements the deterministic Pareto
+  routing. Off by default; enable with `features = ["boltzmann"]`.
+
+## [0.5.1]
+
+### Changed
+
+- README tidy, version-string sync.
+- Stale dep bumps.
+- Switched internal entropy computation to `logp::entropy_unchecked`.
+
 ## [0.5.0]
 
 ### Breaking
