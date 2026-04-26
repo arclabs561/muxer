@@ -23,6 +23,8 @@ pub enum DecisionPolicy {
     Thompson,
     /// Linear contextual bandit (LinUCB).
     LinUcb,
+    /// Boltzmann (softmax-temperature) policy via Gumbel-max sampling.
+    Boltzmann,
 }
 
 /// Audit-friendly notes attached to a decision.
