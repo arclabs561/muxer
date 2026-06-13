@@ -15,7 +15,7 @@ See the [API docs](https://docs.rs/muxer) and [examples/EXPERIMENTS.md](examples
 
 ```toml
 [dependencies]
-muxer = "0.5.0"
+muxer = "0.5.2"
 ```
 
 Deterministic core only (no stochastic bandits):
