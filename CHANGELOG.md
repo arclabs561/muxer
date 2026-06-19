@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `llm_gateway_harness` example showing cost, quality, latency, and drift tradeoffs in model routing.
+
 ## [0.5.2]
 
 ### Added
@@ -293,4 +299,3 @@ Not published (internal iterations, changes folded into 0.3.5).
 
 ## [0.1.0]
 - Initial release.
-

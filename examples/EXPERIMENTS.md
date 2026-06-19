@@ -19,6 +19,8 @@ use `muxer` for matrix routing (slice selection + backend selection + feedback):
 
 - `cargo run --example matrix_harness`
   - generic eval matrix (`task x dataset x backend`) with coverage + guardrails.
+- `cargo run --release --example llm_gateway_harness`
+  - model-gateway traffic (`task x model`) with quality, latency, cost, and post-prompt-change drift.
 - `cargo run --example pcap_triage_harness`
   - network-security/PCAP triage (`dataset x protocol x environment`) with protocol compatibility.
 - `cargo run --example synthetic_drift_harness`
@@ -233,4 +235,3 @@ Takeaways (from a representative run; Monte Carlo noise is real):
   - `https://arxiv.org/abs/2107.10492`
 - CUSUM background (Page’s scheme / sequential analysis):
   - `https://en.wikipedia.org/wiki/CUSUM`
-
