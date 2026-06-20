@@ -92,13 +92,14 @@ Start here:
 
 ```bash
 cargo run --example getting_started        # minimal 3-backend routing loop
+cargo run --release --example llm_gateway_harness  # model routing under drift
 cargo run --example router_quickstart      # full lifecycle with CUSUM triage
 cargo run --example router_production --features stochastic  # production config
 ```
 
 Algorithm variants: `deterministic_router`, `thompson_router`, `exp3ix_router`, `contextual_router` (requires `contextual` feature), `sticky_mab_router`, `monitored_router`.
 
-Domain harnesses simulate realistic routing with injected drift: NLP (`matrix_harness`), network security (`pcap_triage_harness`), ad ranking, fraud scoring, clinical triage, search ranking.
+Domain harnesses simulate realistic routing with injected drift: LLM gateways (`llm_gateway_harness`), NLP (`matrix_harness`), network security (`pcap_triage_harness`), ad ranking, fraud scoring, clinical triage, search ranking.
 
 See `examples/` for 25+ examples and [examples/EXPERIMENTS.md](examples/EXPERIMENTS.md) for mini-experiments on trade-offs and failure modes.
 
