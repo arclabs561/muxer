@@ -1994,6 +1994,58 @@ mod tests {
     }
 
     #[test]
+    fn preference_reweighting_flips_route_without_recomputing_stats() {
+        // BaRP's "one policy, many trade-offs" property (Bandit-feedback
+        // Routing with Preferences, arXiv:2510.07429): the operator dials the
+        // performance/cost trade-off at inference time without retraining.
+        //
+        // Here the per-arm `Summary` IS the learned state and the objective
+        // weight vector IS the preference. The same summaries, scored under a
+        // quality-leaning vs a cost-leaning weight vector, must produce
+        // different routes -- with no change to the arm statistics.
+        let arms = vec!["premium".to_string(), "budget".to_string()];
+        let mut m = BTreeMap::new();
+        // premium: higher ok-rate (0.95), higher mean cost (10/call).
+        m.insert("premium".to_string(), s(20, 19, 0, 0, 200, 2000));
+        // budget: lower ok-rate (0.75), lower mean cost (1/call).
+        m.insert("budget".to_string(), s(20, 15, 0, 0, 20, 2000));
+
+        // exploration_c = 0 removes the UCB bonus so the flip is attributable
+        // to the preference weights alone, not to exploration tie-breaks.
+        let quality_pref = MabConfig {
+            exploration_c: 0.0,
+            objectives: vec![
+                Objective::maximize(Extract::OkRateUcb, 1.0),
+                Objective::minimize(Extract::MeanCost, 0.01),
+            ],
+            ..MabConfig::default()
+        };
+        let cost_pref = MabConfig {
+            exploration_c: 0.0,
+            objectives: vec![
+                Objective::maximize(Extract::OkRateUcb, 1.0),
+                Objective::minimize(Extract::MeanCost, 1.0),
+            ],
+            ..MabConfig::default()
+        };
+
+        let q = select_mab(&arms, &m, quality_pref);
+        let c = select_mab(&arms, &m, cost_pref);
+        assert_eq!(
+            q.chosen, "premium",
+            "quality-leaning preference routes to premium"
+        );
+        assert_eq!(
+            c.chosen, "budget",
+            "cost-leaning preference routes to budget"
+        );
+        // Both arms sit on the Pareto frontier (neither dominates the other),
+        // so it is the scalarization weights -- the preference -- that decide.
+        assert!(q.frontier.iter().any(|a| a == "premium"));
+        assert!(q.frontier.iter().any(|a| a == "budget"));
+    }
+
+    #[test]
     fn constraints_filter_arms_but_never_return_empty() {
         let arms = vec!["a".to_string(), "b".to_string()];
         let mut m = BTreeMap::new();
