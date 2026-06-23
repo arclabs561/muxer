@@ -314,3 +314,68 @@ fn router_acknowledge_all_clears_all_alarmed() {
     r.acknowledge_all_changes();
     assert_eq!(r.mode(), RouterMode::Normal, "all alarms cleared");
 }
+
+// ---------------------------------------------------------------------------
+// BaRP property: one policy, many trade-offs (arXiv:2510.07429)
+// ---------------------------------------------------------------------------
+
+proptest! {
+    /// For any two arms where one has the higher ok-rate and the other the
+    /// lower cost, the preference (objective weight vector) alone decides the
+    /// route: a quality-only weight routes to the higher ok-rate arm, a
+    /// cost-only weight routes to the cheaper arm. The per-arm `Summary`
+    /// (the learned state) is identical across both calls -- no retraining,
+    /// only the preference changes. This is BaRP's preference-tunable
+    /// inference, realized by muxer's multi-objective scalarization.
+    #[test]
+    fn preference_vector_alone_decides_route(
+        ok_lo in 5u64..25,
+        ok_hi_extra in 1u64..25,
+        cost_lo in 1u64..50,
+        cost_hi_extra in 1u64..150,
+    ) {
+        use muxer::{select_mab, Extract, MabConfig, Objective, Summary};
+        use std::collections::BTreeMap;
+
+        let calls = 50u64;
+        let ok_hi = (ok_lo + ok_hi_extra).min(calls); // strictly higher ok-rate
+        let cost_hi = cost_lo + cost_hi_extra; // strictly higher cost
+        prop_assume!(ok_hi > ok_lo);
+
+        let arms = vec!["premium".to_string(), "budget".to_string()];
+        let mut m = BTreeMap::new();
+        let mk = |ok: u64, cost_units: u64| Summary {
+            calls,
+            ok,
+            junk: 0,
+            hard_junk: 0,
+            cost_units,
+            elapsed_ms_sum: calls * 40,
+            mean_quality_score: None,
+        };
+        m.insert("premium".to_string(), mk(ok_hi, cost_hi));
+        m.insert("budget".to_string(), mk(ok_lo, cost_lo));
+
+        // Pure-quality preference: only ok-rate is weighted in scalarization.
+        let quality_pref = MabConfig {
+            exploration_c: 0.0,
+            objectives: vec![
+                Objective::maximize(Extract::OkRateUcb, 1.0),
+                Objective::minimize(Extract::MeanCost, 0.0),
+            ],
+            ..MabConfig::default()
+        };
+        // Pure-cost preference: only cost is weighted in scalarization.
+        let cost_pref = MabConfig {
+            exploration_c: 0.0,
+            objectives: vec![
+                Objective::maximize(Extract::OkRateUcb, 0.0),
+                Objective::minimize(Extract::MeanCost, 1.0),
+            ],
+            ..MabConfig::default()
+        };
+
+        prop_assert_eq!(select_mab(&arms, &m, quality_pref).chosen, "premium");
+        prop_assert_eq!(select_mab(&arms, &m, cost_pref).chosen, "budget");
+    }
+}
