@@ -1,4 +1,4 @@
-use muxer::{select_mab_decide, MabConfig, Outcome, Window};
+use muxer::{select_mab_decide, DecisionNote, MabConfig, Outcome, Window};
 use std::collections::BTreeMap;
 
 fn main() {
@@ -62,6 +62,27 @@ fn main() {
     };
     let d1 = select_mab_decide(&arms, &summaries, cfg_constraints);
     eprintln!("constraints-only decision={:?}", d1);
+
+    // Premise: `fast` is junky (45/50 degraded => ~90% junk rate), so the hard
+    // constraints (max_junk_rate=0.10, max_hard_junk_rate=0.05) must exclude it
+    // from the eligible frontier and it must not be the chosen arm.
+    let eligible_excludes_fast = d1.notes.iter().any(|n| {
+        matches!(
+            n,
+            DecisionNote::Constraints { eligible_arms, fallback_used: false }
+                if !eligible_arms.iter().any(|a| a == "fast")
+        )
+    });
+    assert!(
+        eligible_excludes_fast,
+        "expected the constraints to exclude `fast` from the eligible frontier, notes={:?}",
+        d1.notes
+    );
+    assert_ne!(
+        d1.chosen, "fast",
+        "expected the constrained decision to not choose the junk arm `fast`, got {}",
+        d1.chosen
+    );
 
     // Then: tune trade-offs once all candidates are "acceptable".
     let cfg_tradeoffs = MabConfig {

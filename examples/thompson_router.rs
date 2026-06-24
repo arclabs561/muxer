@@ -29,11 +29,19 @@ fn main() {
     // Separate RNG to simulate the environment.
     let mut env = StdRng::seed_from_u64(123);
 
+    let mut pulls_a = 0u64;
+    let mut pulls_b = 0u64;
+
     for t in 0..1_000u64 {
         let d = ts.decide_softmax_mean(&arms, 0.25).unwrap();
         let chosen = d.chosen.as_str();
         let probs = d.probs.clone().unwrap_or_default();
         let p = if chosen == "a" { true_p_a } else { true_p_b };
+        if chosen == "a" {
+            pulls_a += 1;
+        } else {
+            pulls_b += 1;
+        }
         let reward = if env.random::<f64>() < p { 1.0 } else { 0.0 };
         ts.update_reward(chosen, reward);
 
@@ -44,4 +52,11 @@ fn main() {
             );
         }
     }
+
+    // Premise: arm `a` has the higher true reward (0.70 vs 0.55), so Thompson
+    // sampling should converge its allocation onto `a` and pull it more often.
+    assert!(
+        pulls_a > pulls_b,
+        "expected the higher-reward arm `a` to receive the most pulls, got pulls_a={pulls_a} pulls_b={pulls_b}"
+    );
 }

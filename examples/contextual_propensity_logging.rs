@@ -39,6 +39,19 @@ fn main() {
         // Example: compute a "propensity" for the chosen arm (approximate).
         let propensity = probs.get(chosen).copied().unwrap_or(0.0);
 
+        // Premise: a logged propensity is a probability, and the per-action
+        // distribution it comes from is normalized. These must hold every round
+        // for the logged data to be valid for offline (IPS-style) analysis.
+        assert!(
+            (0.0..=1.0).contains(&propensity),
+            "propensity must be in [0,1], got {propensity} at t={t}"
+        );
+        let prob_sum: f64 = probs.values().sum();
+        assert!(
+            (prob_sum - 1.0).abs() < 1e-6,
+            "action probabilities must sum to ~1.0, got {prob_sum} at t={t} (probs={probs:?})"
+        );
+
         // Simulated reward: big does better when difficulty is high.
         let p_success = match chosen {
             "small" => (0.70 - 0.25 * difficulty).clamp(0.0, 1.0),

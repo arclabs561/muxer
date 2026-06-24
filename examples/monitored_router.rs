@@ -117,8 +117,21 @@ fn main() {
     let mut rng = StdRng::seed_from_u64(123);
     let mut chosen_counts: BTreeMap<String, u64> = BTreeMap::new();
 
+    // Track policy choices (excluding forced maintenance sampling) before vs
+    // after the change point to verify `fast` is demoted once it regresses.
+    let mut fast_policy_pre = 0u64;
+    let mut fast_policy_post = 0u64;
+
     for t in 0..2_000u64 {
         let policy = select_mab_monitored_decide(&arms, &windows, drift_cfg, cfg.clone());
+
+        if policy.chosen == "fast" {
+            if t < 1_000 {
+                fast_policy_pre += 1;
+            } else {
+                fast_policy_post += 1;
+            }
+        }
 
         // Maintenance sampling: without *some* coverage, you can't detect changes in unpulled arms.
         // This is intentionally simple/deterministic for the demo.
@@ -148,4 +161,13 @@ fn main() {
             );
         }
     }
+
+    // Premise: a change point at t>=1000 makes `fast` regress (ok_p 0.92 -> 0.45,
+    // hard_junk 0.10 -> 0.90). The drift-aware policy should demote `fast`, so it
+    // is chosen by the policy strictly less often after the change point than before.
+    eprintln!("fast policy picks: pre={fast_policy_pre} post={fast_policy_post}");
+    assert!(
+        fast_policy_post < fast_policy_pre,
+        "expected `fast` to be demoted after the change point (post < pre), got pre={fast_policy_pre} post={fast_policy_post}"
+    );
 }

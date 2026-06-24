@@ -302,4 +302,20 @@ fn main() {
         let post = post_hard_counts.get(&b).copied().unwrap_or(0);
         println!("  {:<18} pre={:>3} post={:>3}", b, pre, post);
     }
+
+    // Premise (the drift-adaptation effect the demo claims): `large_transformer`
+    // regresses on hard slices after the drift epoch, so muxer should pick it on
+    // hard slices strictly less often after the change than before.
+    let lt_pre = pre_hard_counts
+        .get("large_transformer")
+        .copied()
+        .unwrap_or(0);
+    let lt_post = post_hard_counts
+        .get("large_transformer")
+        .copied()
+        .unwrap_or(0);
+    assert!(
+        lt_post < lt_pre,
+        "expected `large_transformer` hard-slice picks to drop after drift (post < pre), got pre={lt_pre} post={lt_post}"
+    );
 }
