@@ -37,7 +37,7 @@ jobs:
       - name: test (default)
         run: cargo test -p muxer --all-targets
 
-      - name: run motivating harness examples (default)
+      - name: run example assertions (default)
         run: |
           cargo run -p muxer --example matrix_harness
           cargo run -p muxer --example pcap_triage_harness
@@ -46,6 +46,16 @@ jobs:
           cargo run -p muxer --example fraud_scoring_harness
           cargo run -p muxer --example search_ranking_harness
           cargo run -p muxer --example medical_triage_harness
+          cargo run -p muxer --example deterministic_router
+          cargo run -p muxer --example thompson_router
+          cargo run -p muxer --example monitored_router
+          cargo run -p muxer --example exp3ix_router
+          cargo run -p muxer --example mab_constraints_tuning
+
+      - name: run example assertions (contextual)
+        run: |
+          cargo run -p muxer --example contextual_router --features contextual
+          cargo run -p muxer --example contextual_propensity_logging --features contextual
 
       - name: clippy (no default features)
         run: cargo clippy -p muxer --all-targets --no-default-features -- -D warnings
