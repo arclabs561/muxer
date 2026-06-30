@@ -101,7 +101,7 @@ Algorithm variants: `deterministic_router`, `thompson_router`, `exp3ix_router`, 
 
 Domain harnesses simulate realistic routing with injected drift: LLM gateways (`llm_gateway_harness`), NLP (`matrix_harness`), network security (`pcap_triage_harness`), ad ranking, fraud scoring, clinical triage, search ranking.
 
-See `examples/` for 25+ examples and [examples/EXPERIMENTS.md](examples/EXPERIMENTS.md) for mini-experiments on trade-offs and failure modes.
+See [examples/README.md](examples/README.md) for runnable examples with captured output, and [examples/EXPERIMENTS.md](examples/EXPERIMENTS.md) for mini-experiments on trade-offs and failure modes.
 
 ## Development
 
