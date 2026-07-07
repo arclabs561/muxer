@@ -8,7 +8,7 @@ Multi-objective bandit routing with drift detection.
 Select among K arms (models, endpoints, backends) using per-call
 outcomes. Handles non-stationary reward distributions.
 
-See the [API docs](https://docs.rs/muxer) and [examples/EXPERIMENTS.md](examples/EXPERIMENTS.md) for derivations and failure modes.
+See [examples/EXPERIMENTS.md](examples/EXPERIMENTS.md) for derivations and failure modes.
 
 ## Usage
 
