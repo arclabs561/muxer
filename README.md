@@ -2,9 +2,8 @@
 
 [![crates.io](https://img.shields.io/crates/v/muxer.svg)](https://crates.io/crates/muxer)
 [![Documentation](https://docs.rs/muxer/badge.svg)](https://docs.rs/muxer)
-[![CI](https://github.com/arclabs561/muxer/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/muxer/actions/workflows/ci.yml)
 
-Multi-objective bandit routing.
+Multi-objective bandit routing with drift detection.
 
 Select among K arms (models, endpoints, backends) using per-call
 outcomes. Handles non-stationary reward distributions.
