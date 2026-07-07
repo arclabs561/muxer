@@ -6,6 +6,12 @@
 
 - `llm_gateway_harness` example showing cost, quality, latency, and drift tradeoffs in model routing.
 
+## [0.5.3]
+
+### Changed
+
+- Switched the optional `boltzmann` feature from `kuji` to `drawset`.
+
 ## [0.5.2]
 
 ### Added

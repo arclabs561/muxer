@@ -1,4 +1,4 @@
-//! Boltzmann (softmax-temperature) bandit policy via kuji's Gumbel-max trick.
+//! Boltzmann (softmax-temperature) bandit policy via drawset's Gumbel-max trick.
 //!
 //! At each `decide`, the policy samples one arm with probability proportional
 //! to `exp(mean_reward[i] / temperature)`. Concretely, it uses the Gumbel-max
@@ -9,7 +9,7 @@
 //! Compared with [`crate::ThompsonSampling`] (Beta posteriors over Bernoulli
 //! rewards) and [`crate::Exp3Ix`] (adversarial regret bounds), Boltzmann is
 //! the simplest stateless-given-stats baseline. It works for any real-valued
-//! reward and integrates with `kuji` for the Gumbel-noise RNG.
+//! reward and integrates with `drawset` for the Gumbel-noise RNG.
 //!
 //! Available behind the `boltzmann` feature.
 
@@ -64,7 +64,7 @@ impl BoltzmannConfig {
 /// Boltzmann (softmax) bandit policy.
 ///
 /// Maintains per-arm running mean reward and samples each decision via the
-/// Gumbel-max trick (delegated to [`kuji::gumbel_max_sample`]).
+/// Gumbel-max trick (delegated to [`drawset::gumbel_max_sample`]).
 ///
 /// # Example
 ///
@@ -130,12 +130,12 @@ impl BanditPolicy for BoltzmannPolicy {
             return None;
         }
         let inv_t = 1.0 / self.config.temperature;
-        // kuji::gumbel_max_sample takes &[f32]. Down-cast logits.
+        // drawset::gumbel_max_sample takes &[f32]. Down-cast logits.
         let logits: Vec<f32> = arms
             .iter()
             .map(|a| (self.mean_reward(a) * inv_t) as f32)
             .collect();
-        let idx = kuji::gumbel_max_sample(&logits);
+        let idx = drawset::gumbel_max_sample(&logits);
         let chosen = arms[idx].clone();
         let probs = self.probs(arms);
         Some(Decision {
