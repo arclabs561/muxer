@@ -6,4 +6,7 @@
 | docs/README.md | ACTIVE | Docs index |
 | docs/DOC_STATUS.md | ACTIVE | This file |
 | docs/design/post-round-3-roadmap.md | PROPOSAL | Sequencing after Round 3 fixes |
+| docs/design/config-api-hardening.md | PROPOSAL | Config exhaustiveness decision gates |
+| docs/design/ope-primitives.md | PROPOSAL | Minimal off-policy evaluation surface |
+| docs/design/muxer-tower.md | PROPOSAL | Tower integration boundary |
 | examples/EXPERIMENTS.md | NOTE | Theoretical background; may drift |
