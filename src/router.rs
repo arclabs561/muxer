@@ -6,7 +6,7 @@
 //! ```text
 //! let d = router.select(k, seed);   // pick k arms
 //! run_requests(d.chosen());          // your code
-//! router.observe(arm, outcome);      // record what happened
+//! assert!(router.observe(arm, outcome)); // record what happened
 //! ```
 //!
 //! The router handles the full routing lifecycle:
@@ -15,7 +15,7 @@
 //! 2. **Triage** — after monitoring fires on an arm, worst-first routing
 //!    investigates the alarmed arm while the rest continues normally.
 //! 3. **Acknowledgment** — [`Router::acknowledge_change`] resets the CUSUM bank
-//!    and promotes the arm's recent window into its baseline.
+//!    and clears the arm's recent monitoring window.
 //!
 //! ## Large K
 //!
@@ -26,10 +26,11 @@
 
 use crate::monitor::{DriftConfig, MonitoredWindow};
 use crate::{
-    policy_fill_generic, select_mab_explain, select_mab_monitored_explain_with_summaries,
-    split_control_budget, worst_first_pick_k, ContextualCell, ControlConfig, CoverageConfig,
-    DriftMetric, LatencyGuardrailConfig, MonitoredMabConfig, Outcome, OutcomeIdx, PipelineOrder,
-    Summary, TriageSession, TriageSessionConfig, Window, WorstFirstConfig,
+    monitoring_scores_for_arms, policy_fill_generic, select_mab_explain,
+    select_mab_monitored_explain_with_summaries_and_scores, split_control_budget,
+    worst_first_pick_k, ContextualCell, ControlConfig, CoverageConfig, DriftMetric,
+    LatencyGuardrailConfig, MonitoredMabConfig, Outcome, OutcomeIdx, PipelineOrder, Summary,
+    TriageSession, TriageSessionConfig, Window, WorstFirstConfig,
 };
 use std::collections::BTreeMap;
 
@@ -125,6 +126,7 @@ impl Default for RouterConfig {
 
 impl RouterConfig {
     /// Enable monitoring with given window capacities.
+    #[must_use]
     pub fn with_monitoring(mut self, baseline_cap: usize, recent_cap: usize) -> Self {
         self.enable_monitoring = true;
         self.baseline_cap = baseline_cap;
@@ -133,24 +135,28 @@ impl RouterConfig {
     }
 
     /// Enable triage with default `TriageSessionConfig`.
+    #[must_use]
     pub fn with_triage(mut self) -> Self {
         self.triage_cfg = Some(TriageSessionConfig::default());
         self
     }
 
     /// Enable triage with a custom config.
+    #[must_use]
     pub fn with_triage_cfg(mut self, cfg: TriageSessionConfig) -> Self {
         self.triage_cfg = Some(cfg);
         self
     }
 
     /// Set the selection window capacity.
+    #[must_use]
     pub fn window_cap(mut self, cap: usize) -> Self {
         self.window_cap = cap;
         self
     }
 
     /// Enable coverage sampling with the given minimum fraction.
+    #[must_use]
     pub fn with_coverage(mut self, min_fraction: f64, min_floor: u64) -> Self {
         self.coverage = CoverageConfig {
             enabled: true,
@@ -161,6 +167,7 @@ impl RouterConfig {
     }
 
     /// Enable latency guardrail.
+    #[must_use]
     pub fn with_guardrail(mut self, max_mean_ms: f64) -> Self {
         self.guardrail = LatencyGuardrailConfig {
             max_mean_ms: Some(max_mean_ms),
@@ -171,10 +178,61 @@ impl RouterConfig {
     }
 
     /// Reserve control picks.
+    #[must_use]
     pub fn with_control(mut self, control_k: usize) -> Self {
         self.control = ControlConfig::with_k(control_k);
         self
     }
+
+    fn validate(&self) -> Result<(), logp::Error> {
+        if !self.enable_monitoring {
+            return Ok(());
+        }
+
+        let baseline_cap = cap_as_u64(self.baseline_cap.max(1));
+        let recent_cap = cap_as_u64(self.recent_cap.max(1));
+
+        if recent_cap > baseline_cap {
+            return Err(logp::Error::Domain(
+                "RouterConfig: recent_cap must be <= baseline_cap when monitoring is enabled",
+            ));
+        }
+        if self.drift.min_baseline > baseline_cap {
+            return Err(logp::Error::Domain(
+                "RouterConfig: drift.min_baseline exceeds baseline_cap",
+            ));
+        }
+        if self.drift.min_recent > recent_cap {
+            return Err(logp::Error::Domain(
+                "RouterConfig: drift.min_recent exceeds recent_cap",
+            ));
+        }
+        if self.mab.catkl_min_baseline > baseline_cap {
+            return Err(logp::Error::Domain(
+                "RouterConfig: mab.catkl_min_baseline exceeds baseline_cap",
+            ));
+        }
+        if self.mab.catkl_min_recent > recent_cap {
+            return Err(logp::Error::Domain(
+                "RouterConfig: mab.catkl_min_recent exceeds recent_cap",
+            ));
+        }
+        if self.mab.cusum_min_baseline > baseline_cap {
+            return Err(logp::Error::Domain(
+                "RouterConfig: mab.cusum_min_baseline exceeds baseline_cap",
+            ));
+        }
+        if self.mab.cusum_min_recent > recent_cap {
+            return Err(logp::Error::Domain(
+                "RouterConfig: mab.cusum_min_recent exceeds recent_cap",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn cap_as_u64(cap: usize) -> u64 {
+    cap.try_into().unwrap_or(u64::MAX)
 }
 
 // ============================================================================
@@ -200,11 +258,13 @@ pub enum RouterMode {
 
 impl RouterMode {
     /// Whether the router is currently in triage mode.
+    #[must_use]
     pub fn is_triage(&self) -> bool {
         matches!(self, RouterMode::Triage { .. })
     }
 
     /// Arms that have alarmed, if any.
+    #[must_use]
     pub fn alarmed_arms(&self) -> &[String] {
         match self {
             RouterMode::Triage { alarmed_arms } => alarmed_arms,
@@ -246,6 +306,7 @@ impl RouterDecision {
     }
 
     /// The primary chosen arm (first in `chosen`), if any.
+    #[must_use]
     pub fn primary(&self) -> Option<&str> {
         self.chosen.first().map(|s| s.as_str())
     }
@@ -272,7 +333,7 @@ impl RouterDecision {
 /// let d = router.select(1, 0);         // pick 1 arm
 /// let arm = d.primary().unwrap().to_string();
 /// // ... make the call ...
-/// router.observe(&arm, Outcome::success(1, 50)); // record result
+/// assert!(router.observe(&arm, Outcome::success(1, 50))); // record result
 ///
 /// // After detecting a regression:
 /// if router.mode().is_triage() {
@@ -297,8 +358,11 @@ impl Router {
     /// Create a new router for the given arms and configuration.
     ///
     /// Returns an error if triage is enabled but the CUSUM bank cannot be
-    /// initialised (e.g. invalid simplex in `TriageSessionConfig`).
+    /// initialised (e.g. invalid simplex in `TriageSessionConfig`), or if
+    /// monitoring window capacities cannot satisfy configured sample minimums.
     pub fn new(arms: Vec<String>, cfg: RouterConfig) -> Result<Self, logp::Error> {
+        cfg.validate()?;
+
         let windows: BTreeMap<String, Window> = arms
             .iter()
             .map(|a| (a.clone(), Window::new(cfg.window_cap.max(1))))
@@ -396,10 +460,10 @@ impl Router {
 
     /// Select up to `k` arms for this decision round.
     ///
-    /// `seed` controls deterministic tie-breaking and control-arm shuffling.
-    /// Pass a monotonic counter (e.g. request ID) for reproducible selections,
-    /// or a random value for stochastic tie-breaking.  Same `seed` with the
-    /// same window state produces the same picks.
+    /// `seed` controls seeded control-arm shuffling, coverage picks, triage
+    /// tie-breaking, and stochastic policy choices when those modes are enabled.
+    /// Deterministic MAB ordering does not use the seed.  Same `seed` with the
+    /// same window state and policy mode produces the same picks.
     ///
     /// Does not mutate any window state.  Call [`Router::observe`] afterwards to record
     /// outcomes.
@@ -409,6 +473,7 @@ impl Router {
     /// With many arms (K > 20), use `k > 1` to batch the initial explore-first
     /// phase.  With k=3, K=30 arms reach initial coverage in ~10 rounds instead
     /// of 30.  Enable `CoverageConfig` to ensure no arm is permanently starved.
+    #[must_use]
     pub fn select(&self, k: usize, seed: u64) -> RouterDecision {
         if k == 0 || self.arms.is_empty() {
             return RouterDecision::empty(self.mode());
@@ -563,6 +628,7 @@ impl Router {
     ///
     /// Returns `false` if `arm` is not registered with this router (the
     /// observation is silently dropped).  Returns `true` on success.
+    #[must_use]
     pub fn observe(&mut self, arm: &str, outcome: Outcome) -> bool {
         self.observe_with_context(arm, outcome, &[])
     }
@@ -573,6 +639,7 @@ impl Router {
     /// is set.  Pass `&[]` if you have no features.
     ///
     /// Returns `false` if `arm` is not registered with this router.
+    #[must_use]
     pub fn observe_with_context(&mut self, arm: &str, outcome: Outcome, context: &[f64]) -> bool {
         let known = self.windows.contains_key(arm);
         if !known {
@@ -630,8 +697,8 @@ impl Router {
     ///
     /// This performs the full post-detection protocol:
     /// 1. Resets the arm's CUSUM bank (so it can detect the next change).
-    /// 2. Promotes the arm's recent window into its baseline (so the new
-    ///    post-change distribution becomes the reference for future monitoring).
+    /// 2. Clears the arm's recent monitoring window. The baseline already
+    ///    includes observed outcomes because monitoring writes to both windows.
     ///
     /// Call this after you've investigated the regression and confirmed the arm
     /// has stabilized at a new operating point.
@@ -659,6 +726,7 @@ impl Router {
     // -----------------------------------------------------------------------
 
     /// Current routing mode.
+    #[must_use]
     pub fn mode(&self) -> RouterMode {
         let alarmed = self
             .triage
@@ -675,16 +743,19 @@ impl Router {
     }
 
     /// Arms registered with this router.
+    #[must_use]
     pub fn arms(&self) -> &[String] {
         &self.arms
     }
 
     /// Total observations recorded via [`Router::observe`].
+    #[must_use]
     pub fn total_observations(&self) -> u64 {
         self.total_observations
     }
 
     /// Current `Summary` for an arm (from the selection window).
+    #[must_use]
     pub fn summary(&self, arm: &str) -> Summary {
         self.windows
             .get(arm)
@@ -693,6 +764,7 @@ impl Router {
     }
 
     /// Current summaries for all arms.
+    #[must_use]
     pub fn summaries(&self) -> BTreeMap<String, Summary> {
         self.windows
             .iter()
@@ -703,26 +775,31 @@ impl Router {
     /// Mean quality score for an arm, or `None` if no `quality_score` has been set.
     ///
     /// Convenience wrapper around [`Window::mean_quality_score`].
+    #[must_use]
     pub fn mean_quality_score(&self, arm: &str) -> Option<f64> {
         self.windows.get(arm)?.mean_quality_score()
     }
 
     /// Number of observations currently in the selection window for an arm.
+    #[must_use]
     pub fn window_len(&self, arm: &str) -> usize {
         self.windows.get(arm).map(|w| w.len()).unwrap_or(0)
     }
 
     /// Read-only access to the selection window for an arm.
+    #[must_use]
     pub fn window(&self, arm: &str) -> Option<&Window> {
         self.windows.get(arm)
     }
 
     /// Read-only access to the monitored window for an arm (if monitoring enabled).
+    #[must_use]
     pub fn monitored_window(&self, arm: &str) -> Option<&MonitoredWindow> {
         self.monitored.as_ref()?.get(arm)
     }
 
     /// Triage session (if enabled).
+    #[must_use]
     pub fn triage_session(&self) -> Option<&TriageSession> {
         self.triage.as_ref()
     }
@@ -743,6 +820,8 @@ impl Router {
         }
         let monitored = self.monitored.as_ref();
         let mut remaining: Vec<String> = eligible.to_vec();
+        let monitoring_scores = monitored
+            .map(|mon| monitoring_scores_for_arms(&remaining, mon, self.cfg.drift, &self.cfg.mab));
         let mut picks: Vec<String> = Vec::new();
 
         for _round in 0..need {
@@ -750,16 +829,14 @@ impl Router {
                 break;
             }
 
-            // Pass the full monitored map directly — select_mab_monitored_explain_with_summaries
-            // iterates over `remaining` and ignores arms not present in the map.
-            // This avoids the O(K × window_cap) clone that a sub-map would incur.
-            let d = if let Some(mon) = monitored {
-                select_mab_monitored_explain_with_summaries(
+            // Reuse monitoring scores across rounds; windows do not mutate
+            // during one select call.
+            let d = if let Some(scores) = &monitoring_scores {
+                select_mab_monitored_explain_with_summaries_and_scores(
                     &remaining,
                     sum_snap,
-                    mon,
-                    self.cfg.drift,
-                    self.cfg.mab.clone(),
+                    scores,
+                    &self.cfg.mab,
                 )
             } else {
                 select_mab_explain(&remaining, sum_snap, self.cfg.mab.base.clone())
@@ -823,6 +900,7 @@ impl Router {
     /// Capture a serializable snapshot of the current state.
     ///
     /// The snapshot excludes live CUSUM scores; they are reset on restore.
+    #[must_use]
     pub fn snapshot(&self) -> RouterSnapshot {
         RouterSnapshot {
             arms: self.arms.clone(),
@@ -838,6 +916,8 @@ impl Router {
     /// All window state is restored; CUSUM banks are rebuilt fresh from the
     /// config (detection history is reset).
     pub fn from_snapshot(snap: RouterSnapshot) -> Result<Self, logp::Error> {
+        snap.cfg.validate()?;
+
         let triage = if let Some(ref tcfg) = snap.cfg.triage_cfg {
             Some(TriageSession::new(&snap.arms, tcfg.clone())?)
         } else {
@@ -914,8 +994,8 @@ mod tests {
     fn router_observe_increments_total() {
         let mut r = Router::new(arms(2), RouterConfig::default()).unwrap();
         assert_eq!(r.total_observations(), 0);
-        r.observe("arm0", clean());
-        r.observe("arm1", clean());
+        let _ = r.observe("arm0", clean());
+        let _ = r.observe("arm1", clean());
         assert_eq!(r.total_observations(), 2);
     }
 
@@ -933,7 +1013,7 @@ mod tests {
         let mut r = Router::new(arms(2), RouterConfig::default()).unwrap();
         // Flood arm0 with good outcomes so arm1 (unseen) should be explored first.
         for _ in 0..50 {
-            r.observe("arm0", clean());
+            let _ = r.observe("arm0", clean());
         }
         let d = r.select(1, 0);
         assert_eq!(d.chosen[0], "arm1", "unseen arm should be explored first");
@@ -945,10 +1025,10 @@ mod tests {
     fn router_prefers_better_arm_after_enough_data() {
         let mut r = Router::new(arms(2), RouterConfig::default()).unwrap();
         for _ in 0..50 {
-            r.observe("arm0", clean());
+            let _ = r.observe("arm0", clean());
         }
         for _ in 0..50 {
-            r.observe(
+            let _ = r.observe(
                 "arm1",
                 Outcome {
                     ok: true,
@@ -976,12 +1056,12 @@ mod tests {
 
         // Seed baseline for both arms.
         for _ in 0..20 {
-            r.observe("good", clean());
-            r.observe("bad", clean());
+            let _ = r.observe("good", clean());
+            let _ = r.observe("bad", clean());
         }
         // Inject hard failures on "bad".
         for _ in 0..30 {
-            r.observe("bad", bad());
+            let _ = r.observe("bad", bad());
         }
 
         assert!(
@@ -1005,10 +1085,10 @@ mod tests {
         let mut r = Router::new(vec!["a".to_string()], cfg).unwrap();
 
         for _ in 0..10 {
-            r.observe("a", clean());
+            let _ = r.observe("a", clean());
         }
         for _ in 0..20 {
-            r.observe("a", bad());
+            let _ = r.observe("a", bad());
         }
         assert!(r.mode().is_triage());
 
@@ -1034,11 +1114,42 @@ mod tests {
     }
 
     #[test]
-    fn router_acknowledge_promotes_recent_to_baseline() {
+    fn router_rejects_monitoring_recent_cap_larger_than_baseline() {
+        let cfg = RouterConfig::default().with_monitoring(20, 30);
+        match Router::new(vec!["a".to_string()], cfg) {
+            Err(logp::Error::Domain(msg)) => assert!(msg.contains("recent_cap")),
+            Ok(_) => panic!("expected monitoring capacity validation error"),
+            Err(err) => panic!("expected Domain error, got {err}"),
+        }
+    }
+
+    #[test]
+    fn router_rejects_monitoring_min_samples_above_capacity() {
+        let cfg = RouterConfig::default().with_monitoring(20, 20);
+        match Router::new(vec!["a".to_string()], cfg) {
+            Err(logp::Error::Domain(msg)) => assert!(msg.contains("catkl_min_baseline")),
+            Ok(_) => panic!("expected monitoring capacity validation error"),
+            Err(err) => panic!("expected Domain error, got {err}"),
+        }
+    }
+
+    #[test]
+    fn router_accepts_small_monitoring_windows_when_min_samples_fit() {
+        let mut cfg = RouterConfig::default().with_monitoring(20, 10);
+        cfg.mab.catkl_min_baseline = 20;
+        cfg.mab.catkl_min_recent = 10;
+        cfg.mab.cusum_min_baseline = 20;
+        cfg.mab.cusum_min_recent = 10;
+
+        assert!(Router::new(vec!["a".to_string()], cfg).is_ok());
+    }
+
+    #[test]
+    fn router_acknowledge_clears_recent_window() {
         let cfg = RouterConfig::default().with_monitoring(200, 50);
         let mut r = Router::new(vec!["a".to_string()], cfg).unwrap();
         for _ in 0..20 {
-            r.observe("a", clean());
+            let _ = r.observe("a", clean());
         }
         let before_recent = r.monitored_window("a").unwrap().recent_len();
         assert!(before_recent > 0);
@@ -1050,14 +1161,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn router_acknowledge_does_not_double_count_recent_in_baseline() {
+        let cfg = RouterConfig::default().with_monitoring(200, 50);
+        let mut r = Router::new(vec!["a".to_string()], cfg).unwrap();
+
+        for _ in 0..100 {
+            let _ = r.observe("a", clean());
+        }
+        for _ in 0..50 {
+            let _ = r.observe("a", bad());
+        }
+
+        let before = r.monitored_window("a").unwrap().baseline().summary();
+        assert_eq!(before.calls, 150);
+        assert_eq!(before.ok, 100);
+        assert_eq!(before.junk, 50);
+        assert_eq!(before.hard_junk, 50);
+
+        r.acknowledge_change("a");
+
+        let mw = r.monitored_window("a").unwrap();
+        let after = mw.baseline().summary();
+        assert_eq!(mw.recent_len(), 0);
+        assert_eq!(after.calls, 150);
+        assert_eq!(after.ok, 100);
+        assert_eq!(after.junk, 50);
+        assert_eq!(after.hard_junk, 50);
+    }
+
     // --- Dynamic arm management ---
 
     #[test]
     fn router_add_arm_is_explored_next() {
         let mut r = Router::new(arms(2), RouterConfig::default()).unwrap();
         for _ in 0..50 {
-            r.observe("arm0", clean());
-            r.observe("arm1", clean());
+            let _ = r.observe("arm0", clean());
+            let _ = r.observe("arm1", clean());
         }
         r.add_arm("arm2".to_string()).unwrap();
 
@@ -1094,7 +1234,7 @@ mod tests {
                 seen.insert(a.clone());
             }
             for a in &d.chosen {
-                r.observe(a, clean());
+                let _ = r.observe(a, clean());
             }
         }
         assert_eq!(
@@ -1114,7 +1254,7 @@ mod tests {
         for i in 0..200 {
             let d = r.select(1, i as u64);
             if let Some(arm) = d.primary() {
-                r.observe(arm, clean());
+                let _ = r.observe(arm, clean());
             }
         }
 
@@ -1146,8 +1286,8 @@ mod tests {
     fn router_select_is_deterministic() {
         let mut r = Router::new(arms(4), RouterConfig::default()).unwrap();
         for _ in 0..20 {
-            r.observe("arm0", clean());
-            r.observe("arm1", bad());
+            let _ = r.observe("arm0", clean());
+            let _ = r.observe("arm1", bad());
         }
         let d1 = r.select(2, 99);
         let d2 = r.select(2, 99);

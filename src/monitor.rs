@@ -233,20 +233,18 @@ impl MonitoredWindow {
         self.recent.len()
     }
 
-    /// Acknowledge a confirmed change: promote recent observations into the baseline,
-    /// then clear the recent window.
+    /// Acknowledge a confirmed change: keep the current baseline, then clear
+    /// the recent window.
     ///
     /// Call this after investigating and confirming a regression on this arm.
-    /// The recent window becomes part of the new baseline; subsequent observations
-    /// build a fresh recent window so drift detection can track further changes.
+    /// Observations are already written to both windows by [`Self::push`].
+    /// Subsequent observations build a fresh recent window so drift detection
+    /// can track further changes.
     ///
     /// This is the standard post-detection protocol:
     /// 1. [`crate::TriageSession::reset_arm`] — resets the CUSUM bank.
     /// 2. This method — resets the monitoring windows.
     pub fn acknowledge_change(&mut self) {
-        for o in self.recent.iter().copied() {
-            self.baseline.push(o);
-        }
         self.recent = Window::new(self.recent.cap());
     }
 }
@@ -456,7 +454,7 @@ impl CatKlDetector {
     fn empirical(&self) -> Vec<f64> {
         let kf = self.k as f64;
         let alpha = self.alpha;
-        let denom = (self.n as f64) + alpha * kf;
+        let denom = alpha.mul_add(kf, self.n as f64);
         if denom <= 0.0 {
             // Shouldn't happen, but keep it safe.
             return vec![1.0 / kf; self.k];

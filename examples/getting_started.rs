@@ -53,7 +53,7 @@ fn main() {
 
         // Step 1: push the outcome immediately with junk=false (you don't
         // know quality yet — the call hasn't been scored).
-        router.observe(&arm, Outcome::success(5, 200));
+        assert!(router.observe(&arm, Outcome::success(5, 200)));
 
         // Step 2 (delayed): score the response after downstream processing.
         let (quality, is_junk) = quality_for(&arm);

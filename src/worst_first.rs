@@ -106,7 +106,9 @@ where
     for row in &mut scored {
         let calls = (row.2 as f64).max(1.0);
         let exploration = cfg.exploration_c * ((total_calls_f.ln() / calls).sqrt());
-        let score = cfg.hard_weight * row.3 + cfg.soft_weight * row.4 + exploration;
+        let score = cfg
+            .hard_weight
+            .mul_add(row.3, cfg.soft_weight.mul_add(row.4, exploration));
         row.0 = score;
     }
 
@@ -344,7 +346,9 @@ where
     for row in &mut scored {
         let calls = (row.2 as f64).max(1.0);
         let exploration = cfg.exploration_c * ((total_calls.ln() / calls).sqrt());
-        row.0 = cfg.hard_weight * row.3 + cfg.soft_weight * row.4 + exploration;
+        row.0 = cfg
+            .hard_weight
+            .mul_add(row.3, cfg.soft_weight.mul_add(row.4, exploration));
     }
 
     scored.sort_by(|a, b| {

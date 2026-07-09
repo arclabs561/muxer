@@ -14,7 +14,7 @@ See [examples/EXPERIMENTS.md](examples/EXPERIMENTS.md) for derivations and failu
 
 ```toml
 [dependencies]
-muxer = "0.5.2"
+muxer = "0.5.3"
 ```
 
 Deterministic core only (no stochastic bandits):
@@ -37,7 +37,7 @@ loop {
     let arm = d.primary().unwrap().to_string();
 
     let outcome = Outcome::success(5, 120);
-    router.observe(&arm, outcome);
+    assert!(router.observe(&arm, outcome));
 
     if router.mode().is_triage() {
         router.acknowledge_change(&arm);

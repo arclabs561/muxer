@@ -86,10 +86,10 @@ fn main() {
             let junk_prob = 0.04;
             let ok = rng.random::<f64>() < ok_prob;
             let junk = ok && rng.random::<f64>() < junk_prob;
-            router.observe(
+            assert!(router.observe(
                 arm,
                 Outcome::new(ok, junk, !ok, 3, rng.random_range(50..150)),
-            );
+            ));
         }
     }
     println!("  total observations: {}", router.total_observations());
@@ -115,7 +115,7 @@ fn main() {
             } else {
                 Outcome::success(3, rng.random_range(50..150))
             };
-            router.observe_with_context(arm, outcome, &[0.5_f64]);
+            assert!(router.observe_with_context(arm, outcome, &[0.5_f64]));
         }
     }
 

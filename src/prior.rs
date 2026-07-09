@@ -47,10 +47,9 @@ pub fn apply_prior_counts_to_summary(out: &mut Summary, prior: Summary, target_c
         (Some(out_q), Some(prior_q)) => {
             let total = out_obs + prior_obs;
             if total > 0.0 {
-                out.mean_quality_score = Some(
-                    ((out_q * out_obs + prior_q.clamp(0.0, 1.0) * prior_obs) / total)
-                        .clamp(0.0, 1.0),
-                );
+                let prior_q = prior_q.clamp(0.0, 1.0);
+                let weighted = out_q.mul_add(out_obs, prior_q * prior_obs);
+                out.mean_quality_score = Some((weighted / total).clamp(0.0, 1.0));
             }
         }
         _ => {}

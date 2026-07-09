@@ -1488,6 +1488,89 @@ pub fn select_mab_monitored_explain(
     )
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct MonitoringScores {
+    drift_score: Option<f64>,
+    catkl_score: Option<f64>,
+    cusum_score: Option<f64>,
+}
+
+fn nonnegative_threshold(x: Option<f64>) -> Option<f64> {
+    x.and_then(|x| (x.is_finite() && x >= 0.0).then_some(x))
+}
+
+fn monitored_catkl_alpha(cfg: &MonitoredMabConfig) -> f64 {
+    if cfg.catkl_alpha.is_finite() && cfg.catkl_alpha > 0.0 {
+        cfg.catkl_alpha
+    } else {
+        1e-3
+    }
+}
+
+fn monitored_cusum_alpha(cfg: &MonitoredMabConfig) -> f64 {
+    if cfg.cusum_alpha.is_finite() && cfg.cusum_alpha > 0.0 {
+        cfg.cusum_alpha
+    } else {
+        1e-3
+    }
+}
+
+fn monitored_cusum_alt_p(cfg: &MonitoredMabConfig) -> [f64; 4] {
+    cfg.cusum_alt_p.unwrap_or([0.05, 0.05, 0.45, 0.45])
+}
+
+pub(crate) fn monitoring_scores_for_arms(
+    arms_in_order: &[String],
+    monitored: &BTreeMap<String, MonitoredWindow>,
+    drift_cfg: DriftConfig,
+    cfg: &MonitoredMabConfig,
+) -> BTreeMap<String, MonitoringScores> {
+    let catkl_alpha = monitored_catkl_alpha(cfg);
+    let cusum_alpha = monitored_cusum_alpha(cfg);
+    let cusum_alt_p = monitored_cusum_alt_p(cfg);
+
+    arms_in_order
+        .iter()
+        .filter_map(|a| {
+            let w = monitored.get(a)?;
+            let drift_score = monitor::drift_between_windows(
+                w.baseline(),
+                w.recent(),
+                DriftConfig {
+                    metric: cfg.drift_metric,
+                    ..drift_cfg
+                },
+            )
+            .map(|x| x.score);
+            let catkl_score = monitor::catkl_score_between_windows(
+                w.baseline(),
+                w.recent(),
+                catkl_alpha,
+                drift_cfg.tol,
+                cfg.catkl_min_baseline,
+                cfg.catkl_min_recent,
+            );
+            let cusum_score = monitor::cusum_score_between_windows(
+                w.baseline(),
+                w.recent(),
+                cusum_alpha,
+                drift_cfg.tol,
+                cfg.cusum_min_baseline,
+                cfg.cusum_min_recent,
+                Some(cusum_alt_p),
+            );
+            Some((
+                a.clone(),
+                MonitoringScores {
+                    drift_score,
+                    catkl_score,
+                    cusum_score,
+                },
+            ))
+        })
+        .collect()
+}
+
 /// Like `select_mab_monitored_explain`, but uses caller-provided summaries for the base objectives
 /// (e.g. prior-smoothed rates), while still computing monitoring scores from `monitored`.
 ///
@@ -1500,6 +1583,21 @@ pub fn select_mab_monitored_explain_with_summaries(
     monitored: &BTreeMap<String, MonitoredWindow>,
     drift_cfg: DriftConfig,
     cfg: MonitoredMabConfig,
+) -> MabSelectionDecision {
+    let monitoring_scores = monitoring_scores_for_arms(arms_in_order, monitored, drift_cfg, &cfg);
+    select_mab_monitored_explain_with_summaries_and_scores(
+        arms_in_order,
+        summaries,
+        &monitoring_scores,
+        &cfg,
+    )
+}
+
+pub(crate) fn select_mab_monitored_explain_with_summaries_and_scores(
+    arms_in_order: &[String],
+    summaries: &BTreeMap<String, Summary>,
+    monitoring_scores: &BTreeMap<String, MonitoringScores>,
+    cfg: &MonitoredMabConfig,
 ) -> MabSelectionDecision {
     let base = &cfg.base;
 
@@ -1523,27 +1621,22 @@ pub fn select_mab_monitored_explain_with_summaries(
     }
 
     // Apply drift guard (optional) over the constraint-eligible set.
-    let max_drift = cfg
-        .max_drift
-        .and_then(|x| (x.is_finite() && x >= 0.0).then_some(x));
+    let max_drift = nonnegative_threshold(cfg.max_drift);
+    let max_catkl = nonnegative_threshold(cfg.max_catkl);
+    let catkl_alpha = monitored_catkl_alpha(cfg);
+    let max_cusum = nonnegative_threshold(cfg.max_cusum);
+    let cusum_alpha = monitored_cusum_alpha(cfg);
+    let cusum_alt_p = monitored_cusum_alt_p(cfg);
     let mut eligible_after_drift = arms_in_order.to_vec();
     let mut drift_guard: Option<DriftGuardDecision> = None;
     if let Some(thr) = max_drift {
         let mut kept: Vec<String> = Vec::new();
         for a in arms_in_order {
-            let Some(w) = monitored.get(a) else {
-                kept.push(a.clone());
-                continue;
-            };
-            let d = monitor::drift_between_windows(
-                w.baseline(),
-                w.recent(),
-                DriftConfig {
-                    metric: cfg.drift_metric,
-                    ..drift_cfg
-                },
-            );
-            let violates = d.as_ref().map(|x| x.score > thr).unwrap_or(false);
+            let violates = monitoring_scores
+                .get(a)
+                .and_then(|s| s.drift_score)
+                .map(|x| x > thr)
+                .unwrap_or(false);
             if !violates {
                 kept.push(a.clone());
             }
@@ -1564,32 +1657,16 @@ pub fn select_mab_monitored_explain_with_summaries(
     }
 
     // Apply categorical KL guard (optional) over the drift-eligible set.
-    let max_catkl = cfg
-        .max_catkl
-        .and_then(|x| (x.is_finite() && x >= 0.0).then_some(x));
-    let catkl_alpha = if cfg.catkl_alpha.is_finite() && cfg.catkl_alpha > 0.0 {
-        cfg.catkl_alpha
-    } else {
-        1e-3
-    };
     let mut eligible_after_catkl = eligible_after_drift.clone();
     let mut catkl_guard: Option<CatKlGuardDecision> = None;
     if let Some(thr) = max_catkl {
         let mut kept: Vec<String> = Vec::new();
         for a in &eligible_after_drift {
-            let Some(w) = monitored.get(a) else {
-                kept.push(a.clone());
-                continue;
-            };
-            let s = monitor::catkl_score_between_windows(
-                w.baseline(),
-                w.recent(),
-                catkl_alpha,
-                drift_cfg.tol,
-                cfg.catkl_min_baseline,
-                cfg.catkl_min_recent,
-            );
-            let violates = s.map(|x| x > thr).unwrap_or(false);
+            let violates = monitoring_scores
+                .get(a)
+                .and_then(|s| s.catkl_score)
+                .map(|x| x > thr)
+                .unwrap_or(false);
             if !violates {
                 kept.push(a.clone());
             }
@@ -1612,34 +1689,16 @@ pub fn select_mab_monitored_explain_with_summaries(
     }
 
     // Apply categorical CUSUM guard (optional) over the catKL-eligible set.
-    let max_cusum = cfg
-        .max_cusum
-        .and_then(|x| (x.is_finite() && x >= 0.0).then_some(x));
-    let cusum_alpha = if cfg.cusum_alpha.is_finite() && cfg.cusum_alpha > 0.0 {
-        cfg.cusum_alpha
-    } else {
-        1e-3
-    };
-    let cusum_alt_p = cfg.cusum_alt_p.unwrap_or([0.05, 0.05, 0.45, 0.45]);
     let mut eligible_after_cusum = eligible_after_catkl.clone();
     let mut cusum_guard: Option<CusumGuardDecision> = None;
     if let Some(thr) = max_cusum {
         let mut kept: Vec<String> = Vec::new();
         for a in &eligible_after_catkl {
-            let Some(w) = monitored.get(a) else {
-                kept.push(a.clone());
-                continue;
-            };
-            let s = monitor::cusum_score_between_windows(
-                w.baseline(),
-                w.recent(),
-                cusum_alpha,
-                drift_cfg.tol,
-                cfg.cusum_min_baseline,
-                cfg.cusum_min_recent,
-                Some(cusum_alt_p),
-            );
-            let violates = s.map(|x| x > thr).unwrap_or(false);
+            let violates = monitoring_scores
+                .get(a)
+                .and_then(|s| s.cusum_score)
+                .map(|x| x > thr)
+                .unwrap_or(false);
             if !violates {
                 kept.push(a.clone());
             }
@@ -1674,11 +1733,11 @@ pub fn select_mab_monitored_explain_with_summaries(
     let mut frontier_names_in_order: Vec<String> = Vec::new();
     let mut candidates: Vec<CandidateDebug> = Vec::new();
 
-    // Build monitoring objectives to append to the base set.
+    // Build synthetic monitoring objectives to append to the base set.
     let monitoring_objectives = [
-        Objective::minimize(Extract::MeanCost, cfg.drift_weight.max(0.0)), // placeholder extract, value overridden
-        Objective::minimize(Extract::MeanCost, cfg.catkl_weight.max(0.0)),
-        Objective::minimize(Extract::MeanCost, cfg.cusum_weight.max(0.0)),
+        Objective::minimize(Extract::Custom, cfg.drift_weight.max(0.0)),
+        Objective::minimize(Extract::Custom, cfg.catkl_weight.max(0.0)),
+        Objective::minimize(Extract::Custom, cfg.cusum_weight.max(0.0)),
     ];
 
     for a in &eligible_after_cusum {
@@ -1695,41 +1754,10 @@ pub fn select_mab_monitored_explain_with_summaries(
         let (soft_used, soft_half) =
             monitor::apply_rate_bound(soft, s.calls, z, cfg.uncertainty.junk_mode);
 
-        // Monitoring scores from raw windows.
-        let drift_score = monitored.get(a).and_then(|w| {
-            monitor::drift_between_windows(
-                w.baseline(),
-                w.recent(),
-                DriftConfig {
-                    metric: cfg.drift_metric,
-                    ..drift_cfg
-                },
-            )
-            .map(|x| x.score)
-        });
-
-        let catkl_score = monitored.get(a).and_then(|w| {
-            monitor::catkl_score_between_windows(
-                w.baseline(),
-                w.recent(),
-                catkl_alpha,
-                drift_cfg.tol,
-                cfg.catkl_min_baseline,
-                cfg.catkl_min_recent,
-            )
-        });
-
-        let cusum_score = monitored.get(a).and_then(|w| {
-            monitor::cusum_score_between_windows(
-                w.baseline(),
-                w.recent(),
-                cusum_alpha,
-                drift_cfg.tol,
-                cfg.cusum_min_baseline,
-                cfg.cusum_min_recent,
-                Some(cusum_alt_p),
-            )
-        });
+        let scores = monitoring_scores.get(a).copied().unwrap_or_default();
+        let drift_score = scores.drift_score;
+        let catkl_score = scores.catkl_score;
+        let cusum_score = scores.cusum_score;
 
         let ucb = base.exploration_c * ((total_calls.ln() / n).sqrt());
 

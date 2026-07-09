@@ -155,7 +155,7 @@ impl ArmState {
 fn dot(a: &[f64], b: &[f64]) -> f64 {
     let mut s = 0.0;
     for (x, y) in a.iter().zip(b.iter()) {
-        s += x * y;
+        s = x.mul_add(*y, s);
     }
     s
 }
@@ -166,7 +166,7 @@ fn mat_vec(a: &[f64], dim: usize, x: &[f64]) -> Vec<f64> {
         let mut s = 0.0;
         let row = &a[i * dim..(i + 1) * dim];
         for j in 0..dim {
-            s += row[j] * x[j];
+            s = row[j].mul_add(x[j], s);
         }
         out[i] = s;
     }

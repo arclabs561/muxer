@@ -34,7 +34,7 @@ proptest! {
         // Populate some observations.
         for i in 0..n_obs {
             let arm = &a[i % n_arms];
-            r.observe(arm, clean());
+            let _ = r.observe(arm, clean());
         }
 
         let d = r.select(k, seed);
@@ -70,9 +70,9 @@ proptest! {
         let mut r = Router::new(a.clone(), RouterConfig::default()).unwrap();
         let o = Outcome::new(ok, junk, hard_junk, cost_units, elapsed_ms);
         // Observe on a known arm.
-        r.observe(&a[0], o);
+        let _ = r.observe(&a[0], o);
         // Observe on an unknown arm (should be a no-op, not panic).
-        r.observe("nonexistent", o);
+        let _ = r.observe("nonexistent", o);
     }
 
     /// Determinism: same seed + same observations → same picks.
@@ -86,7 +86,7 @@ proptest! {
         let a = arms(n_arms);
         let mut r = Router::new(a.clone(), RouterConfig::default()).unwrap();
         for i in 0..n_obs {
-            r.observe(&a[i % n_arms], clean());
+            let _ = r.observe(&a[i % n_arms], clean());
         }
         let d1 = r.select(k, seed);
         let d2 = r.select(k, seed);
@@ -102,7 +102,7 @@ proptest! {
         let a = arms(n_arms);
         let mut r = Router::new(a.clone(), RouterConfig::default()).unwrap();
         for i in 0..n_obs {
-            r.observe(&a[i % n_arms], bad());
+            let _ = r.observe(&a[i % n_arms], bad());
         }
         prop_assert_eq!(r.mode(), RouterMode::Normal, "no triage cfg → always Normal");
     }
@@ -124,14 +124,14 @@ fn router_full_triage_lifecycle() {
 
     // Phase 1: clean baseline.
     for _ in 0..20 {
-        r.observe("good", clean());
-        r.observe("bad", clean());
+        let _ = r.observe("good", clean());
+        let _ = r.observe("bad", clean());
     }
     assert_eq!(r.mode(), RouterMode::Normal);
 
     // Phase 2: inject failures.
     for _ in 0..30 {
-        r.observe("bad", bad());
+        let _ = r.observe("bad", bad());
     }
     assert!(r.mode().is_triage());
     assert!(r.mode().alarmed_arms().contains(&"bad".to_string()));
@@ -166,7 +166,7 @@ fn router_large_k_coverage_with_monitoring() {
         let d = r.select(3, round as u64);
         for arm in &d.chosen {
             seen.insert(arm.clone());
-            r.observe(arm, clean());
+            let _ = r.observe(arm, clean());
         }
     }
     assert_eq!(
@@ -179,7 +179,7 @@ fn router_large_k_coverage_with_monitoring() {
 #[test]
 fn router_delayed_junk_labeling_updates_windows() {
     let mut r = Router::new(arms(2), RouterConfig::default()).unwrap();
-    r.observe("arm0", Outcome::success(1, 50));
+    let _ = r.observe("arm0", Outcome::success(1, 50));
     // Quality discovered after the call.
     r.set_last_junk_level("arm0", true, false);
     let s = r.summary("arm0");
@@ -210,10 +210,10 @@ fn router_k_larger_than_arm_count_saturates() {
 fn router_summary_tracks_outcomes() {
     let mut r = Router::new(arms(2), RouterConfig::default()).unwrap();
     for _ in 0..10 {
-        r.observe("arm0", clean());
+        let _ = r.observe("arm0", clean());
     }
     for _ in 0..5 {
-        r.observe("arm0", bad());
+        let _ = r.observe("arm0", bad());
     }
     let s = r.summary("arm0");
     assert_eq!(s.calls, 15);
@@ -229,8 +229,8 @@ fn router_summary_tracks_outcomes() {
 fn router_snapshot_restores_window_state() {
     let mut r = Router::new(arms(3), RouterConfig::default()).unwrap();
     for _ in 0..15 {
-        r.observe("arm0", clean());
-        r.observe("arm1", bad());
+        let _ = r.observe("arm0", clean());
+        let _ = r.observe("arm1", bad());
     }
     let snap = r.snapshot();
     assert_eq!(snap.total_observations, 30);
@@ -255,7 +255,7 @@ fn router_snapshot_restores_monitored_windows() {
     let cfg = RouterConfig::default().with_monitoring(200, 50);
     let mut r = Router::new(arms(2), cfg).unwrap();
     for _ in 0..20 {
-        r.observe("arm0", clean());
+        let _ = r.observe("arm0", clean());
     }
     let snap = r.snapshot();
     let r2 = Router::from_snapshot(snap).unwrap();
@@ -273,10 +273,10 @@ fn router_from_snapshot_resets_cusum() {
     let cfg = RouterConfig::default().with_triage_cfg(tcfg);
     let mut r = Router::new(arms(2), cfg).unwrap();
     for _ in 0..10 {
-        r.observe("arm0", clean());
+        let _ = r.observe("arm0", clean());
     }
     for _ in 0..20 {
-        r.observe("arm0", bad());
+        let _ = r.observe("arm0", bad());
     }
     assert!(r.mode().is_triage());
 
@@ -302,13 +302,13 @@ fn router_acknowledge_all_clears_all_alarmed() {
     let cfg = RouterConfig::default().with_triage_cfg(tcfg);
     let mut r = Router::new(arms(3), cfg).unwrap();
     for _ in 0..10 {
-        r.observe("arm0", clean());
-        r.observe("arm1", clean());
-        r.observe("arm2", clean());
+        let _ = r.observe("arm0", clean());
+        let _ = r.observe("arm1", clean());
+        let _ = r.observe("arm2", clean());
     }
     for _ in 0..30 {
-        r.observe("arm0", bad());
-        r.observe("arm1", bad());
+        let _ = r.observe("arm0", bad());
+        let _ = r.observe("arm1", bad());
     }
     assert!(r.mode().is_triage());
     r.acknowledge_all_changes();

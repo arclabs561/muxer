@@ -33,7 +33,7 @@ fn main() {
         let d = router.select(1, i as u64);
         let arm = d.primary().unwrap().to_string();
         println!("  round {i}: chose {arm:?}  prechosen={:?}", d.prechosen);
-        router.observe(&arm, clean());
+        assert!(router.observe(&arm, clean()));
     }
 
     // -----------------------------------------------------------------------
@@ -42,8 +42,8 @@ fn main() {
     println!("\n=== 2. Quality divergence ===");
 
     for _ in 0..30 {
-        router.observe("arm-b", Outcome::degraded(2, 80));
-        router.observe("arm-a", clean());
+        assert!(router.observe("arm-b", Outcome::degraded(2, 80)));
+        assert!(router.observe("arm-a", clean()));
     }
 
     let d = router.select(1, 99);
@@ -74,13 +74,13 @@ fn main() {
 
     // Seed with clean baseline.
     for _ in 0..20 {
-        r2.observe("stable", clean());
-        r2.observe("degraded", clean());
+        assert!(r2.observe("stable", clean()));
+        assert!(r2.observe("degraded", clean()));
     }
 
     // Inject hard failures.
     for _ in 0..30 {
-        r2.observe("degraded", degraded());
+        assert!(r2.observe("degraded", degraded()));
     }
 
     println!("  mode after failures: {:?}", r2.mode());
@@ -95,7 +95,7 @@ fn main() {
     println!("  triage picks: {:?}", d.chosen);
     println!("  triage cells: {} cells", d.triage_cells.len());
 
-    // Acknowledge: reset CUSUM, promote recent → baseline.
+    // Acknowledge: reset CUSUM and clear the recent monitoring window.
     r2.acknowledge_change("degraded");
     println!("  mode after acknowledge: {:?}", r2.mode());
     assert!(
@@ -119,7 +119,7 @@ fn main() {
         let d = rl.select(3, rounds as u64);
         for arm in &d.chosen {
             seen.insert(arm.clone());
-            rl.observe(arm, clean());
+            assert!(rl.observe(arm, clean()));
         }
         rounds += 1;
     }
@@ -137,8 +137,8 @@ fn main() {
     )
     .unwrap();
     for _ in 0..20 {
-        rd.observe("old-a", clean());
-        rd.observe("old-b", clean());
+        assert!(rd.observe("old-a", clean()));
+        assert!(rd.observe("old-b", clean()));
     }
 
     rd.add_arm("new-c".to_string()).unwrap();

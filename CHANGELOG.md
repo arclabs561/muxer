@@ -4,7 +4,24 @@
 
 ### Added
 
-- `llm_gateway_harness` example showing cost, quality, latency, and drift tradeoffs in model routing.
+- `llm_gateway_harness` example showing cost, quality, latency, and drift
+  tradeoffs in model routing.
+- `router_select` benchmark covering plain and monitored multi-pick selection.
+
+### Changed
+
+- Cached monitoring scores once per router selection instead of recomputing
+  them during each multi-pick round.
+- Raised the declared Rust version to 1.75, pinned `pare` to 0.2.2,
+  and pinned dev dependencies to versions compatible with that floor.
+- Clarified router seed docs and monitored-objective metadata.
+
+### Fixed
+
+- `Router::acknowledge_change` no longer double-counts recent observations in
+  the monitoring baseline.
+- Monitoring config validation now rejects window capacities that cannot satisfy
+  configured sample minimums.
 
 ## [0.5.3]
 
