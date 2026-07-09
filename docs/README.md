@@ -6,6 +6,7 @@
 |-----|---------|
 | [QUICKSTART.md](QUICKSTART.md) | 5-minute CLI + library usage |
 | [DOC_STATUS.md](DOC_STATUS.md) | What's ACTIVE vs NOTE vs STALE |
+| [design/post-round-3-roadmap.md](design/post-round-3-roadmap.md) | Proposed sequencing after the Round 3 fixes |
 
 ## Navigation
 

@@ -789,7 +789,7 @@ mod tests {
             // Invariants: scores finite, state finite, A^{-1} roughly symmetric.
             let ctx = ctxs.first().cloned().unwrap_or_default();
             let scores = p.scores(&arms, &ctx);
-            for (_a, (ucb, mean, bonus)) in scores.iter() {
+            for (ucb, mean, bonus) in scores.values() {
                 prop_assert!(ucb.is_finite());
                 prop_assert!(mean.is_finite());
                 prop_assert!(bonus.is_finite());
