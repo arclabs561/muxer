@@ -736,6 +736,7 @@ impl Extract {
     ///
     /// `ucb` is the pre-computed UCB term; only used by `OkRateUcb`.
     /// For `Custom`, returns 0.0 (the caller should set `Objective::value` instead).
+    #[must_use]
     pub fn apply(self, s: &Summary, ucb: f64) -> f64 {
         match self {
             Self::OkRateUcb => s.ok_rate() + ucb,
@@ -755,9 +756,9 @@ impl Extract {
 /// term to the scalarized tiebreaker.  `direction` controls the frontier;
 /// `weight` controls scalarization (higher weight = more influence).
 ///
-/// For custom objectives not derivable from [`Summary`], set `extract`
-/// to any variant and override the value via
-/// [`Objective::value`] before passing to selection.
+/// For custom objectives not derivable from [`Summary`], use
+/// [`Extract::Custom`] and override the value via [`Objective::value`]
+/// before passing to selection.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Objective {
@@ -780,6 +781,7 @@ pub struct Objective {
 
 impl Objective {
     /// Create an objective that maximizes the extracted value.
+    #[must_use]
     pub fn maximize(extract: Extract, weight: f64) -> Self {
         Self {
             extract,
@@ -790,6 +792,7 @@ impl Objective {
     }
 
     /// Create an objective that minimizes the extracted value.
+    #[must_use]
     pub fn minimize(extract: Extract, weight: f64) -> Self {
         Self {
             extract,
@@ -804,6 +807,7 @@ impl Objective {
     /// Use this for objectives not derivable from `Summary` (e.g., revenue,
     /// domain-specific scores).  Update the value per arm before each
     /// selection call via [`Objective::with_value`].
+    #[must_use]
     pub fn custom(direction: Direction, weight: f64, value: f64) -> Self {
         Self {
             extract: Extract::Custom,
@@ -814,17 +818,20 @@ impl Objective {
     }
 
     /// Override the extracted value with a pre-computed one.
+    #[must_use]
     pub fn with_value(mut self, v: f64) -> Self {
         self.value = Some(v);
         self
     }
 
     /// Resolve the value: use the override if present, otherwise extract from summary.
+    #[must_use]
     pub fn resolve(&self, s: &Summary, ucb: f64) -> f64 {
         self.value.unwrap_or_else(|| self.extract.apply(s, ucb))
     }
 
     /// Value oriented for Pareto (always maximize): negates for `Minimize` objectives.
+    #[must_use]
     pub fn pareto_value(&self, s: &Summary, ucb: f64) -> f64 {
         let v = self.resolve(s, ucb);
         match self.direction {
@@ -834,6 +841,7 @@ impl Objective {
     }
 
     /// Signed scalarization contribution (higher is always better).
+    #[must_use]
     pub fn scalar_contribution(&self, s: &Summary, ucb: f64) -> f64 {
         let v = self.resolve(s, ucb);
         match self.direction {
@@ -852,6 +860,7 @@ impl Objective {
 /// - Minimize hard junk rate (weight 0.0)
 /// - Minimize soft junk rate (weight 0.0)
 /// - Maximize mean quality (weight 0.0)
+#[must_use]
 pub fn default_objectives() -> Vec<Objective> {
     vec![
         Objective::maximize(Extract::OkRateUcb, 1.0),
@@ -917,36 +926,42 @@ impl MabConfig {
     }
 
     /// Builder: set cost weight.
+    #[must_use]
     pub fn with_cost_weight(mut self, w: f64) -> Self {
         self.set_weight(Extract::MeanCost, w);
         self
     }
 
     /// Builder: set latency weight.
+    #[must_use]
     pub fn with_latency_weight(mut self, w: f64) -> Self {
         self.set_weight(Extract::MeanLatency, w);
         self
     }
 
     /// Builder: set soft junk weight.
+    #[must_use]
     pub fn with_junk_weight(mut self, w: f64) -> Self {
         self.set_weight(Extract::SoftJunkRate, w);
         self
     }
 
     /// Builder: set hard junk weight.
+    #[must_use]
     pub fn with_hard_junk_weight(mut self, w: f64) -> Self {
         self.set_weight(Extract::HardJunkRate, w);
         self
     }
 
     /// Builder: set quality weight.
+    #[must_use]
     pub fn with_quality_weight(mut self, w: f64) -> Self {
         self.set_weight(Extract::MeanQuality, w);
         self
     }
 
     /// Builder: set objectives directly (replaces default set).
+    #[must_use]
     pub fn with_objectives(mut self, objectives: Vec<Objective>) -> Self {
         self.objectives = objectives;
         self

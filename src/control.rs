@@ -36,6 +36,7 @@ pub struct ControlConfig {
 
 impl ControlConfig {
     /// Create a config with `control_k` enabled.
+    #[must_use]
     pub fn with_k(control_k: usize) -> Self {
         Self {
             enabled: control_k > 0,
@@ -46,6 +47,7 @@ impl ControlConfig {
     /// Fraction of a k-pick budget to reserve as control, rounded up.
     ///
     /// Example: `ControlConfig::fraction(0.1)` with k=10 → control_k=1.
+    #[must_use]
     pub fn fraction(frac: f64, total_k: usize) -> Self {
         let k = ((frac * total_k as f64).ceil() as usize).min(total_k);
         Self {
@@ -84,6 +86,7 @@ pub fn pick_control_arms(seed: u64, arms: &[String], cfg: ControlConfig) -> Vec<
 /// Returns `(control_picks, mab_k)` where `mab_k = k - control_picks.len()`.
 /// `mab_k` is guaranteed to be at least 1 if `k >= 1` and there are arms remaining
 /// after removing controls.
+#[must_use]
 pub fn split_control_budget(
     seed: u64,
     arms: &[String],

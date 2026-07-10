@@ -19,6 +19,8 @@
 - Raised the declared Rust version to 1.75, pinned `pare` to 0.2.2,
   and pinned dev dependencies to versions compatible with that floor.
 - Clarified router seed docs and monitored-objective metadata.
+- Added `#[must_use]` to objective/config builders and tightened custom
+  objective docs around `Extract::Custom`.
 
 ### Fixed
 
