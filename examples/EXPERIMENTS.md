@@ -11,6 +11,8 @@ starvation, detector inertia, false alarms, and “fast on mean” vs “reliabl
   - turns a wall-delay target into a `CoverageConfig` floor using \(h/KL\), then simulates.
 - `cargo run --example bqcd_sampling --features stochastic`
   - shows why “focus” without coverage can look great on mean and bad on det_rate/p90.
+- `cargo run --example significant_shift_sim --features stochastic`
+  - shows why a harmless non-best-arm drift should not necessarily restart routing.
 - `cargo run --example off_policy_evaluation`
   - shows why logged rewards need propensities before offline target-policy evaluation.
 
@@ -191,7 +193,29 @@ Takeaway:
 - Meeting a **wall-clock** target requires you to translate \(h/KL\) into a minimum sampling rate,
   and `CoverageConfig` gives you a direct control for that.
 
-### 6) `bqcd_calibrated.rs`
+### 6) `significant_shift_sim.rs`
+
+Command:
+
+```bash
+cargo run --example significant_shift_sim --features stochastic
+```
+
+What it does:
+- Two arms, where arm 0 remains best before and after the change.
+- Arm 1 degrades at a known time and triggers per-arm CUSUM alarms under
+  maintenance sampling.
+- Compares:
+  - restarting globally on any CUSUM alarm, and
+  - suppressing global restart when the alarmed arm is not the estimated best arm.
+
+Takeaway:
+- A detector alarm and a route-changing event are different decisions.
+- Significant-shift-aware monitoring should first prove that the best arm or
+  route-quality ordering changed; otherwise it can spend quality relearning a
+  harmless non-best-arm shift.
+
+### 7) `bqcd_calibrated.rs`
 
 Command:
 

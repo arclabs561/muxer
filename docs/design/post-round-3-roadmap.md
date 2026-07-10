@@ -109,7 +109,10 @@ Gate:
   Kpotufe (2022), arXiv:2112.13838: the mechanism is safe-arm elimination with
   scheduled replays and episode restarts, not a scalar CUSUM-threshold change.
 - Produce a simulation where current CUSUM over-triggers but a best-arm-aware
-  trigger preserves route quality with fewer restarts.
+  trigger preserves route quality with fewer restarts. Done in
+  `examples/significant_shift_sim.rs`: restarting on any CUSUM alarm averages
+  11.50 restarts and 285.0 regret in the fixed-seed run, while the
+  best-arm-aware gate averages 0.14 restarts and 224.1 regret.
 - Decide whether the feature belongs in the monitoring guard, triage trigger, or
   a higher-level policy layer.
 

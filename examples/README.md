@@ -142,6 +142,21 @@ self-normalized IPS estimate: 0.500
 
 ## Drift Experiments
 
+### `significant_shift_sim`: should every CUSUM alarm restart routing?
+
+Keeps the best arm unchanged while a worse arm degrades. Restarting on every
+CUSUM alarm repeatedly relearns a harmless shift; a best-arm-aware gate
+suppresses those restarts.
+
+```bash
+cargo run --example significant_shift_sim --features stochastic
+```
+```text
+strategy                 | restarts alarms suppressed pulls_drifted mean_reward regret
+restart_on_any_cusum     |    11.50  11.50       0.00        1062.0      0.8731   285.0
+significant_gate         |     0.14   8.88       8.73         854.9      0.8882   224.1
+```
+
 ### `coverage_autotune`: how does a wall-delay target become coverage?
 
 Requires the `stochastic` feature. It converts a target wall delay into a

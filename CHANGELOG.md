@@ -11,6 +11,8 @@
   off-policy evaluation over logged rewards and propensities.
 - `off_policy_evaluation` example showing a biased logged sample corrected by
   IPS and self-normalized IPS.
+- `significant_shift_sim` example showing why best-arm-aware restart gates can
+  reduce harmless CUSUM restarts.
 
 ### Changed
 
