@@ -126,14 +126,14 @@ Consumer: Rust service teams routing HTTP/gRPC requests across backends.
 
 Scope:
 - Separate crate or example workspace.
-- `tower::Layer` integration only.
+- `tower::Layer` route-decision integration first.
 - No storage, dashboard, or async runtime assumptions in `muxer` itself.
 
 Gate:
 - `RouterDecision` and outcome-reporting ergonomics are stable enough that the
-  tower layer does not need workaround APIs. Checked in
+  first route-decision layer does not need workaround APIs. Checked in
   `docs/design/muxer-tower.md`; current core API is adequate for an external
-  prototype.
+  route-decision prototype.
 - At least one runnable service example proves the integration shape.
 
 Reversibility: reversible if kept outside the core crate.
