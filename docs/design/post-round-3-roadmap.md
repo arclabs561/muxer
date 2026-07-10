@@ -60,7 +60,8 @@ Fork:
    - Higher future breakage cost if fields need to change.
 
 Recommendation: defer the attribute for now, but create a 1.0 API checklist
-before any release that claims stability.
+before any release that claims stability. The checklist now exists at
+`docs/design/api-1.0-checklist.md`.
 
 Gate:
 - Do not add new public config fields until this fork is decided.

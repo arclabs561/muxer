@@ -24,6 +24,8 @@ This matches the current evidence: the Round 3 patch needed validation and docs,
 not a construction-contract change. The decision can still be revisited before
 1.0 if config fields continue to churn.
 
+The checklist now lives at `docs/design/api-1.0-checklist.md`.
+
 ## Non-Goals
 
 - Do not make config fields private in this pass.

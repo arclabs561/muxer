@@ -13,6 +13,8 @@
   IPS and self-normalized IPS.
 - `significant_shift_sim` example showing why best-arm-aware restart gates can
   reduce harmless CUSUM restarts.
+- 1.0 API checklist covering config construction, enum exhaustiveness, feature
+  flags, and release gates.
 
 ### Changed
 
