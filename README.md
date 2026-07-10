@@ -94,6 +94,7 @@ cargo run --example getting_started        # minimal 3-backend routing loop
 cargo run --release --example llm_gateway_harness  # model routing under drift
 cargo run --example router_quickstart      # full lifecycle with CUSUM triage
 cargo run --example router_production --features stochastic  # production config
+cargo run --example off_policy_evaluation  # IPS over logged rewards and propensities
 ```
 
 Algorithm variants: `deterministic_router`, `thompson_router`, `exp3ix_router`, `contextual_router` (requires `contextual` feature), `sticky_mab_router`, `monitored_router`.

@@ -126,6 +126,20 @@ t=1800 ctx=[0.8879784495223955, 0.7420458346578667] decision=Decision { policy: 
 high-difficulty picks (t>=1000): big=204 small=0
 ```
 
+### `off_policy_evaluation`: how do propensities change offline estimates?
+
+Shows a logged sample where the naive mean is biased by the logging policy and
+IPS corrects it for a target policy.
+
+```bash
+cargo run --example off_policy_evaluation
+```
+```text
+naive mean: 0.800
+IPS estimate: 0.500
+self-normalized IPS estimate: 0.500
+```
+
 ## Drift Experiments
 
 ### `coverage_autotune`: how does a wall-delay target become coverage?

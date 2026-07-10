@@ -1,12 +1,16 @@
 # Design: Off-Policy Evaluation Primitives
 
-status: proposal
+status: implemented
 date: 2026-07-09
 grounded-in:
 - `.claude/reports/useful-2026-03-15.md`
 - `.claude/reports/enrich-2026-03-15.md`
 - `docs/design/bandit-theory-grounding.md`
 - `docs/design/post-round-3-roadmap.md`
+- Dudik, Langford, and Li (2011), arXiv:1103.4601
+- Swaminathan and Joachims (2015), arXiv:1502.02362
+- Wang, Agarwal, and Dudik (2017), arXiv:1612.01205
+- Waudby-Smith et al. (2022), arXiv:2210.10768
 
 ## Problem
 
@@ -25,6 +29,11 @@ reward construction remains caller-defined.
 
 This keeps the feature in the crate's primitive layer: no async runtime, no
 database format, no HTTP concepts, and no full experiment platform.
+
+The first pass deliberately stops before doubly robust estimation, adaptive
+weighting, or confidence sequences. The source papers support those as useful
+next steps, but each requires extra API surface: reward models, variance
+control, or inference state.
 
 ## Non-Goals
 
@@ -56,9 +65,9 @@ API starts wanting storage or plotting.
 Good for teaching but weak as an API. It would not give downstream users a
 stable place to build against, and it would likely be copied incorrectly.
 
-## Proposed API Shape
+## Implemented API Shape
 
-The first implementation should be roughly:
+The first implementation exposes:
 
 ```rust
 pub struct LoggedReward {
@@ -73,27 +82,27 @@ pub fn self_normalized_ips_value(
 ) -> Result<f64, OpeError>;
 ```
 
-Names are placeholders. The design requirement is that propensities are visible
-at the call site and validated as finite values in `[0, 1]`.
+`logging_propensity` is validated as finite and in `(0, 1]`.
+`target_propensity` is validated as finite and in `[0, 1]`. Zero target
+propensity is accepted as zero contribution; self-normalized IPS rejects the
+all-zero-target case because its denominator is zero.
 
 ## Gates
 
-- Add a fixture where naive averaging gives the wrong answer and IPS corrects
+- Added a fixture where naive averaging gives the wrong answer and IPS corrects
   it.
 - Reject zero, negative, NaN, and infinite logging propensities.
-- Document that confidence intervals are not part of the first pass.
-- Do not add OPE methods to `Router` until `RouterDecision` has a deliberate
-  propensity story.
+- Documented that confidence intervals are not part of the first pass.
+- Did not add OPE methods to `Router`; `RouterDecision` still needs a
+  deliberate propensity story.
 
 ## Open Questions
 
-- Should zero target propensity rows be accepted as zero contribution or
-  filtered by the caller?
-- Should the API consume borrowed rows to avoid allocation, or prefer value
-  types for simplicity?
-- Should error reporting return the first invalid row index?
+- Should the API add borrowed-row helpers if callers report allocation friction?
 - How should stochastic policy decisions expose propensities consistently with
   deterministic `Router` decisions?
+- Which interval method, if any, belongs in the primitive crate rather than a
+  companion evaluation crate?
 
 ## Review Trigger
 

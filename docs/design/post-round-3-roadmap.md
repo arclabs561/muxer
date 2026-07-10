@@ -75,6 +75,8 @@ Reversibility: partially reversible before 1.0, one-way after 1.0.
 Consumer: users who log routing decisions and want to compare candidate
 policies offline.
 
+Status: minimal primitive surface implemented.
+
 Minimum useful scope:
 - Define a log row type or example schema that carries action, observed
   outcome, and propensity.
@@ -92,7 +94,8 @@ Gate:
 - Write a focused design doc before code.
 - Add at least one replay-style fixture that would fail for naive means.
 
-Reversibility: partially reversible. Estimator APIs become public surface.
+Reversibility: partially reversible. Estimator APIs are now public surface, but
+the first pass is isolated from router state and storage formats.
 
 ## Phase 4: Revisit Significant-Shift-Aware Monitoring
 
@@ -102,7 +105,9 @@ This is not ready for implementation. The current design note explicitly warns
 that the surviving idea needs primary-source review and consumer evidence.
 
 Gate:
-- Read the significant-shift paper path at the source.
+- Read the significant-shift paper path at the source. Done for Suk and
+  Kpotufe (2022), arXiv:2112.13838: the mechanism is safe-arm elimination with
+  scheduled replays and episode restarts, not a scalar CUSUM-threshold change.
 - Produce a simulation where current CUSUM over-triggers but a best-arm-aware
   trigger preserves route quality with fewer restarts.
 - Decide whether the feature belongs in the monitoring guard, triage trigger, or

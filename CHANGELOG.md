@@ -7,6 +7,10 @@
 - `llm_gateway_harness` example showing cost, quality, latency, and drift
   tradeoffs in model routing.
 - `router_select` benchmark covering plain and monitored multi-pick selection.
+- `LoggedReward`, `ips_value`, and `self_normalized_ips_value` for scalar
+  off-policy evaluation over logged rewards and propensities.
+- `off_policy_evaluation` example showing a biased logged sample corrected by
+  IPS and self-normalized IPS.
 
 ### Changed
 

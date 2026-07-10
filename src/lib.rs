@@ -41,9 +41,11 @@
 //! - [`CoverageConfig`] / [`coverage_pick_under_sampled`]: maintenance sampling floor.
 //! - [`LatencyGuardrailConfig`]: hard pre-filter by mean latency.
 //! - [`PipelineOrder`] / [`policy_plan_generic`] / [`policy_fill_generic`]: harness glue.
+//! - [`LoggedReward`] / [`ips_value`] / [`self_normalized_ips_value`]: scalar
+//!   off-policy evaluation over logged rewards and propensities.
 //!
 //! **Non-goals:**
-//! - Not a full bandit platform (no storage, OPE pipelines, dashboards).
+//! - Not a full bandit platform (no storage, full OPE pipelines, dashboards).
 //! - `contextual` is intentionally a small, pragmatic policy module.
 //!
 //!
@@ -278,6 +280,9 @@ pub use alloc::softmax_map;
 
 mod utils;
 pub use utils::suggested_window_cap;
+
+mod ope;
+pub use ope::{ips_value, self_normalized_ips_value, LoggedReward, OpeError};
 
 mod control;
 pub use control::{pick_control_arms, split_control_budget, ControlConfig};

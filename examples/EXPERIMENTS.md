@@ -11,6 +11,8 @@ starvation, detector inertia, false alarms, and “fast on mean” vs “reliabl
   - turns a wall-delay target into a `CoverageConfig` floor using \(h/KL\), then simulates.
 - `cargo run --example bqcd_sampling --features stochastic`
   - shows why “focus” without coverage can look great on mean and bad on det_rate/p90.
+- `cargo run --example off_policy_evaluation`
+  - shows why logged rewards need propensities before offline target-policy evaluation.
 
 ## Applied harness examples
 
