@@ -25,6 +25,7 @@
 - Clarified router seed docs and monitored-objective metadata.
 - Added `#[must_use]` to objective/config builders and tightened custom
   objective docs around `Extract::Custom`.
+- Recorded `muxer-tower` core API readiness in the design notes.
 
 ### Fixed
 

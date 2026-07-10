@@ -131,7 +131,9 @@ Scope:
 
 Gate:
 - `RouterDecision` and outcome-reporting ergonomics are stable enough that the
-  tower layer does not need workaround APIs.
+  tower layer does not need workaround APIs. Checked in
+  `docs/design/muxer-tower.md`; current core API is adequate for an external
+  prototype.
 - At least one runnable service example proves the integration shape.
 
 Reversibility: reversible if kept outside the core crate.
