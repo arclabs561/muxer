@@ -8,9 +8,10 @@
 //! times, and the agent must detect and adapt to these changes.
 //!
 //! An [`Outcome`] carries four caller-defined quality fields:
-//! - `ok`: the call produced a usable result.
-//! - `junk`: quality was below your threshold (`hard_junk=true` implies `junk=true`).
-//! - `hard_junk`: the call failed entirely — a harsher subset of junk, penalized separately.
+//! - `ok`: the operation produced a usable result according to the caller.
+//! - `junk`: the result was below the caller's quality threshold (`hard_junk=true` implies
+//!   `junk=true`).
+//! - `hard_junk`: a severe subset of junk, tracked separately from ordinary degradation.
 //! - `quality_score: Option<f64>`: optional continuous quality signal `[0,1]` (higher = better).
 //!   Supplements the binary flags without changing routing semantics.
 //!
@@ -32,6 +33,8 @@
 //! - [`BanditPolicy`] (feature `stochastic`): common `decide`/`update_reward` trait
 //!   for `ThompsonSampling` and `Exp3Ix` — enables generic policy code.
 //! - [`softmax_map`]: stable score → probability helper for traffic splitting.
+//! - [`CandidateAssessment`] / [`select_candidate_assessments`]: domain-neutral
+//!   Pareto selection over caller-defined metric vectors.
 //! - (feature `contextual`) `LinUcb`: linear contextual bandit.
 //!
 //! **Operational primitives:**
@@ -41,6 +44,7 @@
 //! - [`CoverageConfig`] / [`coverage_pick_under_sampled`]: maintenance sampling floor.
 //! - [`LatencyGuardrailConfig`]: hard pre-filter by mean latency.
 //! - [`PipelineOrder`] / [`policy_plan_generic`] / [`policy_fill_generic`]: harness glue.
+//! - [`ObservationId`]: caller-owned identity for out-of-order delayed labels.
 //! - [`LoggedReward`] / [`ips_value`] / [`self_normalized_ips_value`]: scalar
 //!   off-policy evaluation over logged rewards and propensities.
 //!
@@ -48,225 +52,71 @@
 //! - Not a full bandit platform (no storage, full OPE pipelines, dashboards).
 //! - `contextual` is intentionally a small, pragmatic policy module.
 //!
+//! # Statistical scope
 //!
-//! # The Three Objectives and the Objective Manifold
+//! `muxer` composes several routing and monitoring primitives. Results proved for an
+//! individual bandit or detector do not automatically transfer to this composition.
+//! In particular, the crate does not claim a regret bound, a detection-delay bound,
+//! or a system-wide false-alarm guarantee for [`Router`].
 //!
-//! Every routing decision simultaneously serves three purposes:
+//! [`MonitoredWindow`] compares two overlapping rolling windows, not a frozen
+//! historical reference. Its scores are empirical signals whose sensitivity depends
+//! on the capacity ratio. Wilson bounds are fixed-sample score adjustments, not
+//! time-uniform confidence sequences under adaptive sampling.
+//! [`DisjointMonitoredWindow`] is available when the descriptive comparison must
+//! keep the baseline and recent samples separate.
 //!
-//! 1. **Exploitation** (regret minimization): route to the best arm now.
-//! 2. **Estimation** (learning): understand how each arm performs across conditions.
-//! 3. **Detection/triage** (monitoring): notice when an arm breaks, then investigate.
+//! The `max_*` configuration fields are empirical routing filters. Some selection
+//! paths deliberately fall back when every arm is filtered, so they are not safety
+//! constraints or resource budgets. When legal, capability, or readiness eligibility
+//! varies per request, the caller determines that set and passes it to
+//! [`Router::select_from`], which keeps every selection stage inside it.
 //!
-//! These map to the modules of this crate:
-//!
-//! - **Selection** (`select_mab`, `Exp3Ix`, `ThompsonSampling`): objectives 1+2.
-//! - **Monitoring** (`monitor`): objective 3 -- drift/catKL/CUSUM are the detection
-//!   surface of the design measure.
-//! - **Triage** (`worst_first`): active investigation after detection fires --
-//!   prioritize historically broken arms to characterize the change.
-//!
-//! ## The non-contextual collapse (static schedules)
-//!
-//! For **fixed (non-adaptive) allocation schedules** with K arms and Gaussian rewards,
-//! estimation error (MSE ~ 1/n) and **average** detection delay
-//! (D_avg ~ C*T / (n * delta^2)) are both monotone-decreasing in the suboptimal-arm
-//! pull count n, with proportional gradients everywhere:
-//!
-//! ```text
-//!   D_avg = (2 * C * sigma^2 * ln(1/alpha) / delta^2) * MSE
-//! ```
-//!
-//! This proportionality is structural, not approximate: both functionals care only
-//! about "how many observations at this cell", and their sensitivity functions are
-//! scalar multiples of each other.  The three-way Pareto surface collapses to a
-//! **one-dimensional curve** parameterized by n.  This yields the product identity
-//! `R_T * D_avg = C * Delta * T / delta^2` for the restricted class of uniform
-//! schedules.
-//!
-//! **Categorical note.** The formula above uses Gaussian notation (`sigma^2`, mean
-//! shift `delta`).  `muxer` operates on categorical outcomes (ok/junk/hard_junk),
-//! where detection delay scales as `h / KL(p1 || p0)` in sample time rather than
-//! `2*b*sigma^2 / delta^2`.  The proportionality structure — MSE and average
-//! detection delay both `O(1/n_k)` — holds identically; only the constants change.
-//! See [`pare::sensitivity`][pare] for the general form.
-//!
-//! **Caveat: adaptive policies.** This clean proportionality holds exactly only for
-//! static (non-adaptive) schedules.  Adaptive policies (UCB, Thompson Sampling) break
-//! it in at least two ways: (1) they allocate the suboptimal arm in bursts during
-//! exploration phases rather than uniformly, worsening worst-case detection delay
-//! relative to uniform spacing without changing total n; and (2) data-dependent
-//! allocation introduces selection bias, so the effective sample size for estimation
-//! is no longer simply n.  For adaptive policies, the product identity becomes a
-//! **lower bound** (with constants that absorb regularity conditions), not an equality.
-//!
-//! Practically, `muxer` operates at small K (2-10 arms) and moderate T (hundreds to
-//! low thousands of windowed observations).  At these scales, the asymptotic
-//! impossibility results may not bind: all three objectives can often be simultaneously
-//! satisfied at acceptable levels.  The sliding-window design further blunts the
-//! static/adaptive distinction, since the effective horizon is the window size, not T.
-//!
-//! ## The contextual revival -- and its subtlety
-//!
-//! *Note: this section synthesizes standard results from experimental design theory
-//! and quickest change detection into a combined framework.  The individual components
-//! (D-optimal sensitivity, minimax detection delay, regret sensitivity) are established;
-//! the three-way independence argument and average-vs-worst-case mechanism below are
-//! original to this crate, not a result from the cited papers.*
-//!
-//! In the **contextual** regime (per-request feature vectors via `LinUcb`), the design
-//! measure gains spatial dimensions, but objectives do **not** automatically diverge.
-//! The mechanism controlling collapse vs. revival is **average-case vs. worst-case
-//! aggregation**, not "contextual vs. non-contextual" per se:
-//!
-//! - **Average detection delay** has sensitivity `s(x) ~ -1/p_a(x)^2`, which is
-//!   proportional to nonparametric IMSE sensitivity everywhere.  Average detection
-//!   is **structurally redundant with estimation** even in contextual settings.
-//!   Adding contexts does not break this proportionality.
-//!
-//! - **Worst-case detection delay** (`D_max = max_j D_j`) concentrates its sensitivity
-//!   on the **bottleneck cell** -- the (arm, covariate) pair with the fewest observations.
-//!   This is a point mass, linearly independent from both the regret sensitivity (a
-//!   ramp near decision boundaries) and the estimation sensitivity (D-optimal / extremal).
-//!   Worst-case detection is genuinely independent from regret and estimation.
-//!
-//! In the non-contextual case (one cell), average and worst-case are identical, so the
-//! distinction is moot.  In the contextual case (many cells), they diverge: average
-//! detection remains redundant with estimation, but worst-case detection introduces a
-//! genuinely new objective axis.
-//!
-//! Concretely, each objective wants a different sampling distribution:
-//!
-//! - **Regret-optimal**: concentrate near decision boundaries.
-//! - **Estimation-optimal**: spread to extremes (D-optimal experimental design).
-//! - **Detection-optimal (worst-case)**: ensure no cell is starved (space-filling).
-//!
-//! `LinUcb` exists to break the non-contextual collapse: it learns per-request routing
-//! without maintaining separate per-facet histories, at the cost of requiring explicit
-//! monitoring budget beyond what regret-optimal sampling provides.
-//!
-//! ## Saturation principle
-//!
-//! The number of genuinely independent objectives is bounded by the effective dimension
-//! of the design space (Ehrgott & Nickel 2002, via Helly's Theorem):
-//!
-//! ```text
-//!   dim(Pareto front) <= min(m - 1, D_eff)
-//! ```
-//!
-//! where `m` is the number of named objectives and `D_eff` is the design dimension
-//! (K-1 for non-contextual, ~K*M for M covariate cells, infinite for continuous
-//! covariates).  Adding objectives beyond `D_eff + 1` cannot create new tradeoffs
-//! in the Pareto sense (though their weights still affect scalarization tiebreaking).
-//!
-//! The formal algebraic rank can overstate the practical number of tradeoffs.  The
-//! **effective Pareto dimension** is better measured by the singular value spectrum of
-//! the Jacobian of objectives with respect to design variables: a K=3, M=9 setup with
-//! 8 named objectives achieves formal rank 8 but effective dimension ~3-4 (the top 2
-//! singular values carry >99% of the Frobenius norm).  See `pare::sensitivity` for
-//! computational tools.
-//!
-//! ## Design measure perspective
-//!
-//! The fundamental object is not "which objectives matter" but the **design measure**:
-//! the joint distribution over (arm, covariate, time) that the policy induces.  Given
-//! the design measure, every objective is computable.
-//!
-//! Note: the design measure in an adaptive setting is a random object (it depends on
-//! the realized trajectory), not a fixed distribution.  Reasoning about it requires
-//! either working with the expected design measure (which loses adaptivity) or a
-//! conditional analysis that respects the filtration (which is harder and may break
-//! clean proportionality results).  See Hadad et al. (arXiv:1911.02768) for the
-//! observed vs. expected Fisher information distinction in adaptive experiments.
-//!
-//! ## Related work
-//!
-//! **Non-stationary bandits and sliding windows.**
-//! Garivier & Moulines (2008, arXiv:0805.3415) established the Sliding-Window UCB
-//! (SW-UCB) algorithm, which achieves `O(sqrt(Υ_T * K * T * log T))` regret for
-//! piecewise-stationary environments with `Υ_T` changepoints.  This is the theoretical
-//! foundation for `muxer`'s sliding-window approach.  Optimal window size is
-//! `O(sqrt(T / Υ_T))`; in practice `muxer` uses a fixed caller-chosen cap.
-//!
-//! **Non-stationary bandits with explicit detection.**
-//! Besson, Kaufmann, Maillard & Seznec (2019, arXiv:1902.01575, JMLR 2023) introduced
-//! GLR-klUCB: a parameter-free algorithm combining kl-UCB with a Bernoulli Generalized
-//! Likelihood Ratio Test.  It is the closest published analog to `muxer`'s monitored
-//! selection path.  Key difference: GLR-klUCB **restarts** all arm statistics on
-//! detection; `muxer` instead switches to worst-first routing to investigate the flagged
-//! arm, preserving history.  See `TriageSession` and `WorstFirstConfig`.
-//!
-//! **Bandit Quickest Changepoint Detection (BQCD).**
-//! Gopalan, Saligrama & Lakshminarayanan (2021, arXiv:2107.10492) established the BQCD
-//! lower bound: any algorithm with mean-time-to-false-alarm `m` must suffer expected
-//! detection delay `Ω(log(m) / D*)`, where `D*` is the maximum KL divergence between
-//! post-change and pre-change distributions across arms.  Their ε-GCD algorithm achieves
-//! this with exploration rate `ε = Θ(1/√T)`.  `CoverageConfig`'s minimum sampling-rate
-//! floor is the practical lever for approaching this bound.
-//!
-//! **Sampling-constrained detection.**
-//! Zhang & Mei (2020, arXiv:2009.11891) directly analyze changepoint detection under
-//! sampling-rate constraints, confirming that detection delay in wall time scales as
-//! `h / (KL(p1 || p0) * rate_k)` — the formal basis for the two-clocks approximation.
-//!
-//! **Observation-cost vs detection delay.**
-//! Banerjee & Veeravalli (2012, arXiv:1211.3729) formalize the minimax tradeoff between
-//! observation cost and detection delay.  The product identity `R_T * D_avg = const`
-//! in the non-contextual collapse is a special case of their framework, where
-//! "observation cost" manifests as regret from pulling suboptimal arms.
-//!
-//! **Regret–BAI Pareto frontier.**
-//! Zhong, Cheung & Tan (2021, arXiv:2110.08627) formally prove the Pareto tradeoff
-//! between regret minimization (RM) and best-arm identification (BAI): achieving
-//! `O(log T)` regret and `O(log T)` BAI error simultaneously is impossible.  The
-//! product-identity formulation in `muxer`'s docs is the static-schedule special case.
-//!
-//! **Piecewise-stationary multi-objective bandits.**
-//! Rezaei Balef & Maghsudi (2023, arXiv:2302.05257) study the combination of
-//! non-stationarity and multi-objective rewards directly.  `muxer` operates in this
-//! space — without claiming worst-case-optimal bounds — by combining sliding-window
-//! summaries with Pareto scalarization and explicit monitoring.
-//!
-//! **Window-limited CUSUM.**
-//! Xie, Moustakides & Xie (2022, arXiv:2206.06777) connect windowed observation to
-//! CUSUM optimality, providing theoretical grounding for `MonitoredWindow`'s split
-//! between baseline and recent windows.
-//!
-//! **Multi-objective bandit frameworks.**
-//! - **Constrained / safe bandits** (BwK): `muxer`'s `max_junk_rate`, `max_drift`, etc.
-//!   are BwK-style anytime constraints.  (Badanidiyuru, Kleinberg & Slivkins 2013,
-//!   FOCS; arXiv:1305.2545)
-//! - **Pareto bandits** (Drugan & Nowé, IJCNN 2013): `muxer`'s `pare`-based frontier
-//!   is the selection-time analogue.
-//! - **Information-Directed Sampling** (Russo & Van Roy 2014, arXiv:1403.5556):
-//!   scalarizes regret/information via the information ratio.  The three-objective
-//!   extension is non-trivial only in the contextual worst-case-detection regime.
-//! - **Adaptive experiment design** (Hadad et al. 2021, arXiv:1911.02768): the
-//!   observed vs. expected Fisher information distinction applies to `muxer`'s
-//!   adaptive design-measure analysis.
-//!
-//! **Pareto dimension and objective redundancy.**
-//! - **Ehrgott & Nickel (2002)**, "On the number of criteria needed to decide Pareto
-//!   optimality" (Math. Meth. Oper. Res., 55:329–345): proves via Helly's Theorem that
-//!   Pareto optimality in D design variables can be decided by at most D+1 objectives.
-//!   The saturation principle above is a direct application.
-//! - **Objective reduction** (Deb & Saxena 2005): identifies redundant objectives in
-//!   many-objective optimization.  Relevant when callers configure more objectives than
-//!   the design space supports.
-//! - **Pareto front topology** (Kobayashi et al. 2018, arXiv:1812.05222): confirms
-//!   empirically that M-objective problems have (M-1)-dimensional fronts, and provides
-//!   Bézier simplex fitting for their structure.
-
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use pare::{Direction, ParetoFrontier};
-use std::collections::{BTreeMap, VecDeque};
+use pare::Direction;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-/// Epsilon used for floating-point tie-breaking in selection scoring.
+/// Caller-owned identity for one observed execution.
 ///
-/// This avoids exact equality comparisons on f64 scores and provides a stable
-/// threshold across all selection paths (Pareto scalarization, UCB, etc.).
-const TIEBREAK_EPS: f64 = 1e-12;
+/// IDs let delayed labels update the observation that produced them instead of
+/// relying on the latest observation for an arm. The caller must not reuse an ID
+/// while the corresponding observation may still be retained by a [`Window`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ObservationId(u64);
+
+impl ObservationId {
+    /// Construct an observation ID from a caller-owned value.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Return the caller-owned value.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+fn finite_or_zero(value: f64) -> f64 {
+    if value.is_finite() {
+        value
+    } else {
+        0.0
+    }
+}
+
+fn finite_scalar_weight(weight: f64, mut values: impl Iterator<Item = f64>) -> f64 {
+    let weight = finite_or_zero(weight);
+    if values.any(|value| !(weight * value).is_finite()) {
+        0.0
+    } else {
+        weight
+    }
+}
 
 mod decision;
 pub use decision::{Decision, DecisionNote, DecisionPolicy};
@@ -277,6 +127,12 @@ pub use policy::BanditPolicy;
 
 mod alloc;
 pub use alloc::softmax_map;
+
+mod assessment;
+pub use assessment::{
+    select_candidate_assessments, CandidateAssessment, CandidateAssessmentDebug,
+    CandidateAssessmentSelection, MetricObjective, MetricObjectiveValue,
+};
 
 mod utils;
 pub use utils::suggested_window_cap;
@@ -354,8 +210,8 @@ pub use triage::{OutcomeIdx, TriageSession, TriageSessionConfig};
 #[cfg(feature = "stochastic")]
 pub use monitor::{calibrate_cusum_threshold, simulate_cusum_null_max_scores};
 pub use monitor::{
-    calibrate_threshold_from_max_scores, DriftConfig, DriftMetric, MonitoredWindow, RateBoundMode,
-    ThresholdCalibration, UncertaintyConfig,
+    calibrate_threshold_from_max_scores, DisjointMonitoredWindow, DriftConfig, DriftMetric,
+    MonitoredWindow, RateBoundMode, ThresholdCalibration, UncertaintyConfig,
 };
 
 /// A single observed outcome for an arm.
@@ -365,9 +221,9 @@ pub use monitor::{
 pub struct Outcome {
     /// Whether the request succeeded for this arm.
     pub ok: bool,
-    /// Whether the downstream result was judged “low value” (e.g. blocked, empty extraction).
+    /// Whether the result was below the caller's quality threshold.
     pub junk: bool,
-    /// Whether the junk was “hard” (e.g. JS/auth wall) vs “soft” (low-signal extraction).
+    /// Whether the junk belongs to the caller's severe category.
     pub hard_junk: bool,
     /// Provider-specific cost units for this call (caller-defined).
     pub cost_units: u64,
@@ -380,13 +236,23 @@ pub struct Outcome {
     /// from a `0.0` response; this field preserves that distinction without
     /// changing the binary routing logic.
     ///
-    /// `None` (the default) means "not measured". Set via
-    /// [`Window::set_last_quality_score`] when scoring completes after the call.
+    /// `None` (the default) means "not measured". Prefer recording a finalized
+    /// outcome. [`Window::set_last_quality_score`] is only safe when no later
+    /// outcome has entered that window.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub quality_score: Option<f64>,
 }
 
 impl Outcome {
+    fn normalized(mut self) -> Self {
+        self.junk |= self.hard_junk;
+        self.quality_score = self
+            .quality_score
+            .filter(|score| score.is_finite())
+            .map(|score| score.clamp(0.0, 1.0));
+        self
+    }
+
     /// Create an outcome with the `hard_junk => junk` invariant enforced.
     ///
     /// If `hard_junk` is true, `junk` is forced to true regardless of the
@@ -447,6 +313,7 @@ impl Outcome {
     }
 
     /// Create an outcome with a quality score, enforcing `hard_junk => junk`.
+    /// Non-finite quality scores are treated as unmeasured.
     pub fn with_quality(
         ok: bool,
         junk: bool,
@@ -461,8 +328,9 @@ impl Outcome {
             hard_junk,
             cost_units,
             elapsed_ms,
-            quality_score: Some(quality_score.clamp(0.0, 1.0)),
+            quality_score: Some(quality_score),
         }
+        .normalized()
     }
 }
 
@@ -489,8 +357,9 @@ impl<'de> serde::Deserialize<'de> for Outcome {
             hard_junk: raw.hard_junk,
             cost_units: raw.cost_units,
             elapsed_ms: raw.elapsed_ms,
-            quality_score: raw.quality_score.map(|s| s.clamp(0.0, 1.0)),
-        })
+            quality_score: raw.quality_score,
+        }
+        .normalized())
     }
 }
 
@@ -500,6 +369,8 @@ impl<'de> serde::Deserialize<'de> for Outcome {
 pub struct Window {
     cap: usize,
     buf: VecDeque<Outcome>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    ids: VecDeque<Option<ObservationId>>,
 }
 
 impl Window {
@@ -508,6 +379,7 @@ impl Window {
         Self {
             cap: cap.max(1),
             buf: VecDeque::new(),
+            ids: VecDeque::new(),
         }
     }
 
@@ -533,13 +405,52 @@ impl Window {
 
     /// Push a new outcome, evicting the oldest if at capacity.
     pub fn push(&mut self, o: Outcome) {
+        self.push_with_optional_id(None, o);
+    }
+
+    /// Push a new outcome with caller-owned identity.
+    ///
+    /// The ID is retained alongside the outcome until that outcome leaves the
+    /// window. Use [`Window::set_quality_score_for_id`] or
+    /// [`Window::set_junk_level_for_id`] when a label arrives later.
+    pub fn push_with_id(&mut self, id: ObservationId, o: Outcome) {
+        self.push_with_optional_id(Some(id), o);
+    }
+
+    pub(crate) fn push_with_optional_id(&mut self, id: Option<ObservationId>, o: Outcome) {
+        self.align_ids();
         if self.buf.len() == self.cap {
             self.buf.pop_front();
+            self.ids.pop_front();
         }
-        self.buf.push_back(o);
+        self.buf.push_back(o.normalized());
+        self.ids.push_back(id);
+    }
+
+    pub(crate) fn pop_front(&mut self) -> Option<(Option<ObservationId>, Outcome)> {
+        self.align_ids();
+        let outcome = self.buf.pop_front()?;
+        let id = self.ids.pop_front().unwrap_or(None);
+        Some((id, outcome))
+    }
+
+    fn align_ids(&mut self) {
+        while self.ids.len() < self.buf.len() {
+            self.ids.push_front(None);
+        }
+        while self.ids.len() > self.buf.len() {
+            self.ids.pop_front();
+        }
+    }
+
+    pub(crate) fn contains_id(&mut self, id: ObservationId) -> bool {
+        self.align_ids();
+        self.ids.iter().any(|candidate| *candidate == Some(id))
     }
 
     /// Best-effort: set “junk” and whether it is “hard junk” for the most recent outcome.
+    ///
+    /// This is correct only if no later outcome has entered the window.
     pub fn set_last_junk_level(&mut self, junk: bool, hard_junk: bool) {
         if let Some(last) = self.buf.back_mut() {
             last.junk = junk;
@@ -547,14 +458,50 @@ impl Window {
         }
     }
 
+    /// Update junk labels for the identified outcome.
+    ///
+    /// Returns `true` when the ID is retained by this window.
+    pub fn set_junk_level_for_id(
+        &mut self,
+        id: ObservationId,
+        junk: bool,
+        hard_junk: bool,
+    ) -> bool {
+        self.align_ids();
+        for (candidate, outcome) in self.ids.iter().zip(self.buf.iter_mut()) {
+            if *candidate == Some(id) {
+                outcome.junk = junk;
+                outcome.hard_junk = hard_junk && junk;
+                return true;
+            }
+        }
+        false
+    }
+
     /// Best-effort: set the continuous quality score for the most recent outcome.
     ///
     /// Call this after downstream scoring completes (same pattern as
-    /// [`Window::set_last_junk_level`]).  The value is clamped to `[0.0, 1.0]`.
+    /// [`Window::set_last_junk_level`]).  Finite values are clamped to
+    /// `[0.0, 1.0]`; non-finite values are treated as unmeasured. This is
+    /// correct only if no later outcome has entered the window.
     pub fn set_last_quality_score(&mut self, score: f64) {
         if let Some(last) = self.buf.back_mut() {
-            last.quality_score = Some(score.clamp(0.0, 1.0));
+            last.quality_score = score.is_finite().then(|| score.clamp(0.0, 1.0));
         }
+    }
+
+    /// Update the quality score for the identified outcome.
+    ///
+    /// Returns `true` when the ID is retained by this window.
+    pub fn set_quality_score_for_id(&mut self, id: ObservationId, score: f64) -> bool {
+        self.align_ids();
+        for (candidate, outcome) in self.ids.iter().zip(self.buf.iter_mut()) {
+            if *candidate == Some(id) {
+                outcome.quality_score = score.is_finite().then(|| score.clamp(0.0, 1.0));
+                return true;
+            }
+        }
+        false
     }
 
     /// Mean quality score over outcomes that have one, or `None` if none have been set.
@@ -707,9 +654,8 @@ impl Summary {
 
 /// How to extract an objective value from a [`Summary`].
 ///
-/// Built-in extractors cover the standard `Outcome` fields.  For caller-defined
-/// objectives, use [`Extract::Custom`] and set [`Objective::value`] per arm
-/// before each selection call.
+/// Built-in extractors cover the standard `Outcome` fields. [`Extract::Custom`]
+/// resolves only a fixed [`Objective::value`] shared by all candidates.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
@@ -726,8 +672,8 @@ pub enum Extract {
     SoftJunkRate,
     /// `Summary::mean_quality_score` (0.0 when absent).
     MeanQuality,
-    /// Caller-defined objective.  The value must be set via [`Objective::value`]
-    /// before each selection call; extraction returns 0.0 as fallback.
+    /// Fixed caller-defined objective. The shared value can be set via
+    /// [`Objective::value`]; extraction returns 0.0 as fallback.
     Custom,
 }
 
@@ -744,7 +690,11 @@ impl Extract {
             Self::MeanLatency => s.mean_elapsed_ms(),
             Self::HardJunkRate => s.hard_junk_rate(),
             Self::SoftJunkRate => s.soft_junk_rate(),
-            Self::MeanQuality => s.mean_quality_score.unwrap_or(0.0),
+            Self::MeanQuality => s
+                .mean_quality_score
+                .filter(|value| value.is_finite())
+                .map(|value| value.clamp(0.0, 1.0))
+                .unwrap_or(0.0),
             Self::Custom => 0.0,
         }
     }
@@ -756,9 +706,8 @@ impl Extract {
 /// term to the scalarized tiebreaker.  `direction` controls the frontier;
 /// `weight` controls scalarization (higher weight = more influence).
 ///
-/// For custom objectives not derivable from [`Summary`], use
-/// [`Extract::Custom`] and override the value via [`Objective::value`]
-/// before passing to selection.
+/// [`Objective::value`] is one fixed override shared by every candidate in a
+/// selection call. The current API cannot represent an arm-specific custom metric.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Objective {
@@ -769,9 +718,8 @@ pub struct Objective {
     /// Scalarization weight (0 disables this objective in the tiebreaker
     /// but it still participates in the Pareto frontier).
     pub weight: f64,
-    /// Pre-computed value override.  When `Some`, this value is used
-    /// instead of extracting from `Summary`.  Useful for custom
-    /// objectives or monitored scores (drift, catKL, CUSUM).
+    /// Pre-computed value override. When `Some`, this same value is used
+    /// instead of extracting from every candidate's `Summary`.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -802,11 +750,11 @@ impl Objective {
         }
     }
 
-    /// Create a caller-defined objective with a pre-set value.
+    /// Create a caller-defined objective with a fixed value.
     ///
-    /// Use this for objectives not derivable from `Summary` (e.g., revenue,
-    /// domain-specific scores).  Update the value per arm before each
-    /// selection call via [`Objective::with_value`].
+    /// The value applies to every arm in a selection call, so it cannot affect
+    /// ranking by itself. Arm-specific custom metrics are not supported by the
+    /// current selection API.
     #[must_use]
     pub fn custom(direction: Direction, weight: f64, value: f64) -> Self {
         Self {
@@ -825,9 +773,11 @@ impl Objective {
     }
 
     /// Resolve the value: use the override if present, otherwise extract from summary.
+    /// Non-finite values are resolved as `0.0` so unchecked caller input cannot
+    /// poison scalarization or the Pareto frontier.
     #[must_use]
     pub fn resolve(&self, s: &Summary, ucb: f64) -> f64 {
-        self.value.unwrap_or_else(|| self.extract.apply(s, ucb))
+        finite_or_zero(self.value.unwrap_or_else(|| self.extract.apply(s, ucb)))
     }
 
     /// Value oriented for Pareto (always maximize): negates for `Minimize` objectives.
@@ -844,10 +794,11 @@ impl Objective {
     #[must_use]
     pub fn scalar_contribution(&self, s: &Summary, ucb: f64) -> f64 {
         let v = self.resolve(s, ucb);
-        match self.direction {
-            Direction::Maximize => self.weight * v,
-            Direction::Minimize => -(self.weight * v),
-        }
+        let weight = finite_or_zero(self.weight);
+        finite_or_zero(match self.direction {
+            Direction::Maximize => weight * v,
+            Direction::Minimize => -(weight * v),
+        })
     }
 }
 
@@ -855,11 +806,11 @@ impl Objective {
 ///
 /// Reproduces the pre-0.5 hardcoded behavior:
 /// - Maximize `ok_rate + UCB` (weight 1.0)
-/// - Minimize mean cost (weight 0.0 -- disabled by default)
-/// - Minimize mean latency (weight 0.0)
-/// - Minimize hard junk rate (weight 0.0)
-/// - Minimize soft junk rate (weight 0.0)
-/// - Maximize mean quality (weight 0.0)
+/// - Minimize mean cost (scalar weight 0.0; remains a Pareto axis)
+/// - Minimize mean latency (scalar weight 0.0; remains a Pareto axis)
+/// - Minimize hard junk rate (scalar weight 0.0; remains a Pareto axis)
+/// - Minimize soft junk rate (scalar weight 0.0; remains a Pareto axis)
+/// - Maximize mean quality (scalar weight 0.0; remains a Pareto axis)
 #[must_use]
 pub fn default_objectives() -> Vec<Objective> {
     vec![
@@ -874,7 +825,7 @@ pub fn default_objectives() -> Vec<Objective> {
 
 /// Configuration knobs for deterministic MAB-style selection.
 ///
-/// Contains the objective list, exploration coefficient, and hard constraints
+/// Contains the objective list, exploration coefficient, and empirical filters
 /// used by all selection paths ([`select_mab`], [`select_mab_explain`],
 /// [`select_mab_decide`]).
 ///
@@ -890,11 +841,6 @@ pub struct MabConfig {
     /// Each objective defines an axis (extract + direction) and a
     /// scalarization weight.  The default set ([`default_objectives`])
     /// reproduces pre-0.5 behavior.
-    ///
-    /// The saturation principle (Ehrgott & Nickel 2002) bounds the effective
-    /// Pareto dimension at `min(objectives.len() - 1, K - 1)` for K arms.
-    /// Objectives beyond K cannot create new Pareto tradeoffs, though their
-    /// weights still affect scalarization tiebreaking.
     pub objectives: Vec<Objective>,
     /// Optional constraint: discard arms whose windowed junk_rate exceeds this.
     pub max_junk_rate: Option<f64>,
@@ -1129,8 +1075,8 @@ pub struct Selection {
 
 /// Additional metadata for a deterministic `select_mab` decision.
 ///
-/// This exists because production routers typically need more than "which arm":
-/// they also need to know whether constraints eliminated all arms (fallback) and
+/// This exists because callers may need more than "which arm": they may also
+/// need to know whether constraints eliminated all arms (fallback) and
 /// whether the decision was explore-first.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -1225,7 +1171,7 @@ fn apply_base_constraints(
     summaries: &BTreeMap<String, Summary>,
     cfg: &MabConfig,
 ) -> (Vec<String>, bool) {
-    // Apply hard constraints (BwK-ish “anytime” gating).
+    // Apply empirical filters.
     // If constraints filter everything, fall back to the original arm set (never return empty).
     let mut eligible: Vec<String> = Vec::new();
     for a in arms_in_order {
@@ -1301,55 +1247,6 @@ fn explore_first_decision(
     }
 }
 
-fn choose_from_frontier(
-    candidates: &[CandidateDebug],
-    frontier_names_in_order: &[String],
-    fallback_first: Option<&String>,
-) -> (String, Vec<String>) {
-    // Build Pareto frontier from the candidates' pareto_value vectors.
-    // All axes are maximize-oriented (Minimize objectives are pre-negated).
-    let dims = candidates
-        .first()
-        .map(|c| c.objective_values.len())
-        .unwrap_or(0);
-    let mut frontier = ParetoFrontier::new(vec![Direction::Maximize; dims]);
-    for (i, c) in candidates.iter().enumerate() {
-        let pt: Vec<f64> = c.objective_values.iter().map(|o| o.pareto_value).collect();
-        frontier.push(pt, i);
-    }
-    let mut frontier_indices: Vec<usize> = if frontier.is_empty() {
-        (0..candidates.len()).collect()
-    } else {
-        frontier.points().iter().map(|p| p.data).collect()
-    };
-    // Ensure stable ordering regardless of frontier internals.
-    frontier_indices.sort_unstable();
-
-    let frontier_names: Vec<String> = frontier_indices
-        .iter()
-        .filter_map(|&i| frontier_names_in_order.get(i).cloned())
-        .collect();
-
-    let mut best_name = frontier_names
-        .first()
-        .cloned()
-        .unwrap_or_else(|| fallback_first.cloned().unwrap_or_default());
-    let mut best_score = f64::NEG_INFINITY;
-    for &idx in &frontier_indices {
-        let Some(c) = candidates.get(idx) else {
-            continue;
-        };
-        if c.score > best_score
-            || ((c.score - best_score).abs() <= TIEBREAK_EPS && c.name < best_name)
-        {
-            best_score = c.score;
-            best_name = c.name.clone();
-        }
-    }
-
-    (best_name, frontier_names)
-}
-
 /// Deterministic selection:
 /// - Explore each arm at least once (in stable order).
 /// - Then:
@@ -1413,13 +1310,12 @@ pub fn select_mab_explain(
         .sum::<f64>()
         .max(1.0);
 
-    let mut frontier_names_in_order: Vec<String> = Vec::new();
     let mut candidates = Vec::new();
 
     for a in arms_in_order {
         let s = summaries.get(a).copied().unwrap_or_default();
         let n = (s.calls as f64).max(1.0);
-        let ucb = cfg.exploration_c * ((total_calls.ln() / n).sqrt());
+        let ucb = finite_or_zero(cfg.exploration_c) * ((total_calls.ln() / n).sqrt());
 
         let obj_values: Vec<ObjectiveValue> = cfg
             .objectives
@@ -1450,11 +1346,45 @@ pub fn select_mab_explain(
             junk_half_width: None,
             hard_junk_half_width: None,
         });
-        frontier_names_in_order.push(a.clone());
     }
 
-    let (best_name, frontier_names) =
-        choose_from_frontier(&candidates, &frontier_names_in_order, arms_in_order.first());
+    let mut assessment_names = BTreeSet::new();
+    let assessments: Vec<CandidateAssessment> = candidates
+        .iter()
+        .filter(|candidate| assessment_names.insert(candidate.name.clone()))
+        .map(|candidate| {
+            CandidateAssessment::new(
+                candidate.name.clone(),
+                candidate.summary.calls,
+                candidate
+                    .objective_values
+                    .iter()
+                    .map(|value| value.value)
+                    .collect(),
+            )
+        })
+        .collect();
+    let metric_objectives: Vec<MetricObjective> = cfg
+        .objectives
+        .iter()
+        .enumerate()
+        .map(|(metric, objective)| MetricObjective {
+            metric,
+            direction: objective.direction,
+            weight: finite_scalar_weight(
+                objective.weight,
+                candidates
+                    .iter()
+                    .map(|candidate| candidate.objective_values[metric].value),
+            ),
+        })
+        .collect();
+    let generic = select_candidate_assessments(&assessments, &metric_objectives)
+        .expect("quality summary adapter produces valid candidate assessments");
+    let best_name = generic
+        .chosen
+        .unwrap_or_else(|| arms_in_order.first().cloned().unwrap_or_default());
+    let frontier_names = generic.frontier;
 
     let sel = Selection {
         chosen: best_name,
@@ -1475,7 +1405,7 @@ pub fn select_mab_explain(
 
 /// Monitored deterministic selection (baseline vs recent drift + uncertainty-aware rates).
 ///
-/// This is intended for production routers that already maintain `MonitoredWindow`s per arm.
+/// This is intended for callers that already maintain `MonitoredWindow`s per arm.
 ///
 /// Semantics:
 /// - Uses `monitored[*].recent_summary()` for the base stats (ok/junk/cost/latency).
@@ -1621,7 +1551,7 @@ pub(crate) fn select_mab_monitored_explain_with_summaries_and_scores(
 ) -> MabSelectionDecision {
     let base = &cfg.base;
 
-    // Apply base hard constraints first (same semantics as `select_mab_explain`).
+    // Apply base empirical filters first (same semantics as `select_mab_explain`).
     let (eligible_arms, constraints_fallback_used) =
         apply_base_constraints(arms_in_order, summaries, base);
     let arms_in_order: &[String] = &eligible_arms;
@@ -1749,16 +1679,8 @@ pub(crate) fn select_mab_monitored_explain_with_summaries_and_scores(
         .max(1.0);
 
     // Monitored Pareto frontier: base objectives (with Wilson-bounded overrides)
-    // plus monitoring objectives (drift, catKL, CUSUM).
-    let mut frontier_names_in_order: Vec<String> = Vec::new();
+    // plus monitoring objectives whose weights are positive.
     let mut candidates: Vec<CandidateDebug> = Vec::new();
-
-    // Build synthetic monitoring objectives to append to the base set.
-    let monitoring_objectives = [
-        Objective::minimize(Extract::Custom, cfg.drift_weight.max(0.0)),
-        Objective::minimize(Extract::Custom, cfg.catkl_weight.max(0.0)),
-        Objective::minimize(Extract::Custom, cfg.cusum_weight.max(0.0)),
-    ];
 
     for a in &eligible_after_cusum {
         let s = summaries.get(a).copied().unwrap_or_default();
@@ -1779,7 +1701,7 @@ pub(crate) fn select_mab_monitored_explain_with_summaries_and_scores(
         let catkl_score = scores.catkl_score;
         let cusum_score = scores.cusum_score;
 
-        let ucb = base.exploration_c * ((total_calls.ln() / n).sqrt());
+        let ucb = finite_or_zero(base.exploration_c) * ((total_calls.ln() / n).sqrt());
 
         // Build base objective values with Wilson-bounded overrides.
         let mut obj_values: Vec<ObjectiveValue> = base
@@ -1787,20 +1709,21 @@ pub(crate) fn select_mab_monitored_explain_with_summaries_and_scores(
             .iter()
             .map(|obj| {
                 // Override rate-based extractors with Wilson-bounded values.
-                let value = match obj.extract {
+                let value = finite_or_zero(match obj.extract {
                     Extract::OkRateUcb => ok_rate_used + ucb,
                     Extract::HardJunkRate => hard_used,
                     Extract::SoftJunkRate => soft_used,
                     _ => obj.resolve(&s, ucb),
-                };
+                });
                 let pv = match obj.direction {
                     Direction::Maximize => value,
                     Direction::Minimize => -value,
                 };
-                let sc = match obj.direction {
-                    Direction::Maximize => obj.weight * value,
-                    Direction::Minimize => -(obj.weight * value),
-                };
+                let weight = finite_or_zero(obj.weight);
+                let sc = finite_or_zero(match obj.direction {
+                    Direction::Maximize => weight * value,
+                    Direction::Minimize => -(weight * value),
+                });
                 ObjectiveValue {
                     extract: obj.extract,
                     value,
@@ -1811,17 +1734,20 @@ pub(crate) fn select_mab_monitored_explain_with_summaries_and_scores(
             .collect();
 
         // Append monitoring objectives with pre-computed values.
-        let mon_values = [
-            drift_score.unwrap_or(0.0),
-            catkl_score.unwrap_or(0.0),
-            cusum_score.unwrap_or(0.0),
+        let monitored_values = [
+            (cfg.drift_weight, finite_or_zero(drift_score.unwrap_or(0.0))),
+            (cfg.catkl_weight, finite_or_zero(catkl_score.unwrap_or(0.0))),
+            (cfg.cusum_weight, finite_or_zero(cusum_score.unwrap_or(0.0))),
         ];
-        for (mon_obj, &mon_val) in monitoring_objectives.iter().zip(mon_values.iter()) {
+        for (weight, value) in monitored_values {
+            if !weight.is_finite() || weight <= 0.0 {
+                continue;
+            }
             obj_values.push(ObjectiveValue {
-                extract: mon_obj.extract,
-                value: mon_val,
-                pareto_value: -mon_val, // minimize
-                scalar_contribution: -(mon_obj.weight * mon_val),
+                extract: Extract::Custom,
+                value,
+                pareto_value: -value,
+                scalar_contribution: -(weight * value),
             });
         }
 
@@ -1840,14 +1766,52 @@ pub(crate) fn select_mab_monitored_explain_with_summaries_and_scores(
             junk_half_width: Some(soft_half),
             hard_junk_half_width: Some(hard_half),
         });
-        frontier_names_in_order.push(a.clone());
     }
 
-    let (best_name, frontier_names) = choose_from_frontier(
-        &candidates,
-        &frontier_names_in_order,
-        eligible_after_cusum.first(),
-    );
+    let mut assessment_names = BTreeSet::new();
+    let assessments: Vec<CandidateAssessment> = candidates
+        .iter()
+        .filter(|candidate| assessment_names.insert(candidate.name.clone()))
+        .map(|candidate| {
+            CandidateAssessment::new(
+                candidate.name.clone(),
+                candidate.summary.calls,
+                candidate
+                    .objective_values
+                    .iter()
+                    .map(|value| value.value)
+                    .collect(),
+            )
+        })
+        .collect();
+    let mut metric_objectives: Vec<MetricObjective> = base
+        .objectives
+        .iter()
+        .enumerate()
+        .map(|(metric, objective)| MetricObjective {
+            metric,
+            direction: objective.direction,
+            weight: finite_scalar_weight(
+                objective.weight,
+                candidates
+                    .iter()
+                    .map(|candidate| candidate.objective_values[metric].value),
+            ),
+        })
+        .collect();
+    let mut next_metric = metric_objectives.len();
+    for weight in [cfg.drift_weight, cfg.catkl_weight, cfg.cusum_weight] {
+        if weight.is_finite() && weight > 0.0 {
+            metric_objectives.push(MetricObjective::minimize(next_metric, weight));
+            next_metric += 1;
+        }
+    }
+    let generic = select_candidate_assessments(&assessments, &metric_objectives)
+        .expect("monitored adapter produces valid candidate assessments");
+    let best_name = generic
+        .chosen
+        .unwrap_or_else(|| eligible_after_cusum.first().cloned().unwrap_or_default());
+    let frontier_names = generic.frontier;
 
     let sel = Selection {
         chosen: best_name,
@@ -1870,7 +1834,7 @@ pub(crate) fn select_mab_monitored_explain_with_summaries_and_scores(
 /// Unified decision envelope for deterministic MAB selection.
 ///
 /// This is a convenience wrapper around `select_mab_explain` that returns a `Decision`
-/// suitable for consistent logging/replay across policies.
+/// suitable for consistent diagnostics across policies.
 pub fn select_mab_decide(
     arms_in_order: &[String],
     summaries: &BTreeMap<String, Summary>,
@@ -2122,6 +2086,111 @@ mod tests {
         };
         let sel = select_mab(&arms, &m, cfg);
         assert_eq!(sel.chosen, "b");
+    }
+
+    #[test]
+    fn zero_monitoring_weights_do_not_add_pareto_axes() {
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let summaries = BTreeMap::from([
+            ("a".to_string(), s(10, 9, 0, 0, 10, 1000)),
+            ("b".to_string(), s(10, 9, 0, 0, 10, 1000)),
+        ]);
+        let scores = BTreeMap::from([
+            (
+                "a".to_string(),
+                MonitoringScores {
+                    drift_score: Some(10.0),
+                    ..MonitoringScores::default()
+                },
+            ),
+            (
+                "b".to_string(),
+                MonitoringScores {
+                    drift_score: Some(0.0),
+                    ..MonitoringScores::default()
+                },
+            ),
+        ]);
+
+        let disabled = MonitoredMabConfig::default();
+        let base_len = disabled.base.objectives.len();
+        let decision = select_mab_monitored_explain_with_summaries_and_scores(
+            &arms, &summaries, &scores, &disabled,
+        );
+        assert_eq!(decision.selection.frontier, arms);
+        assert!(decision
+            .selection
+            .candidates
+            .iter()
+            .all(|candidate| candidate.objective_values.len() == base_len));
+
+        let enabled = MonitoredMabConfig {
+            drift_weight: 1.0,
+            ..MonitoredMabConfig::default()
+        };
+        let decision = select_mab_monitored_explain_with_summaries_and_scores(
+            &arms, &summaries, &scores, &enabled,
+        );
+        assert_eq!(decision.selection.chosen, "b");
+        assert_eq!(decision.selection.frontier, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn non_finite_objective_inputs_do_not_reach_pareto_frontier() {
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let summaries = BTreeMap::from([
+            (
+                "a".to_string(),
+                Summary {
+                    calls: 1,
+                    ok: 1,
+                    mean_quality_score: Some(f64::NAN),
+                    ..Summary::default()
+                },
+            ),
+            ("b".to_string(), s(1, 1, 0, 0, 0, 0)),
+        ]);
+        let cfg = MabConfig {
+            exploration_c: f64::NAN,
+            objectives: vec![
+                Objective::maximize(Extract::MeanQuality, f64::INFINITY),
+                Objective::custom(Direction::Maximize, 1.0, f64::NEG_INFINITY),
+            ],
+            ..MabConfig::default()
+        };
+
+        let decision = select_mab_explain(&arms, &summaries, cfg.clone());
+        assert!(arms.contains(&decision.selection.chosen));
+        for candidate in &decision.selection.candidates {
+            assert!(candidate.ucb.is_finite());
+            assert!(candidate.score.is_finite());
+            assert!(candidate.objective_values.iter().all(|value| {
+                value.value.is_finite()
+                    && value.pareto_value.is_finite()
+                    && value.scalar_contribution.is_finite()
+            }));
+        }
+
+        let monitored = MonitoredMabConfig {
+            base: cfg,
+            ..MonitoredMabConfig::default()
+        };
+        let decision = select_mab_monitored_explain_with_summaries_and_scores(
+            &arms,
+            &summaries,
+            &BTreeMap::new(),
+            &monitored,
+        );
+        assert!(arms.contains(&decision.selection.chosen));
+        for candidate in decision.selection.candidates {
+            assert!(candidate.ucb.is_finite());
+            assert!(candidate.score.is_finite());
+            assert!(candidate.objective_values.iter().all(|value| {
+                value.value.is_finite()
+                    && value.pareto_value.is_finite()
+                    && value.scalar_contribution.is_finite()
+            }));
+        }
     }
 
     proptest! {

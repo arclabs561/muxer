@@ -32,7 +32,7 @@
 //! |-----|---------|
 //! | 0   | ok (clean success) |
 //! | 1   | soft junk (degraded success) |
-//! | 2   | hard junk (operational failure) |
+//! | 2   | hard junk (severe degradation while `ok=true`) |
 //! | 3   | total failure (ok=false) |
 //!
 //! Callers use [`OutcomeIdx`] helpers to map `Outcome` values to indices.
@@ -75,7 +75,7 @@ impl OutcomeIdx {
     pub const OK: usize = 0;
     /// Degraded success (ok=true, junk=true, hard_junk=false).
     pub const SOFT_JUNK: usize = 1;
-    /// Operational failure (ok=true, junk=true, hard_junk=true).
+    /// Severe degradation (ok=true, junk=true, hard_junk=true).
     pub const HARD_JUNK: usize = 2;
     /// Total failure (ok=false).
     pub const FAIL: usize = 3;
@@ -172,6 +172,7 @@ pub struct ArmTriageState {
 pub struct TriageSession {
     banks: BTreeMap<String, (CusumCatBank, bool)>, // (bank, alarmed)
     tracker: ContextualCoverageTracker,
+    bank_cfg: TriageSessionConfig,
     bin_cfg: ContextBinConfig,
     wf_cfg: WorstFirstConfig,
     seed: u64,
@@ -201,6 +202,7 @@ impl TriageSession {
         Ok(Self {
             banks,
             tracker: ContextualCoverageTracker::new(),
+            bank_cfg: cfg.clone(),
             bin_cfg: cfg.bin_cfg,
             wf_cfg: cfg.wf_cfg,
             seed: cfg.seed,
@@ -221,23 +223,19 @@ impl TriageSession {
     ) -> Option<crate::monitor::CusumCatBankUpdate> {
         let bin = crate::context_bin(context, self.bin_cfg);
 
-        // Update CUSUM bank.
-        let update = if let Some((bank, alarmed)) = self.banks.get_mut(arm) {
-            let upd = bank.update(outcome_idx);
-            if upd.alarmed {
-                *alarmed = true;
-            }
-            Some(upd)
-        } else {
-            None
-        };
+        // Update CUSUM bank. Unknown arms must not create tracker cells.
+        let (bank, alarmed) = self.banks.get_mut(arm)?;
+        let update = bank.update(outcome_idx);
+        if update.alarmed {
+            *alarmed = true;
+        }
 
         // Update cell tracker with outcome classification.
         let hard_junk = outcome_idx == OutcomeIdx::HARD_JUNK;
         let soft_junk = outcome_idx == OutcomeIdx::SOFT_JUNK;
         self.tracker.record(arm, bin, hard_junk, soft_junk);
 
-        update
+        Some(update)
     }
 
     /// List arms whose CUSUM bank has alarmed at least once since the last reset.
@@ -300,6 +298,33 @@ impl TriageSession {
         }
     }
 
+    /// Add an arm without resetting the existing detector or cell history.
+    pub fn add_arm(&mut self, arm: &str) -> Result<(), logp::Error> {
+        if self.banks.contains_key(arm) {
+            return Ok(());
+        }
+        let bank = CusumCatBank::new(
+            &self.bank_cfg.p0,
+            &self
+                .bank_cfg
+                .alts
+                .iter()
+                .map(|alt| alt.to_vec())
+                .collect::<Vec<_>>(),
+            self.bank_cfg.cusum_alpha,
+            self.bank_cfg.min_n,
+            self.bank_cfg.threshold,
+            self.bank_cfg.tol,
+        )?;
+        self.banks.insert(arm.to_string(), (bank, false));
+        Ok(())
+    }
+
+    /// Remove an arm while preserving detector and cell history for all other arms.
+    pub fn remove_arm(&mut self, arm: &str) {
+        self.banks.remove(arm);
+    }
+
     /// Read-only access to the coverage tracker.
     pub fn tracker(&self) -> &ContextualCoverageTracker {
         &self.tracker
@@ -326,6 +351,7 @@ mod tests {
         let mut session = TriageSession::new(&two_arms(), TriageSessionConfig::default()).unwrap();
         let upd = session.observe("unknown", OutcomeIdx::OK, &[0.5]);
         assert!(upd.is_none());
+        assert_eq!(session.tracker().total_calls(), 0);
     }
 
     #[test]
@@ -430,5 +456,33 @@ mod tests {
         let mut session = TriageSession::new(&two_arms(), TriageSessionConfig::default()).unwrap();
         session.observe("arm_a", OutcomeIdx::OK, &[0.1, 0.2]);
         assert_eq!(session.tracker().total_calls(), 1);
+    }
+
+    #[test]
+    fn arm_membership_changes_preserve_unaffected_state() {
+        let cfg = TriageSessionConfig {
+            min_n: 5,
+            threshold: 2.0,
+            ..TriageSessionConfig::default()
+        };
+        let mut session = TriageSession::new(&two_arms(), cfg).unwrap();
+        for _ in 0..20 {
+            session.observe("arm_a", OutcomeIdx::HARD_JUNK, &[0.5]);
+        }
+        let before = session.arm_state("arm_a").unwrap();
+        let calls_before = session.tracker().total_calls();
+
+        session.add_arm("arm_c").unwrap();
+        assert_eq!(session.arm_state("arm_a").unwrap().n, before.n);
+        assert_eq!(session.arm_state("arm_a").unwrap().alarmed, before.alarmed);
+        assert_eq!(session.tracker().total_calls(), calls_before);
+
+        session.remove_arm("arm_b");
+        assert!(session.arm_state("arm_b").is_none());
+        assert_eq!(
+            session.arm_state("arm_a").unwrap().score_max,
+            before.score_max
+        );
+        assert!(session.arm_state("arm_c").is_some());
     }
 }

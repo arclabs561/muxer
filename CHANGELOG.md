@@ -4,13 +4,24 @@
 
 ### Added
 
+- Domain-neutral `CandidateAssessment` metric vectors with Pareto filtering,
+  scalarization, deterministic tie-breaking, and serde-compatible diagnostics.
+- `DisjointMonitoredWindow` for descriptive comparisons without baseline/recent
+  sample overlap.
+- Reproducible UCI validation scripts and multi-dataset trace examples covering
+  categorical, numeric, mixed, and missing-value data.
+- Caller-owned `ObservationId` updates for delayed quality and junk labels that
+  arrive after later observations for the same arm.
+- `Router::select_from`, which validates a request-local arm set and keeps
+  comparison, triage, novelty, coverage, guardrail fallback, and MAB selection
+  inside it.
 - `llm_gateway_harness` example showing cost, quality, latency, and drift
   tradeoffs in model routing.
 - `router_select` benchmark covering plain and monitored multi-pick selection.
 - `LoggedReward`, `ips_value`, and `self_normalized_ips_value` for scalar
   off-policy evaluation over logged rewards and propensities.
-- `off_policy_evaluation` example showing a biased logged sample corrected by
-  IPS and self-normalized IPS.
+- `off_policy_evaluation` example applying IPS and self-normalized IPS to a
+  synthetic logged sample.
 - `significant_shift_sim` example showing why best-arm-aware restart gates can
   reduce harmless CUSUM restarts.
 - 1.0 API checklist covering config construction, enum exhaustiveness, feature
@@ -27,6 +38,14 @@
   objective docs around `Extract::Custom`.
 - Recorded the `muxer-tower` route-decision adapter design and core API
   readiness in the design notes.
+- Monitoring objectives with weight `0.0` no longer participate in the Pareto
+  frontier, matching the documented disabled behavior.
+- Reframed monitoring, control selection, Wilson bounds, CUSUM calibration,
+  and decision records around their implemented statistical scope.
+- Kept `Outcome`/`Summary`/`Router` as the quality-profile adapter while routing
+  arbitrary metric schemas through `select_candidate_assessments`.
+- Preserved unaffected triage detector and cell history when arms are added or
+  removed.
 
 ### Fixed
 
@@ -34,6 +53,17 @@
   the monitoring baseline.
 - Monitoring config validation now rejects window capacities that cannot satisfy
   configured sample minimums.
+- Explore-first decisions now report the point-mass distribution actually used;
+  EXP3-IX first-use updates use the same probability.
+- Router construction and snapshot restoration now reject duplicate arm names,
+  empty arm names, zero selection windows, invalid monitoring capacities, and
+  incoherent snapshot maps.
+- Non-finite quality, objective, and reward inputs no longer poison window or
+  policy state. Invalid quality is treated as unmeasured; invalid rewards are ignored.
+- `getting_started` now demonstrates a real quality-versus-cost tradeoff and its
+  captured output matches the runnable example.
+- `RouterDecision::mab_eligible` now reports the actual candidate set passed to
+  MAB selection after a NoveltyFirst guardrail fallback.
 
 ## [0.5.3]
 
@@ -79,8 +109,9 @@
 ### Added
 
 - **Generic objectives**: `Extract` enum, `Objective` struct, `ObjectiveValue`
-  struct, `default_objectives()` function.  Callers can define custom Pareto
-  dimensions via `Extract::Custom` and `Objective::custom()`.
+  struct, `default_objectives()` function. `Extract::Custom` and
+  `Objective::custom()` provide a fixed value shared by all candidates in a call;
+  they do not encode arm-specific metrics.
 - **Builder methods on `MabConfig`**: `.with_cost_weight()`,
   `.with_latency_weight()`, `.with_junk_weight()`, `.with_hard_junk_weight()`,
   `.with_quality_weight()`, `.with_objectives()`, `.set_weight()`.
@@ -239,13 +270,13 @@ Not published (internal iterations, changes folded into 0.3.5).
 
 ### Added
 
-- **`RouterSnapshot`** — serializable snapshot of `Router` state (windows,
-  monitored windows, config, total observations).  CUSUM scores are intentionally
-  excluded and reset on restore to avoid stale alarms across process restarts.
+- **`RouterSnapshot`**: serializable snapshot of `Router` state (windows,
+  monitored windows, config, total observations). CUSUM scores are excluded, so
+  detector history starts fresh on restore.
 - **`Router::snapshot()`** — capture current state.
 - **`Router::from_snapshot(snap)`** — restore from a snapshot.
 - **`MonitoredWindow`** now derives `serde::Serialize/Deserialize` (feature `serde`).
-- **`examples/router_production.rs`** — full production pattern: CUSUM threshold
+- **`examples/router_production.rs`**: combined configuration example with CUSUM threshold
   calibration, `RouterConfig` builder with monitoring+triage+coverage+control,
   routing loop with simulated regression, triage detection, acknowledgment, and
   snapshot/restore.
@@ -255,7 +286,7 @@ Not published (internal iterations, changes folded into 0.3.5).
 
 ### Added
 
-- `examples/router_quickstart.rs`: runnable full-lifecycle demo (K=20 in 7 rounds with k=3).
+- `examples/router_quickstart.rs`: runnable routing and triage demo (K=20 in 7 rounds with k=3).
 - `tests/router_props.rs`: 11 property/integration tests for `Router`.
 - `tests/calibration.rs`: 8 tests for `calibrate_cusum_threshold` and related utilities.
 
@@ -270,10 +301,10 @@ Not published (internal iterations, changes folded into 0.3.5).
 
 - **`Router`** — stateful routing session that owns all per-arm state and
   exposes a three-method interface: `select(k, seed)` / `observe(arm, outcome)` /
-  `acknowledge_change(arm)`.  Handles the full normal → triage → acknowledge
-  lifecycle.  Supports `add_arm` / `remove_arm` for dynamic arm management.
+  `acknowledge_change(arm)`. Combines normal selection, triage, and detector
+  evidence reset. Supports `add_arm` / `remove_arm` for dynamic arm management.
   Efficient for large K: with `k > 1`, K=30 arms reach initial coverage in ~10
-  rounds; `CoverageConfig` prevents starvation.
+  rounds; `CoverageConfig` reserves configured coverage picks.
 - **`RouterConfig`** — single builder-friendly config that collapses `MabConfig`,
   `DriftConfig`, `CoverageConfig`, `LatencyGuardrailConfig`, `TriageSessionConfig`,
   and `ControlConfig` into one struct with `with_*` builder methods.
@@ -281,22 +312,22 @@ Not published (internal iterations, changes folded into 0.3.5).
   `Router::mode()` and embedded in `RouterDecision`.
 - **`RouterDecision`** — output of `Router::select`: chosen arms, current mode,
   pre-picks, control picks, eligible arms, and triage cells.
-- **`MonitoredWindow::acknowledge_change`** — promotes the recent window into the
-  baseline and clears it; completes the post-detection protocol.
+- **`MonitoredWindow::acknowledge_change`**: retains the rolling baseline and
+  clears recent detector evidence.
 - **`MonitoredWindow::promote_recent_to_baseline`** — soft merge (no clear).
 - **`MonitoredWindow::baseline_len` / `recent_len`** — window size accessors.
 - **`calibrate_cusum_threshold`** (feature `stochastic`) — convenience Monte Carlo
   calibration: simulate null max-scores, build a grid, call
-  `calibrate_threshold_from_max_scores`.  Answers "what threshold gives
-  `P[alarm within m rounds] ≤ α`?"
+  `calibrate_threshold_from_max_scores`. Estimates a threshold for a target
+  simulated false-alarm rate over a fixed horizon.
 - **`simulate_cusum_null_max_scores`** (feature `stochastic`) — underlying Monte
   Carlo simulator; useful when you want to reuse the null samples across grid sweeps.
 - **`ThresholdCalibration`** and **`calibrate_threshold_from_max_scores`** promoted
   to top-level re-exports (were monitor-internal).
 - **`ControlConfig`** / **`pick_control_arms`** / **`split_control_budget`** —
-  reserve a deterministic-random fraction of picks as a selection-bias anchor.
-- **`suggested_window_cap(throughput, change_rate)`** — SW-UCB–derived window
-  size guidance: returns `sqrt(throughput / change_rate)` clamped to `[10, 10_000]`.
+  reserve a fraction of picks for seed-ranked comparison arms.
+- **`suggested_window_cap(throughput, change_rate)`**: square-root window-size
+  heuristic based on expected calls between changes, clamped to `[10, 10_000]`.
 - **`suggested_window_cap_for_k(k, total_throughput, change_rate)`** — per-arm
   variant for large-K deployments.
 

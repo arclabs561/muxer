@@ -4,8 +4,7 @@
 //! Just: create a Router → pick an arm → make a call → score it → observe.
 //!
 //! This covers the 80% case: a small number of arms (here 3), deterministic
-//! routing that prefers the best arm, delayed quality labeling (you score the
-//! response AFTER the call), and automatic explore-first for new arms.
+//! routing from caller-defined outcomes, plus automatic explore-first for new arms.
 //!
 //! Run with:
 //!   cargo run --example getting_started
@@ -32,13 +31,13 @@ fn main() {
     //   RouterConfig::default().window_cap(cap)
     let mut router = Router::new(arms, RouterConfig::default()).unwrap();
 
-    // Simulated quality profiles per arm.
-    let quality_for = |arm: &str| -> (f64, bool) {
+    // Simulated profiles: quality, junk, cost, and latency.
+    let profile_for = |arm: &str| -> (f64, bool, u64, u64) {
         match arm {
-            "gpt-4o" => (0.92, false),        // high quality
-            "claude-sonnet" => (0.78, false), // moderate quality (below threshold)
-            "gemini-pro" => (0.55, true),     // frequent junk
-            _ => (1.0, false),
+            "gpt-4o" => (0.92, false, 8, 300), // higher quality, higher cost
+            "claude-sonnet" => (0.78, false, 5, 200), // lower quality, lower cost
+            "gemini-pro" => (0.55, true, 3, 150), // lower quality, frequent junk
+            _ => (1.0, false, 0, 0),
         }
     };
 
@@ -51,14 +50,10 @@ fn main() {
         let decision = router.select(1, round);
         let arm = decision.primary().unwrap().to_string();
 
-        // Step 1: push the outcome immediately with junk=false (you don't
-        // know quality yet — the call hasn't been scored).
-        assert!(router.observe(&arm, Outcome::success(5, 200)));
-
-        // Step 2 (delayed): score the response after downstream processing.
-        let (quality, is_junk) = quality_for(&arm);
-        router.set_last_junk_level(&arm, is_junk, false);
-        router.set_last_quality_score(&arm, quality);
+        // Score the completed call, then record one finalized outcome.
+        let (quality, is_junk, cost, elapsed_ms) = profile_for(&arm);
+        let outcome = Outcome::with_quality(true, is_junk, false, cost, elapsed_ms, quality);
+        assert!(router.observe(&arm, outcome));
 
         if round < 6 {
             println!("  round {round:2}: chose {:15}  quality={quality:.2}  junk={is_junk}  prechosen={:?}",
@@ -86,19 +81,19 @@ fn main() {
         );
     }
 
-    // The Router selects the best arm given current stats.
+    // Select from the current window statistics and configured objectives.
     let best = router.select(1, 99);
     println!(
         "\nBest arm now: {:?}  (mode: {:?})",
         best.primary().unwrap(),
         router.mode()
     );
-    // Note: gpt-4o and claude-sonnet both have ok_rate=1.0, junk=0 — without
-    // quality_weight they are indistinguishable and the router tie-breaks
-    // alphabetically. The quality_score field preserves the gradient.
+    // gpt-4o and claude-sonnet are both Pareto-efficient: one has higher
+    // quality, the other lower cost and latency. Their default scalar scores
+    // tie, so the selector uses its stable name tiebreak.
 
     // -----------------------------------------------------------------
-    // 4. Enable quality_weight to break the tie using the gradient signal.
+    // 4. Give quality non-zero scalar weight to resolve the tradeoff.
     // -----------------------------------------------------------------
     use muxer::{select_mab, MabConfig};
     use std::collections::BTreeMap;
@@ -115,13 +110,12 @@ fn main() {
         .collect();
     let sel = select_mab(router.arms(), &summaries, cfg);
     println!("\nWith quality_weight=1.0: best arm is {:?}", sel.chosen);
-    // → "gpt-4o" wins because mean_quality_score=0.92 > claude-sonnet's 0.78.
+    // "gpt-4o" wins because mean_quality_score=0.92 > claude-sonnet's 0.78.
 
     // -----------------------------------------------------------------
     // 5. Where to go next.
     // -----------------------------------------------------------------
     // - Add monitoring + triage: RouterConfig::default().with_monitoring(400, 80).with_triage()
     // - Use select(k=3) for faster initial coverage of 20+ arms.
-    // - Full production pattern: cargo run --example router_production --features stochastic
-    // - Theoretical background: examples/EXPERIMENTS.md
+    // - Combined configuration demo: cargo run --example router_production --features stochastic
 }

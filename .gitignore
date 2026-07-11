@@ -6,3 +6,6 @@ proptest-regressions/
 .claude/
 Cargo.lock
 /semver-checks/
+
+# Downloaded datasets and generated validation traces.
+/data/

@@ -54,7 +54,7 @@ fn main() {
         .map(|(k, w)| (k.clone(), w.summary()))
         .collect();
 
-    // First: hard constraints to avoid clearly-bad arms.
+    // First: empirical filters to avoid clearly bad arms when alternatives remain.
     let cfg_constraints = MabConfig {
         max_hard_junk_rate: Some(0.05),
         max_junk_rate: Some(0.10),

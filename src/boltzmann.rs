@@ -7,7 +7,7 @@
 //! it is uniform.
 //!
 //! Compared with [`crate::ThompsonSampling`] (Beta posteriors over Bernoulli
-//! rewards) and [`crate::Exp3Ix`] (adversarial regret bounds), Boltzmann is
+//! rewards) and [`crate::Exp3Ix`] (importance-weighted loss updates), Boltzmann is
 //! the simplest stateless-given-stats baseline. It works for any real-valued
 //! reward and integrates with `drawset` for the Gumbel-noise RNG.
 //!
@@ -147,6 +147,9 @@ impl BanditPolicy for BoltzmannPolicy {
     }
 
     fn update_reward(&mut self, arm: &str, reward: f64) {
+        if !reward.is_finite() {
+            return;
+        }
         let r = match self.config.reward_clip {
             Some(clip) => reward.clamp(-clip, clip),
             None => reward,
@@ -165,6 +168,14 @@ mod tests {
     fn empty_arms_returns_none() {
         let mut p = BoltzmannPolicy::new(BoltzmannConfig::default());
         assert!(p.decide(&[]).is_none());
+    }
+
+    #[test]
+    fn non_finite_reward_is_ignored() {
+        let mut policy = BoltzmannPolicy::new(BoltzmannConfig::default());
+        let before = policy.mean_reward("a");
+        policy.update_reward("a", f64::NAN);
+        assert_eq!(policy.mean_reward("a"), before);
     }
 
     #[test]

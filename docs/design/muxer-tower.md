@@ -28,6 +28,8 @@ Tower's core shape is an asynchronous request/response service with a separate
 `muxer`'s current core surface is enough for a first adapter:
 
 - `Router::select(k, seed)` selects without mutating observation state.
+- `Router::select_from(eligible, k, seed)` makes a caller-computed readiness
+  set authoritative for every routing stage.
 - `RouterDecision::primary()` returns the ordinary one-backend arm.
 - `Router::observe` and `Router::observe_with_context` record outcomes after a
   response or error is known.
@@ -96,7 +98,8 @@ pub trait ContextExtractor<Request> {
 ```
 
 Returning `None` means "do not observe automatically"; callers can report later
-through `RouterHandle::observe`. The example classifier can map successful
+through `RouterHandle::observe` or its `ObservationId`-aware equivalent. The
+example classifier can map successful
 responses to `Outcome::success(0, elapsed_ms)` and inner errors to
 `Outcome::failure(0, elapsed_ms)`, but that default should be documented as an
 example policy, not a general truth about response quality.
@@ -113,13 +116,13 @@ to the core crate. The core crate should stay transport-neutral.
 Deferred. A service that owns many inner services must preserve Tower readiness.
 The conservative implementation can poll every backend ready before selecting,
 but that makes one unavailable backend block all traffic. A ready-aware
-implementation would need selection over an eligible arm subset, which `Router`
-does not expose yet.
+implementation can poll its backends, build the ready arm set, and pass it to
+`Router::select_from`.
 
 The prototype may include an experimental `BanditBalanceService` for two mock
 services, using the conservative all-ready policy. It should not become the
-main public API until real service readiness pressure proves whether `muxer`
-needs a `select_from(eligible_arms, k, seed)` style API.
+main public API until real service readiness pressure proves the adapter
+semantics.
 
 ### Use `tower::steer::Steer`
 
@@ -137,7 +140,7 @@ convenience balancer.
   remain caller-defined.
 - No hidden delayed-feedback mechanism. Late quality scoring must go through an
   explicit handle.
-- No core API changes before the adapter proves an actual gap.
+- No additional core API changes before the adapter proves another actual gap.
 
 ## Implementation Plan
 
@@ -167,8 +170,8 @@ convenience balancer.
   `muxer`.
 - No lock may be held across an awaited backend future.
 - The first example must have deterministic assertions, not just printed output.
-- If the balancer prototype needs ready-aware selection, stop and design the
-  core `Router` API change instead of routing to not-ready services.
+- A ready-aware balancer must pass only successfully polled backends to
+  `Router::select_from`; it must not route to a backend that was not ready.
 - If HTTP request extensions are useful, add them behind an optional `http`
   feature in `muxer-tower`, not in `muxer`.
 
@@ -176,8 +179,8 @@ convenience balancer.
 
 - Should `RoutedRequest` carry `String` arm names directly, or should
   `muxer-tower` introduce an `ArmName` newtype and convert at the boundary?
-- Does real backend readiness require `Router::select_from`, or is an external
-  dispatcher enough?
+- Should a convenience balancer use `Router::select_from`, or leave all
+  readiness-aware dispatch in the downstream service?
 - Should automatic observation see request-derived metadata beyond the context
   vector? Defer until the first real caller has that need.
 

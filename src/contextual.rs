@@ -1,81 +1,13 @@
-//! Contextual bandits for routing.
+//! Linear contextual bandit routing.
 //!
-//! This module enables the **contextual regime** where the three routing objectives
-//! (exploitation, estimation, detection) genuinely diverge.
+//! The caller supplies a fixed-length feature vector for each decision and a scalar
+//! reward in `[0, 1]` for each update. [`LinUcb`] maintains independent per-arm ridge
+//! regression state, using incremental Sherman-Morrison updates. It supports
+//! deterministic UCB selection and seedable softmax sampling.
 //!
-//! ## Why context matters: the design measure perspective
-//!
-//! In the non-contextual regime, the policy's design measure is just an allocation
-//! vector `(n_1, ..., n_K)` -- observation counts per arm.  All three objectives
-//! (regret, estimation, detection) are monotone in these counts, and their sensitivity
-//! functions are colinear under static schedules.  The Pareto front collapses.
-//!
-//! With context features, the design measure becomes a **function** `p_a(x, t)` --
-//! the probability of pulling arm `a` at context `x` at time `t`.  Each objective
-//! depends on a different projection of this function:
-//!
-//! - **Regret** depends on the gap-weighted marginal (concentrate near decision boundaries).
-//! - **Estimation** depends on the leverage function (spread to extremes, D-optimal).
-//! - **Detection** depends on uniform coverage (spread uniformly -- changes could be anywhere).
-//!
-//! These are linearly independent sensitivity functions in the static-design limit.
-//! For adaptive policies, the feasible set of design measures is constrained by the
-//! information structure (causality: action at t depends on filtration at t-1), so
-//! the achievable Pareto front may be a strict subset of the unconstrained one.
-//!
-//! **Local vs. global caveat**: the gradient test (sensitivity-function rank) provides
-//! **local** redundancy information at a specific design point.  The global Pareto
-//! front can have varying dimension -- lower-dimensional patches where objectives
-//! happen to align may coexist with full-dimensional regions where they diverge
-//! (Zhen et al. 2018 call this "partial redundancy").  In practice, `LinUcb`
-//! traverses the design space adaptively, so it encounters both regimes.
-//!
-//! Still, the core insight holds: context creates genuine degrees of freedom that
-//! the non-contextual regime lacks.
-//!
-//! ## Empirical gradient rank
-//!
-//! The gradient test can be computed empirically by extracting the per-arm theta
-//! vectors from LinUCB and checking their matrix rank.  When feature variation is
-//! insufficient (e.g. all evaluations use the same language/domain), the theta
-//! vectors collapse to rank 1 (proportional) even with 8-dimensional features --
-//! the non-contextual collapse reasserts itself because the design measure was
-//! never forced to vary along the feature dimensions.  Genuine contextual
-//! divergence requires **training data that spans multiple feature regimes** (e.g.
-//! both biomedical and social media text, both English and multilingual datasets).
-//! This is a practical prerequisite, not a theoretical one: the degrees of freedom
-//! exist in the feature space but must be *exercised* by the data generating process.
-//!
-//! ## Connection to Information-Directed Sampling
-//!
-//! The two-objective (regret, information-gain) tradeoff is already formalized by
-//! **Information-Directed Sampling** (IDS), which minimizes the information ratio
-//! Gamma_t = Delta_t^2 / g_t per round.  `LinUcb` can be viewed as addressing a
-//! related but distinct problem: it navigates a **three**-objective landscape
-//! (regret, estimation, detection) where the detection objective is not reducible
-//! to the information-gain direction.  Whether a "monitoring-augmented information
-//! ratio" can extend IDS to this setting is an open question; the objective manifold
-//! framework suggests the extension is non-trivial only in the contextual case
-//! (where the detection sensitivity function is linearly independent of the
-//! information-gain direction).
-//!
-//! ## Practical implications
-//!
-//! - **Without context**: `select_mab` / `Exp3Ix` are sufficient; monitoring comes
-//!   approximately "for free" with any reasonable exploration schedule.
-//! - **With context**: `LinUcb` enables transfer learning across conditions (e.g.
-//!   "biomedical text prefers backend X") without maintaining separate per-facet
-//!   histories.  Monitoring may require extra budget beyond what regret-optimal
-//!   sampling provides -- this is the price of breaking the non-contextual collapse.
-//!
-//! ## Design
-//!
-//! - The caller supplies a fixed-length feature vector per decision ("context").
-//! - Rewards are scalar in `[0, 1]` (caller-defined).
-//! - Policies are **seedable** and deterministic-by-default given a fixed seed and arm order.
-//!
-//! Implementation: linear contextual bandit (LinUCB) with per-arm ridge regression
-//! state and incremental Sherman-Morrison updates.
+//! Contexts are exogenous inputs. This module chooses an arm for the context it is
+//! given; it does not choose, generate, or ensure coverage of the context space.
+//! Monitoring remains per arm and is not part of the LinUCB policy.
 
 use rand::rngs::StdRng;
 use rand::Rng;
@@ -350,7 +282,7 @@ impl LinUcb {
     ///
     /// This is useful for:
     /// - traffic-splitting (probabilistic routing)
-    /// - logging an approximate propensity distribution for offline evaluation
+    /// - inspecting how the current scores translate into allocation weights
     ///
     /// # Example
     ///
@@ -386,7 +318,7 @@ impl LinUcb {
     /// Select an arm by sampling from `probabilities(...)`, returning the chosen arm and the probabilities used.
     ///
     /// Policy:
-    /// - Explore each arm once in stable order (still returns a full `probs` map).
+    /// - Explore each arm once in stable order (returns the point-mass distribution used).
     /// - Otherwise sample from a softmax over UCB scores (seeded RNG).
     ///
     /// # Example
@@ -420,7 +352,11 @@ impl LinUcb {
         for a in arms_in_order {
             let uses = self.state.get(a).map(|s| s.uses).unwrap_or(0);
             if uses == 0 {
-                return Some((a, probs));
+                let actual_probs = arms_in_order
+                    .iter()
+                    .map(|candidate| (candidate.clone(), if candidate == a { 1.0 } else { 0.0 }))
+                    .collect();
+                return Some((a, actual_probs));
             }
         }
 
@@ -438,7 +374,7 @@ impl LinUcb {
     /// Select via softmax over UCB scores and return a unified `Decision`.
     ///
     /// Notes:
-    /// - Always includes `probs` (the softmax allocation over UCB for this context).
+    /// - Always includes the `probs` distribution that selected the arm.
     /// - Records explore-first vs sampling and numerical fallback.
     pub fn decide_softmax_ucb(
         &mut self,
@@ -453,14 +389,18 @@ impl LinUcb {
 
         let probs = self.probabilities(arms_in_order, context, temperature);
 
-        // Explore first (stable order) while still returning full probs.
+        // Explore first in stable order.
         for a in arms_in_order {
             let uses = self.state.get(a).map(|s| s.uses).unwrap_or(0);
             if uses == 0 {
+                let actual_probs = arms_in_order
+                    .iter()
+                    .map(|candidate| (candidate.clone(), if candidate == a { 1.0 } else { 0.0 }))
+                    .collect();
                 return Some(Decision {
                     policy: DecisionPolicy::LinUcb,
                     chosen: a.clone(),
-                    probs: Some(probs),
+                    probs: Some(actual_probs),
                     notes: vec![DecisionNote::ExploreFirst],
                 });
             }
@@ -493,7 +433,11 @@ impl LinUcb {
     }
 
     /// Update the model for `arm` given the same context used for selection and a reward in `[0, 1]`.
+    /// Non-finite rewards are ignored.
     pub fn update_reward(&mut self, arm: &str, context: &[f64], reward01: f64) {
+        if !reward01.is_finite() {
+            return;
+        }
         let d = self.dim();
         let x = self.sanitize_context(context);
         let r = clamp01(reward01);
@@ -759,6 +703,34 @@ mod tests {
             assert!(v.is_finite());
             assert!(*v >= 0.0 && *v <= 1.0);
         }
+    }
+
+    #[test]
+    fn linucb_softmax_apis_report_point_mass_during_explore_first() {
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let ctx = [0.1, 0.9];
+        let cfg = LinUcbConfig {
+            dim: 2,
+            ..LinUcbConfig::default()
+        };
+
+        let mut selector = LinUcb::new(cfg);
+        let (chosen, probs) = selector
+            .select_softmax_ucb_with_probs(&arms, &ctx, 0.3)
+            .unwrap();
+        assert_eq!(chosen, "a");
+        assert_eq!(
+            probs,
+            BTreeMap::from([("a".to_string(), 1.0), ("b".to_string(), 0.0)])
+        );
+
+        let mut decider = LinUcb::new(cfg);
+        let decision = decider.decide_softmax_ucb(&arms, &ctx, 0.3).unwrap();
+        assert_eq!(decision.chosen, "a");
+        assert_eq!(
+            decision.probs.unwrap(),
+            BTreeMap::from([("a".to_string(), 1.0), ("b".to_string(), 0.0)])
+        );
     }
 
     proptest! {

@@ -1,10 +1,11 @@
-//! Router quickstart — the complete routing lifecycle in one example.
+//! Router quickstart: routing modes and state management.
 //!
 //! Shows:
 //! 1. Basic select → observe loop (both arms, normal mode).
-//! 2. Triage detection: sustained hard failures trigger alarm, switch to triage mode.
-//! 3. Acknowledgment: after investigation, acknowledge_change resets the detector.
-//! 4. Large-K batch exploration: K=20 arms covered quickly with k=3 per round.
+//! 2. Request-local eligibility: every selection stage stays inside the supplied set.
+//! 3. Triage detection: sustained hard failures trigger alarm, switch to triage mode.
+//! 4. Evidence reset: acknowledge_change clears current detector evidence.
+//! 5. Large-K batch exploration: K=20 arms covered quickly with k=3 per round.
 //!
 //! Run with:
 //!   cargo run --example router_quickstart
@@ -37,9 +38,19 @@ fn main() {
     }
 
     // -----------------------------------------------------------------------
-    // 2. Quality divergence — arm-b accumulates junk
+    // 2. Request-local eligibility
     // -----------------------------------------------------------------------
-    println!("\n=== 2. Quality divergence ===");
+    println!("\n=== 2. Request-local eligibility ===");
+
+    let eligible = vec!["arm-b".to_string()];
+    let d = router.select_from(&eligible, 1, 0).unwrap();
+    assert_eq!(d.primary(), Some("arm-b"));
+    println!("  eligible={eligible:?}, chose={:?}", d.primary().unwrap());
+
+    // -----------------------------------------------------------------------
+    // 3. Quality divergence: arm-b accumulates junk
+    // -----------------------------------------------------------------------
+    println!("\n=== 3. Quality divergence ===");
 
     for _ in 0..30 {
         assert!(router.observe("arm-b", Outcome::degraded(2, 80)));
@@ -58,9 +69,9 @@ fn main() {
     );
 
     // -----------------------------------------------------------------------
-    // 3. Triage mode: hard failures on arm-b trigger CUSUM alarm
+    // 4. Triage mode: hard failures on arm-b trigger CUSUM alarm
     // -----------------------------------------------------------------------
-    println!("\n=== 3. Triage mode ===");
+    println!("\n=== 4. Triage mode ===");
 
     let tcfg = TriageSessionConfig {
         min_n: 10,
@@ -95,7 +106,7 @@ fn main() {
     println!("  triage picks: {:?}", d.chosen);
     println!("  triage cells: {} cells", d.triage_cells.len());
 
-    // Acknowledge: reset CUSUM and clear the recent monitoring window.
+    // Clear current CUSUM evidence. This is not rebaselining or incident resolution.
     r2.acknowledge_change("degraded");
     println!("  mode after acknowledge: {:?}", r2.mode());
     assert!(
@@ -104,9 +115,9 @@ fn main() {
     );
 
     // -----------------------------------------------------------------------
-    // 4. Large-K batch exploration
+    // 5. Large-K batch exploration
     // -----------------------------------------------------------------------
-    println!("\n=== 4. Large-K batch exploration (K=20, k=3) ===");
+    println!("\n=== 5. Large-K batch exploration (K=20, k=3) ===");
 
     let n = 20;
     let arms_large: Vec<String> = (0..n).map(|i| format!("svc-{i:02}")).collect();
@@ -127,9 +138,9 @@ fn main() {
     assert_eq!(seen.len(), n, "all arms should be covered");
 
     // -----------------------------------------------------------------------
-    // 5. Dynamic arm management
+    // 6. Dynamic arm management
     // -----------------------------------------------------------------------
-    println!("\n=== 5. Dynamic arm management ===");
+    println!("\n=== 6. Dynamic arm management ===");
 
     let mut rd = Router::new(
         vec!["old-a".to_string(), "old-b".to_string()],
@@ -159,7 +170,7 @@ fn main() {
             "removed arm must not be selected"
         );
     }
-    println!("  remove_arm('old-b'): never selected again ✓");
+    println!("  remove_arm('old-b'): never selected again");
 
     println!("\nAll assertions passed.");
 }

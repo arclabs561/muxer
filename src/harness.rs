@@ -617,8 +617,9 @@ where
 
 /// Result of a contextual policy fill (LinUCB-based selection with context features).
 ///
-/// This extends the non-contextual `PolicyFill` with context metadata for logging
-/// and offline evaluation (propensity scores, per-arm UCB scores).
+/// This extends the non-contextual `PolicyFill` with the supplied context and
+/// per-arm UCB scores for diagnostics. It does not contain propensities or enough
+/// identity for standalone replay.
 #[cfg(feature = "contextual")]
 #[derive(Debug, Clone)]
 pub struct ContextualPolicyFill {
@@ -633,10 +634,7 @@ pub struct ContextualPolicyFill {
 /// Contextual variant of `policy_fill_k_observed_with`: uses LinUCB for the
 /// algorithmic selection step instead of a flat MAB/EXP3-IX policy.
 ///
-/// This enables the **contextual regime** where routing objectives diverge:
-/// LinUCB learns to route based on per-request features (language, domain, etc.)
-/// so that "biomedical text -> backend X" is learned from all slices simultaneously,
-/// without maintaining separate per-facet histories.
+/// LinUCB learns an arm-specific linear reward model over caller-supplied features.
 ///
 /// The caller supplies:
 /// - `linucb`: a mutable reference to a `LinUcb` instance (caller manages persistence)

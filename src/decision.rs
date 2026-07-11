@@ -1,12 +1,9 @@
 //! Unified decision envelope for policy outputs.
 //!
-//! Many routing systems want a single, audit-friendly record of a policy decision that can be:
-//! - logged (debugging / monitoring)
-//! - replayed (offline evaluation)
-//! - consumed by wrappers (e.g. stickiness) without heuristics
-//!
-//! This module provides a small `Decision` struct and a typed `DecisionNote` list that policies
-//! can attach to explain "why this choice happened".
+//! This module provides a small runtime record for diagnostics and wrappers such as
+//! stickiness. A [`Decision`] alone is not an evaluation or replay record: it lacks
+//! event identity, context, the authoritative candidate set, configuration identity,
+//! and the executed action.
 
 use std::collections::BTreeMap;
 
@@ -83,7 +80,7 @@ pub enum DecisionNote {
         fallback_used: bool,
         /// Maximum catKL statistic threshold.
         max_catkl: f64,
-        /// Significance level for the test.
+        /// Dirichlet smoothing pseudo-count.
         alpha: f64,
         /// Minimum baseline observations required before the guard activates.
         min_baseline: u64,
@@ -101,7 +98,7 @@ pub enum DecisionNote {
         fallback_used: bool,
         /// Maximum CUSUM score threshold.
         max_cusum: f64,
-        /// Significance level for the test.
+        /// Dirichlet smoothing pseudo-count.
         alpha: f64,
         /// Minimum baseline observations required.
         min_baseline: u64,
@@ -125,7 +122,7 @@ pub enum DecisionNote {
             serde(default, skip_serializing_if = "Option::is_none")
         )]
         catkl_score: Option<f64>,
-        /// Maximum CUSUM score across alternative hypotheses.
+        /// Replayed CUSUM score for the configured alternative.
         #[cfg_attr(
             feature = "serde",
             serde(default, skip_serializing_if = "Option::is_none")

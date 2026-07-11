@@ -50,8 +50,12 @@ pre-1.0.
 
 - Confirm `Router::select(k, seed)` seed semantics are final: deterministic MAB
   ordering is stable; seed affects coverage, control picks, and triage.
-- Confirm `Router::observe` and delayed-label APIs are sufficient for wrappers
-  such as `muxer-tower`.
+- Confirm `Router::select_from(eligible, k, seed)` semantics are final: it
+  validates registered unique arms, preserves Router registration order, and
+  constrains every selection and fallback stage to that request-local set.
+- Confirm `Router::observe_with_id` and targeted delayed-label APIs are
+  sufficient for wrappers such as `muxer-tower`. IDs are caller-owned; durable
+  storage, expiry, and cross-process correlation remain adapter concerns.
 - Do not add router-level OPE propensities unless the deterministic-policy
   semantics are designed.
 

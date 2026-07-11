@@ -1,48 +1,15 @@
-//! Worst-first selection helpers (regression hunting / active triage).
+//! Worst-first selection helpers for regression investigation.
 //!
-//! This is the **investigation phase** that follows detection (the `monitor` module).
-//! After monitoring flags a change in an arm's behavior, worst-first prioritizes that
-//! arm to characterize the change: what broke, by how much, and (in the contextual
-//! regime) where in the covariate space.
+//! The per-arm helpers rank caller-supplied candidates by observed hard- and
+//! soft-junk rates plus an exploration bonus. Unseen candidates are selected first;
+//! score ties use a stable hash of the caller's seed.
 //!
-//! The scoring is intentionally inverted from normal MAB selection: higher badness score
-//! = more interesting to investigate.  The UCB exploration term ensures under-sampled
-//! arms (including newly-flagged ones) get priority.
+//! The contextual helpers apply the same rule to `(arm, context-bin)` cells. Context
+//! bins come from quantized feature vectors, and callers maintain the per-cell counts
+//! and summaries.
 //!
-//! ## Non-contextual worst-first
-//!
-//! `worst_first_pick_one` / `worst_first_pick_k` operate per-arm and are sufficient for
-//! the non-contextual regime.  After detection, extra traffic is routed to the flagged
-//! arm until the monitoring signal decays.
-//!
-//! ## Contextual extension: per-cell triage
-//!
-//! In the contextual regime (`LinUcb`), a detected change may be localised to a subset
-//! of the covariate space — an arm might degrade only for a specific domain or language
-//! feature regime.  Per-arm scoring misses this: it averages across context bins and
-//! may dilute a localised signal.
-//!
-//! The `contextual_worst_first_pick_*` functions lift triage to **(arm, context-bin)**
-//! pairs, where bins are derived by quantising each feature dimension into `levels` equal
-//! buckets and hashing the resulting bucket vector with `stable_hash64`.  Callers
-//! maintain per-cell call/badness counters; these helpers pick which cell to investigate
-//! next using the same exploration-adjusted badness score.
-//!
-//! ## The meta-inference problem
-//!
-//! The real open problem in post-detection investigation is not "how to switch modes"
-//! (normal -> investigation -> back) but **when a detected change invalidates the
-//! current objective weighting**.  A level shift in one arm might require only
-//! re-estimation; a structural change (the arm's response function changed shape)
-//! might require re-evaluating which objectives matter.  This is a meta-level
-//! inference problem -- deciding whether to continue optimizing the current objective
-//! tuple or revise it -- that existing bandit/RL theory does not address.
-//!
-//! For practical purposes, `muxer` implements the simpler version: after detection,
-//! route extra traffic to the flagged arm (via badness scoring + exploration bonus)
-//! until the monitoring signal decays or the arm is manually reset.  The mode
-//! transition is implicit (via the guard thresholds in `MabConfig`), not an explicit
-//! POMDP policy over objective states.
+//! These helpers do not detect changes or control entry into and exit from triage.
+//! [`crate::Router`] applies them to alarmed arms when its triage session is active.
 
 use crate::{stable_hash64, stable_hash64_u64};
 

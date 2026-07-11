@@ -1,23 +1,12 @@
-//! Control arm selection for selection-bias anchoring.
+//! Seeded comparison-arm selection.
 //!
-//! In an adaptive routing system, the policy continuously steers traffic toward
-//! the "best" arm.  This creates **selection bias**: arms that are currently
-//! disfavored get fewer observations, making their quality estimates noisier and
-//! slower to detect changes.
+//! A control budget reserves part of a multi-pick decision for a subset ranked by
+//! stable hash of the caller's seed. The result is reproducible, not intrinsically
+//! random. It has no statistical inclusion-probability or unbiasedness guarantee
+//! unless the caller supplies seeds from a defined randomization mechanism.
 //!
-//! A **control budget** reserves a small fraction of picks as deterministic-random
-//! choices (uniformly at random from all arms, independent of estimated quality).
-//! This serves two purposes:
-//!
-//! 1. **Bias anchor**: the random picks give an unbiased estimate of each arm's
-//!    quality, which can be compared against the MAB-selected picks to detect
-//!    whether the policy has introduced systematic bias.
-//!
-//! 2. **Coverage floor**: ensures no arm is ever completely starved of traffic
-//!    (complementary to [`CoverageConfig`], which targets under-sampled arms
-//!    specifically rather than uniform random).
-//!
-//! A typical deployment reserves 5–10% of picks as control picks.
+//! Reusing one seed can select the same subset indefinitely. Use
+//! [`crate::CoverageConfig`] when the requirement is an empirical sampling floor.
 
 use crate::pick_random_subset;
 
@@ -57,7 +46,7 @@ impl ControlConfig {
     }
 }
 
-/// Pick up to `cfg.control_k` arms uniformly at random (deterministic, seed-based).
+/// Pick up to `cfg.control_k` arms by seeded stable-hash order.
 ///
 /// Returns a subset of `arms` chosen without replacement using `stable_hash64`.
 /// The result is deterministic: same seed + same arms → same control picks.

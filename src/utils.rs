@@ -2,9 +2,9 @@
 
 /// Suggest a `Window` capacity based on expected throughput and changepoint rate.
 ///
-/// Uses the SW-UCB scaling `O(sqrt(T / Υ_T))` from Garivier & Moulines 2008
-/// (arXiv:0805.3415), where `T` = observations per arm per period and
-/// `Υ_T / T = change_rate` = expected fraction of rounds where a change occurs.
+/// This rule of thumb takes the square root of the expected calls between changes:
+/// `sqrt(throughput / change_rate)`. It is not the window schedule analyzed for
+/// SW-UCB and carries no regret guarantee.
 ///
 /// # Arguments
 ///
@@ -33,7 +33,7 @@ pub fn suggested_window_cap(throughput: u64, change_rate: f64) -> usize {
         0.01 // conservative fallback
     };
     let t = (throughput as f64).max(1.0);
-    // sqrt(T / Υ_T) where Υ_T/T = change_rate, so sqrt(1 / change_rate).
+    // Square root of the expected calls between changes.
     let cap = (t / change_rate).sqrt().round() as usize;
     cap.clamp(10, 10_000)
 }
@@ -63,7 +63,7 @@ mod tests {
         let fast = suggested_window_cap(1000, 0.5);
         assert!(
             slow >= fast,
-            "more frequent changes → smaller optimal window"
+            "more frequent changes should yield a smaller suggested window"
         );
     }
 }

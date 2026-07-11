@@ -1,7 +1,7 @@
-//! Stateful routing session: the "front door" for most production deployments.
+//! Stateful composition of routing and monitoring primitives.
 //!
 //! [`Router`] owns all per-arm state (sliding windows, monitoring, triage) and
-//! exposes a simple three-method interface:
+//! exposes a small select, execute, and observe loop:
 //!
 //! ```text
 //! let d = router.select(k, seed);   // pick k arms
@@ -9,30 +9,33 @@
 //! assert!(router.observe(arm, outcome)); // record what happened
 //! ```
 //!
-//! The router handles the full routing lifecycle:
+//! Use [`Router::select_from`] instead of [`Router::select`] when the allowed
+//! arms vary by request.
+//!
+//! The router has three operating behaviors:
 //!
 //! 1. **Normal** — MAB selection with novelty/coverage pre-picks + latency guardrail.
 //! 2. **Triage** — after monitoring fires on an arm, worst-first routing
 //!    investigates the alarmed arm while the rest continues normally.
-//! 3. **Acknowledgment** — [`Router::acknowledge_change`] resets the CUSUM bank
+//! 3. **Evidence reset**: [`Router::acknowledge_change`] resets the CUSUM bank
 //!    and clears the arm's recent monitoring window.
 //!
 //! ## Large K
 //!
 //! For large arm counts (K > 20), set `k > 1` in [`Router::select`] to batch
 //! the initial explore-first phase: with k=3, initial coverage of K=30 arms
-//! takes ~10 rounds instead of 30.  [`RouterConfig`]'s `coverage` field
-//! (`CoverageConfig::min_fraction`) ensures no arm is permanently starved.
+//! takes ~10 rounds instead of 30. [`RouterConfig`]'s `coverage` field
+//! (`CoverageConfig::min_fraction`) adds an empirical maintenance-sampling target.
 
 use crate::monitor::{DriftConfig, MonitoredWindow};
 use crate::{
     monitoring_scores_for_arms, policy_fill_generic, select_mab_explain,
     select_mab_monitored_explain_with_summaries_and_scores, split_control_budget,
     worst_first_pick_k, ContextualCell, ControlConfig, CoverageConfig, DriftMetric,
-    LatencyGuardrailConfig, MonitoredMabConfig, Outcome, OutcomeIdx, PipelineOrder, Summary,
-    TriageSession, TriageSessionConfig, Window, WorstFirstConfig,
+    LatencyGuardrailConfig, MonitoredMabConfig, ObservationId, Outcome, OutcomeIdx, PipelineOrder,
+    Summary, TriageSession, TriageSessionConfig, Window, WorstFirstConfig,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 // ============================================================================
 // Configuration
@@ -82,7 +85,10 @@ pub struct RouterConfig {
     // --- Pipeline ---
     /// Coverage / maintenance sampling.
     pub coverage: CoverageConfig,
-    /// Latency guardrail (hard pre-filter by mean elapsed time).
+    /// Latency filter by mean elapsed time.
+    ///
+    /// Its ordering relative to novelty and coverage is configured by
+    /// [`PipelineOrder`]. Control and triage picks run before this filter.
     pub guardrail: LatencyGuardrailConfig,
     /// Pipeline ordering: whether novelty/coverage runs before or after the guardrail.
     pub pipeline_order: PipelineOrder,
@@ -90,7 +96,7 @@ pub struct RouterConfig {
     pub novelty_enabled: bool,
 
     // --- Control ---
-    /// Control arm budget (deterministic-random picks as a bias anchor).
+    /// Seeded comparison-arm budget.
     pub control: ControlConfig,
 }
 
@@ -126,6 +132,8 @@ impl Default for RouterConfig {
 
 impl RouterConfig {
     /// Enable monitoring with given window capacities.
+    ///
+    /// Construction requires `0 < recent_cap < baseline_cap`.
     #[must_use]
     pub fn with_monitoring(mut self, baseline_cap: usize, recent_cap: usize) -> Self {
         self.enable_monitoring = true;
@@ -185,16 +193,27 @@ impl RouterConfig {
     }
 
     fn validate(&self) -> Result<(), logp::Error> {
+        if self.window_cap == 0 {
+            return Err(logp::Error::Domain(
+                "RouterConfig: window_cap must be non-zero",
+            ));
+        }
         if !self.enable_monitoring {
             return Ok(());
         }
 
-        let baseline_cap = cap_as_u64(self.baseline_cap.max(1));
-        let recent_cap = cap_as_u64(self.recent_cap.max(1));
-
-        if recent_cap > baseline_cap {
+        if self.baseline_cap == 0 || self.recent_cap == 0 {
             return Err(logp::Error::Domain(
-                "RouterConfig: recent_cap must be <= baseline_cap when monitoring is enabled",
+                "RouterConfig: monitoring capacities must be non-zero",
+            ));
+        }
+
+        let baseline_cap = cap_as_u64(self.baseline_cap);
+        let recent_cap = cap_as_u64(self.recent_cap);
+
+        if recent_cap >= baseline_cap {
+            return Err(logp::Error::Domain(
+                "RouterConfig: recent_cap must be < baseline_cap when monitoring is enabled",
             ));
         }
         if self.drift.min_baseline > baseline_cap {
@@ -235,6 +254,52 @@ fn cap_as_u64(cap: usize) -> u64 {
     cap.try_into().unwrap_or(u64::MAX)
 }
 
+fn validate_arm_names(arms: &[String]) -> Result<(), logp::Error> {
+    if arms.iter().any(String::is_empty) {
+        return Err(logp::Error::Domain("arm names must be non-empty"));
+    }
+    let unique_arms: BTreeSet<&str> = arms.iter().map(String::as_str).collect();
+    if unique_arms.len() != arms.len() {
+        return Err(logp::Error::Domain("arm names must be unique"));
+    }
+    Ok(())
+}
+
+fn validate_snapshot(snap: &RouterSnapshot) -> Result<(), logp::Error> {
+    validate_arm_names(&snap.arms)?;
+
+    let arms: BTreeSet<&str> = snap.arms.iter().map(String::as_str).collect();
+    let windows: BTreeSet<&str> = snap.windows.keys().map(String::as_str).collect();
+    if windows != arms {
+        return Err(logp::Error::Domain(
+            "RouterSnapshot: window keys must match arm names",
+        ));
+    }
+
+    if snap.cfg.enable_monitoring != snap.monitored.is_some() {
+        return Err(logp::Error::Domain(
+            "RouterSnapshot: monitored state must match enable_monitoring",
+        ));
+    }
+    if let Some(monitored) = &snap.monitored {
+        let monitored_arms: BTreeSet<&str> = monitored.keys().map(String::as_str).collect();
+        if monitored_arms != arms {
+            return Err(logp::Error::Domain(
+                "RouterSnapshot: monitored keys must match arm names",
+            ));
+        }
+        if monitored
+            .values()
+            .any(|window| window.recent().cap() >= window.baseline().cap())
+        {
+            return Err(logp::Error::Domain(
+                "RouterSnapshot: recent monitoring capacity must be smaller than baseline",
+            ));
+        }
+    }
+    Ok(())
+}
+
 // ============================================================================
 // RouterMode and RouterDecision
 // ============================================================================
@@ -248,8 +313,8 @@ pub enum RouterMode {
     Normal,
     /// Regression detected on one or more arms.
     ///
-    /// The router is routing extra investigation traffic to the flagged arms
-    /// via worst-first selection.
+    /// The router can route extra investigation traffic to flagged arms that
+    /// are eligible for the current decision.
     Triage {
         /// Arms whose CUSUM bank has alarmed.
         alarmed_arms: Vec<String>,
@@ -273,17 +338,20 @@ impl RouterMode {
     }
 }
 
-/// Output of a single [`Router::select`] call.
+/// Output of a single [`Router::select`] or [`Router::select_from`] call.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RouterDecision {
     /// Chosen arms in order (primary picks first, then MAB fills).
     pub chosen: Vec<String>,
-    /// Current routing mode at decision time.
+    /// Global routing mode at decision time.
+    ///
+    /// In a `select_from` decision, alarmed arms are not filtered to the
+    /// request-local candidate set.
     pub mode: RouterMode,
     /// Arms chosen as novelty/coverage pre-picks (subset of `chosen`).
     pub prechosen: Vec<String>,
-    /// Arms that were control (random) picks (subset of `chosen`).
+    /// Arms that were seeded comparison picks (subset of `chosen`).
     pub control_picks: Vec<String>,
     /// Arms eligible for MAB selection after pre-picks and guardrail.
     pub mab_eligible: Vec<String>,
@@ -318,8 +386,10 @@ impl RouterDecision {
 
 /// Stateful routing session.
 ///
-/// Owns all per-arm window state and orchestrates the full routing lifecycle:
-/// normal selection → monitoring → triage → acknowledgment.
+/// Owns per-arm windows and composes normal selection, monitoring, triage, and
+/// evidence reset. The caller determines request-local eligibility and can make
+/// that set authoritative with [`Router::select_from`]. Operational incident
+/// handling remains the caller's responsibility.
 ///
 /// ## Lifecycle
 ///
@@ -335,10 +405,9 @@ impl RouterDecision {
 /// // ... make the call ...
 /// assert!(router.observe(&arm, Outcome::success(1, 50))); // record result
 ///
-/// // After detecting a regression:
+/// // Inspect alert state separately from operational incident handling:
 /// if router.mode().is_triage() {
 ///     // route extra traffic to investigation arms via d.triage_cells
-///     router.acknowledge_change("a"); // reset CUSUM when regression is resolved
 /// }
 /// ```
 pub struct Router {
@@ -360,8 +429,11 @@ impl Router {
     /// Returns an error if triage is enabled but the CUSUM bank cannot be
     /// initialised (e.g. invalid simplex in `TriageSessionConfig`), or if
     /// monitoring window capacities cannot satisfy configured sample minimums.
+    /// Arm names must be unique. An empty arm list is allowed and can be
+    /// populated later with [`Router::add_arm`].
     pub fn new(arms: Vec<String>, cfg: RouterConfig) -> Result<Self, logp::Error> {
         cfg.validate()?;
+        validate_arm_names(&arms)?;
 
         let windows: BTreeMap<String, Window> = arms
             .iter()
@@ -405,17 +477,13 @@ impl Router {
     /// pre-picks on the next `select` call.
     ///
     /// Returns an error if triage is enabled and the CUSUM bank for the new
-    /// arm cannot be initialised.
+    /// arm cannot be initialised. Existing triage state is preserved.
     pub fn add_arm(&mut self, arm: String) -> Result<(), logp::Error> {
         if self.arms.contains(&arm) {
             return Ok(());
         }
-        // Rebuild triage first so a failure doesn't leave orphan map entries.
         if let Some(ref mut t) = self.triage {
-            let tcfg = self.cfg.triage_cfg.clone().unwrap_or_default();
-            let mut all_arms = self.arms.clone();
-            all_arms.push(arm.clone());
-            *t = TriageSession::new(&all_arms, tcfg)?;
+            t.add_arm(&arm)?;
         }
         self.windows
             .insert(arm.clone(), Window::new(self.cfg.window_cap.max(1)));
@@ -431,25 +499,16 @@ impl Router {
 
     /// Remove an arm. Its windows and triage state are discarded.
     ///
-    /// Returns an error if triage is enabled and the CUSUM bank cannot be
-    /// rebuilt for the remaining arms. In that case, triage is disabled
-    /// (set to `None`) and the error is returned so the caller knows.
+    /// Existing triage state for the remaining arms is preserved. The result
+    /// type remains for source compatibility with older callers.
     pub fn remove_arm(&mut self, arm: &str) -> Result<(), logp::Error> {
         self.arms.retain(|a| a != arm);
         self.windows.remove(arm);
         if let Some(ref mut m) = self.monitored {
             m.remove(arm);
         }
-        // TriageSession doesn't support removal; rebuild if needed.
-        if self.triage.is_some() {
-            let tcfg = self.cfg.triage_cfg.clone().unwrap_or_default();
-            match TriageSession::new(&self.arms, tcfg) {
-                Ok(t) => self.triage = Some(t),
-                Err(e) => {
-                    self.triage = None;
-                    return Err(e);
-                }
-            }
+        if let Some(ref mut t) = self.triage {
+            t.remove_arm(arm);
         }
         Ok(())
     }
@@ -460,8 +519,8 @@ impl Router {
 
     /// Select up to `k` arms for this decision round.
     ///
-    /// `seed` controls seeded control-arm shuffling, coverage picks, triage
-    /// tie-breaking, and stochastic policy choices when those modes are enabled.
+    /// `seed` controls stable-hash ordering for comparison, coverage, and triage
+    /// choices.
     /// Deterministic MAB ordering does not use the seed.  Same `seed` with the
     /// same window state and policy mode produces the same picks.
     ///
@@ -472,45 +531,95 @@ impl Router {
     ///
     /// With many arms (K > 20), use `k > 1` to batch the initial explore-first
     /// phase.  With k=3, K=30 arms reach initial coverage in ~10 rounds instead
-    /// of 30.  Enable `CoverageConfig` to ensure no arm is permanently starved.
+    /// of 30. `CoverageConfig` can add a maintenance-sampling target.
     #[must_use]
     pub fn select(&self, k: usize, seed: u64) -> RouterDecision {
-        if k == 0 || self.arms.is_empty() {
+        self.select_registered(&self.arms, k, seed)
+    }
+
+    /// Select up to `k` arms from a request-local authoritative candidate set.
+    ///
+    /// Every selection stage, including comparison, triage, novelty, coverage,
+    /// guardrail fallback, and MAB selection, is restricted to `eligible_arms`.
+    /// Arm names must be unique and already registered with this Router. Caller
+    /// order does not affect selection; registered Router order is preserved.
+    /// The returned [`RouterDecision::mode`] remains global and may report an
+    /// alarmed arm outside the request-local set.
+    ///
+    /// An empty candidate set is valid and returns an empty decision. Use
+    /// [`Router::select`] when every registered arm is eligible.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `eligible_arms` contains a duplicate or an arm that
+    /// is not registered with this Router.
+    pub fn select_from(
+        &self,
+        eligible_arms: &[String],
+        k: usize,
+        seed: u64,
+    ) -> Result<RouterDecision, logp::Error> {
+        validate_arm_names(eligible_arms)?;
+        if eligible_arms
+            .iter()
+            .any(|arm| !self.windows.contains_key(arm.as_str()))
+        {
+            return Err(logp::Error::Domain(
+                "Router::select_from: eligible arms must be registered",
+            ));
+        }
+
+        let requested: BTreeSet<&str> = eligible_arms.iter().map(String::as_str).collect();
+        let registered_order: Vec<String> = self
+            .arms
+            .iter()
+            .filter(|arm| requested.contains(arm.as_str()))
+            .cloned()
+            .collect();
+        Ok(self.select_registered(&registered_order, k, seed))
+    }
+
+    fn select_registered(&self, candidate_arms: &[String], k: usize, seed: u64) -> RouterDecision {
+        if k == 0 || candidate_arms.is_empty() {
             return RouterDecision::empty(self.mode());
         }
 
         let mode = self.mode();
         let alarmed = mode.alarmed_arms().to_vec();
+        let eligible_alarmed: Vec<String> = candidate_arms
+            .iter()
+            .filter(|arm| alarmed.contains(*arm))
+            .cloned()
+            .collect();
         let mut chosen: Vec<String> = Vec::new();
         let mut triage_cells: Vec<ContextualCell> = Vec::new();
 
-        // -- Step 1: Control picks (bias anchor) --
+        // Step 1: Seeded comparison picks.
         let (control_picks, remaining_k) =
-            split_control_budget(seed ^ 0xC0E1_1A11, &self.arms, k, self.cfg.control);
+            split_control_budget(seed ^ 0xC0E1_1A11, candidate_arms, k, self.cfg.control);
         for a in &control_picks {
             chosen.push(a.clone());
         }
 
-        let remaining_arms: Vec<String> = self
-            .arms
+        let remaining_arms: Vec<String> = candidate_arms
             .iter()
             .filter(|a| !chosen.contains(*a))
             .cloned()
             .collect();
 
-        // -- Step 2: Triage picks (investigation traffic) --
-        let triage_k = if !alarmed.is_empty() {
+        // Step 2: Triage picks (investigation traffic).
+        let triage_k = if !eligible_alarmed.is_empty() {
             let frac = self.cfg.triage_fraction.clamp(0.0, 1.0);
             ((remaining_k as f64 * frac).ceil() as usize)
                 .max(1)
-                .min(alarmed.len())
+                .min(eligible_alarmed.len())
                 .min(remaining_k.saturating_sub(1).max(1))
         } else {
             0
         };
 
         if triage_k > 0 {
-            let triage_arms: Vec<String> = alarmed
+            let triage_arms: Vec<String> = eligible_alarmed
                 .iter()
                 .filter(|a| !chosen.contains(*a))
                 .cloned()
@@ -540,7 +649,7 @@ impl Router {
                 let bins = triage.tracker().active_bins();
                 if !bins.is_empty() {
                     triage_cells = triage
-                        .top_alarmed_cells(&bins, triage_k)
+                        .top_cells(&eligible_alarmed, &bins, triage_k)
                         .into_iter()
                         .map(|(cell, _explore)| cell)
                         .collect();
@@ -566,7 +675,7 @@ impl Router {
             };
         }
 
-        // -- Step 3: Build observation snapshot for pipeline --
+        // Step 3: Build observation snapshot for pipeline.
         let obs_snap: BTreeMap<String, (u64, u64)> = mab_arms
             .iter()
             .map(|a| {
@@ -589,7 +698,7 @@ impl Router {
             })
             .collect();
 
-        // -- Step 4: Policy plan (novelty + coverage + guardrail) --
+        // Step 4: Policy plan (novelty + coverage + guardrail).
         let plan = policy_fill_generic(
             seed ^ 0x504C_414E,
             &mab_arms,
@@ -606,7 +715,7 @@ impl Router {
         );
 
         let prechosen = plan.plan.prechosen.clone();
-        let mab_eligible = plan.plan.eligible.clone();
+        let mab_eligible = plan.eligible_used.clone();
 
         for arm in &plan.chosen {
             if chosen.len() < k {
@@ -630,7 +739,17 @@ impl Router {
     /// observation is silently dropped).  Returns `true` on success.
     #[must_use]
     pub fn observe(&mut self, arm: &str, outcome: Outcome) -> bool {
-        self.observe_with_context(arm, outcome, &[])
+        self.observe_inner(None, arm, outcome, &[])
+    }
+
+    /// Record an identified outcome for an arm without feature context.
+    ///
+    /// The caller owns the ID and should use the same value for any delayed
+    /// quality label. Returns `false` when the arm is unknown or the ID is
+    /// already retained by this router.
+    #[must_use]
+    pub fn observe_with_id(&mut self, id: ObservationId, arm: &str, outcome: Outcome) -> bool {
+        self.observe_inner(Some(id), arm, outcome, &[])
     }
 
     /// Record an outcome with a feature context vector.
@@ -641,16 +760,60 @@ impl Router {
     /// Returns `false` if `arm` is not registered with this router.
     #[must_use]
     pub fn observe_with_context(&mut self, arm: &str, outcome: Outcome, context: &[f64]) -> bool {
+        self.observe_inner(None, arm, outcome, context)
+    }
+
+    /// Record an identified outcome with a feature context vector.
+    ///
+    /// Returns `false` when the arm is unknown or the ID is already retained by
+    /// this router. The context is used for per-cell triage when configured.
+    #[must_use]
+    pub fn observe_with_id_and_context(
+        &mut self,
+        id: ObservationId,
+        arm: &str,
+        outcome: Outcome,
+        context: &[f64],
+    ) -> bool {
+        self.observe_inner(Some(id), arm, outcome, context)
+    }
+
+    fn observe_inner(
+        &mut self,
+        id: Option<ObservationId>,
+        arm: &str,
+        outcome: Outcome,
+        context: &[f64],
+    ) -> bool {
         let known = self.windows.contains_key(arm);
         if !known {
             return false;
         }
+        if let Some(id) = id {
+            let in_primary = self.windows.values_mut().any(|w| w.contains_id(id));
+            let in_monitored = self
+                .monitored
+                .as_mut()
+                .is_some_and(|windows| windows.values_mut().any(|w| w.contains_id(id)));
+            if in_primary || in_monitored {
+                return false;
+            }
+        }
+        let outcome = outcome.normalized();
         if let Some(w) = self.windows.get_mut(arm) {
-            w.push(outcome);
+            if let Some(id) = id {
+                w.push_with_id(id, outcome);
+            } else {
+                w.push(outcome);
+            }
         }
         if let Some(ref mut m) = self.monitored {
             if let Some(mw) = m.get_mut(arm) {
-                mw.push(outcome);
+                if let Some(id) = id {
+                    mw.push_with_id(id, outcome);
+                } else {
+                    mw.push(outcome);
+                }
             }
         }
         if let Some(ref mut t) = self.triage {
@@ -663,8 +826,9 @@ impl Router {
 
     /// Update the most recent outcome's continuous quality score (delayed assessment).
     ///
-    /// Call this after downstream scoring completes — same pattern as
-    /// [`Router::set_last_junk_level`].  The value is clamped to `[0.0, 1.0]`.
+    /// This is correct only if no later outcome for the same arm has been recorded.
+    /// Finite values are clamped to `[0.0, 1.0]`; non-finite values are treated as
+    /// unmeasured.
     ///
     /// When the quality objective has non-zero weight (see [`crate::Extract::MeanQuality`]),
     /// this gradient signal influences arm selection alongside the binary ok/junk rates.
@@ -679,9 +843,30 @@ impl Router {
         }
     }
 
+    /// Update the quality score for an identified retained outcome.
+    ///
+    /// Returns `true` when the ID is still retained by at least one window.
+    /// Like the `set_last_*` methods, this patches retained windows but does not
+    /// replay triage detector or cell-tracker state.
+    #[must_use]
+    pub fn set_quality_score_for_id(&mut self, id: ObservationId, score: f64) -> bool {
+        let mut found = false;
+        for window in self.windows.values_mut() {
+            found |= window.set_quality_score_for_id(id, score);
+        }
+        if let Some(ref mut monitored) = self.monitored {
+            for window in monitored.values_mut() {
+                found |= window.set_quality_score_for_id(id, score);
+            }
+        }
+        found
+    }
+
     /// Update the most recent outcome's junk label (delayed quality assessment).
     ///
-    /// Mirrors [`Window::set_last_junk_level`] across all maintained windows.
+    /// This is correct only if no later outcome for the same arm has been recorded.
+    /// It patches retained windows but does not replay `TriageSession` detector or
+    /// cell-tracker state.
     pub fn set_last_junk_level(&mut self, arm: &str, junk: bool, hard_junk: bool) {
         if let Some(w) = self.windows.get_mut(arm) {
             w.set_last_junk_level(junk, hard_junk);
@@ -693,15 +878,35 @@ impl Router {
         }
     }
 
-    /// Acknowledge a confirmed regression on `arm`.
+    /// Update junk labels for an identified retained outcome.
     ///
-    /// This performs the full post-detection protocol:
-    /// 1. Resets the arm's CUSUM bank (so it can detect the next change).
-    /// 2. Clears the arm's recent monitoring window. The baseline already
-    ///    includes observed outcomes because monitoring writes to both windows.
+    /// Returns `true` when the ID is still retained by at least one window.
+    /// Like the `set_last_*` methods, this patches retained windows but does not
+    /// replay triage detector or cell-tracker state.
+    #[must_use]
+    pub fn set_junk_level_for_id(
+        &mut self,
+        id: ObservationId,
+        junk: bool,
+        hard_junk: bool,
+    ) -> bool {
+        let mut found = false;
+        for window in self.windows.values_mut() {
+            found |= window.set_junk_level_for_id(id, junk, hard_junk);
+        }
+        if let Some(ref mut monitored) = self.monitored {
+            for window in monitored.values_mut() {
+                found |= window.set_junk_level_for_id(id, junk, hard_junk);
+            }
+        }
+        found
+    }
+
+    /// Reset current alert evidence for `arm`.
     ///
-    /// Call this after you've investigated the regression and confirmed the arm
-    /// has stabilized at a new operating point.
+    /// This resets the arm's triage CUSUM and clears its recent monitoring window
+    /// while retaining the rolling baseline. It does not rebaseline, dismiss an
+    /// incident, or change the arm's eligibility.
     pub fn acknowledge_change(&mut self, arm: &str) {
         if let Some(ref mut t) = self.triage {
             t.reset_arm(arm);
@@ -858,8 +1063,7 @@ impl Router {
 ///
 /// The snapshot captures all per-arm window data and config, but **not** the
 /// live triage CUSUM scores (which are rebuilt from config on restore).
-/// This is intentional: CUSUM scores are noise-sensitive and should start
-/// fresh after a process restart to avoid false alarms from stale history.
+/// Restoring a snapshot therefore starts a new triage detector history.
 ///
 /// # Persistence pattern
 ///
@@ -917,6 +1121,7 @@ impl Router {
     /// config (detection history is reset).
     pub fn from_snapshot(snap: RouterSnapshot) -> Result<Self, logp::Error> {
         snap.cfg.validate()?;
+        validate_snapshot(&snap)?;
 
         let triage = if let Some(ref tcfg) = snap.cfg.triage_cfg {
             Some(TriageSession::new(&snap.arms, tcfg.clone())?)
@@ -988,6 +1193,82 @@ mod tests {
         s.sort();
         s.dedup();
         assert_eq!(s.len(), d.chosen.len(), "picks must be unique");
+    }
+
+    #[test]
+    fn router_rejects_duplicate_arm_names() {
+        match Router::new(
+            vec!["a".to_string(), "a".to_string()],
+            RouterConfig::default(),
+        ) {
+            Err(logp::Error::Domain(msg)) => assert!(msg.contains("unique")),
+            Ok(_) => panic!("expected duplicate arm validation error"),
+            Err(err) => panic!("expected Domain error, got {err}"),
+        }
+    }
+
+    #[test]
+    fn router_rejects_empty_arm_names() {
+        match Router::new(vec![String::new()], RouterConfig::default()) {
+            Err(logp::Error::Domain(msg)) => assert!(msg.contains("non-empty")),
+            Ok(_) => panic!("expected empty arm validation error"),
+            Err(err) => panic!("expected Domain error, got {err}"),
+        }
+    }
+
+    #[test]
+    fn router_rejects_zero_selection_window_capacity() {
+        let cfg = RouterConfig::default().window_cap(0);
+        assert!(matches!(
+            Router::new(vec!["a".to_string()], cfg),
+            Err(logp::Error::Domain(msg)) if msg.contains("window_cap")
+        ));
+    }
+
+    #[test]
+    fn empty_router_can_be_populated_later() {
+        let mut r = Router::new(Vec::new(), RouterConfig::default()).unwrap();
+        assert!(r.select(1, 0).chosen.is_empty());
+
+        r.add_arm("a".to_string()).unwrap();
+        assert_eq!(r.select(1, 0).primary(), Some("a"));
+    }
+
+    #[test]
+    fn router_rejects_duplicate_arm_names_in_snapshot() {
+        let r = Router::new(vec!["a".to_string()], RouterConfig::default()).unwrap();
+        let mut snapshot = r.snapshot();
+        snapshot.arms.push("a".to_string());
+
+        match Router::from_snapshot(snapshot) {
+            Err(logp::Error::Domain(msg)) => assert!(msg.contains("unique")),
+            Ok(_) => panic!("expected duplicate snapshot arm validation error"),
+            Err(err) => panic!("expected Domain error, got {err}"),
+        }
+    }
+
+    #[test]
+    fn router_rejects_incoherent_snapshot_state() {
+        let cfg = RouterConfig::default().with_monitoring(200, 50);
+        let r = Router::new(vec!["a".to_string()], cfg).unwrap();
+
+        let mut missing_window = r.snapshot();
+        missing_window.windows.clear();
+        assert!(matches!(
+            Router::from_snapshot(missing_window),
+            Err(logp::Error::Domain(msg)) if msg.contains("window keys")
+        ));
+
+        let mut blind_monitor = r.snapshot();
+        blind_monitor
+            .monitored
+            .as_mut()
+            .unwrap()
+            .insert("a".to_string(), MonitoredWindow::new(20, 20));
+        assert!(matches!(
+            Router::from_snapshot(blind_monitor),
+            Err(logp::Error::Domain(msg)) if msg.contains("smaller than baseline")
+        ));
     }
 
     #[test]
@@ -1124,8 +1405,33 @@ mod tests {
     }
 
     #[test]
+    fn router_rejects_equal_monitoring_capacities() {
+        let mut cfg = RouterConfig::default().with_monitoring(20, 20);
+        cfg.mab.catkl_min_baseline = 20;
+        cfg.mab.catkl_min_recent = 20;
+        cfg.mab.cusum_min_baseline = 20;
+        cfg.mab.cusum_min_recent = 20;
+
+        match Router::new(vec!["a".to_string()], cfg) {
+            Err(logp::Error::Domain(msg)) => assert!(msg.contains("recent_cap")),
+            Ok(_) => panic!("expected equal monitoring capacity validation error"),
+            Err(err) => panic!("expected Domain error, got {err}"),
+        }
+    }
+
+    #[test]
+    fn router_rejects_zero_monitoring_capacity() {
+        let cfg = RouterConfig::default().with_monitoring(0, 0);
+        match Router::new(vec!["a".to_string()], cfg) {
+            Err(logp::Error::Domain(msg)) => assert!(msg.contains("non-zero")),
+            Ok(_) => panic!("expected zero monitoring capacity validation error"),
+            Err(err) => panic!("expected Domain error, got {err}"),
+        }
+    }
+
+    #[test]
     fn router_rejects_monitoring_min_samples_above_capacity() {
-        let cfg = RouterConfig::default().with_monitoring(20, 20);
+        let cfg = RouterConfig::default().with_monitoring(20, 10);
         match Router::new(vec!["a".to_string()], cfg) {
             Err(logp::Error::Domain(msg)) => assert!(msg.contains("catkl_min_baseline")),
             Ok(_) => panic!("expected monitoring capacity validation error"),

@@ -1,95 +1,24 @@
-//! Monitoring primitives: drift detection + uncertainty summaries.
+//! Monitoring primitives for categorical outcomes.
 //!
-//! This module implements **Objective 3 (detection/triage)** of the routing framework.
-//! It provides numerical signals (drift scores, catKL, CUSUM) that selection policies
-//! can use as constraints or additional objectives.
+//! [`MonitoredWindow`] keeps two overlapping rolling windows. Every outcome enters
+//! both windows, so the baseline is not a frozen historical reference and the recent
+//! observations are a subset of the baseline once both windows are full. The recent
+//! capacity must therefore be smaller than the baseline capacity; overlap still
+//! attenuates differences between them.
 //!
-//! ## Relationship to the objective manifold
+//! The drift and categorical-KL functions are descriptive two-sample scores.
+//! `cusum_score_between_windows` estimates a null distribution from the rolling
+//! baseline and replays the recent window through a fixed-alternative detector. It is
+//! not a persistent window-limited CUSUM. [`crate::TriageSession`] owns a separate,
+//! persistent CUSUM bank.
 //!
-//! For **static (non-adaptive) schedules**, **average** detection delay D_avg and
-//! estimation MSE are exactly proportional:
-//!
-//! ```text
-//!   D_avg = (2 * C * sigma^2 * ln(1/alpha) / delta^2) * MSE
-//! ```
-//!
-//! Both functionals have sensitivity `s(a,x) ~ -1/p_a(x)^2` with respect to the
-//! design measure -- they both care about "how many observations at this cell" and
-//! are indifferent to *which* cells those observations come from.  Their gradients
-//! are proportional everywhere, so they trace the same direction in design space.
-//! Detection monitoring "comes for free" with any exploration schedule that reduces
-//! estimation error.  The three named objectives span a rank-2 sensitivity space;
-//! the Pareto front is a one-dimensional curve.
-//!
-//! **This proportionality holds even in contextual settings** when detection is
-//! measured as an average over cells.  The collapse breaks only when detection is
-//! measured as a **worst-case** (minimax) over cells: worst-case delay concentrates
-//! sensitivity on the bottleneck (arm, cell) pair, producing a point-mass sensitivity
-//! function that is linearly independent from both regret and estimation sensitivity.
-//!
-//! The practical consequence for `muxer`: since monitoring is currently per-arm
-//! (not per-arm-per-cell), the detectors (catKL, CUSUM, drift) operate in the
-//! average-case regime and are structurally coupled with estimation quality.
-//! To get genuinely independent monitoring in the contextual regime, one would need
-//! per-cell monitoring that flags the weakest link, not just aggregate per-arm scores.
-//!
-//! **For adaptive policies** (which `muxer`'s selection functions produce), the clean
-//! proportionality is approximate, not exact.  Adaptive policies allocate the
-//! suboptimal arm in bursts (exploration phases) rather than uniformly; this temporal
-//! clustering worsens worst-case detection delay without changing total n.  The
-//! practical consequence: `muxer`'s CUSUM and catKL detectors are sensitive to
-//! observation ordering, not just counts.  This is why `MonitoredWindow` maintains
-//! a time-ordered sequence (not just aggregate counts) and why `CusumCatDetector`
-//! processes observations sequentially rather than from summary statistics.
-//!
-//! ## CUSUM detection delay and sensitivity
-//!
-//! For a CUSUM monitoring arm `a` at covariate cell `j` with allocation probability
-//! `p_a(x_j)`, the expected detection delay for a level shift of magnitude `delta`
-//! with false alarm rate `alpha` is:
-//!
-//! ```text
-//!   D_{a,j} ~ ln(1/alpha) / ((T/M) * p_a(x_j) * delta^2 / (2*sigma^2))
-//! ```
-//!
-//! The sensitivity with respect to the design variable `p_a(x_j)` is:
-//!
-//! ```text
-//!   s_D(a,j) = -ln(1/alpha) / ((T/M) * p_a(x_j)^2 * delta^2 / (2*sigma^2))
-//! ```
-//!
-//! - **Average delay** `D_avg = (1/KM) * sum D_{a,j}`: sensitivity `~ 1/p^2`
-//!   everywhere, proportional to nonparametric IMSE.  Redundant with estimation.
-//! - **Worst-case delay** `D_max = max D_{a,j}`: sensitivity is a point mass at the
-//!   binding constraint `(a*, j*) = argmax D_{a,j}`.  Independent from estimation.
-//!
-//! This is the precise mechanism controlling the collapse-vs-revival transition.
-//!
-//! ## Connection to profile monitoring / SPC
-//!
-//! Detecting that an arm's response function f_a has changed shape (not just level)
-//! is essentially the **profile monitoring** problem from statistical process control.
-//! SPC practitioners have long understood that Phase I (model estimation) and Phase II
-//! (monitoring) are coupled: poor Phase I estimation inflates Phase II false alarm
-//! rates.  The `muxer` monitoring primitives (catKL, CUSUM) implement Phase II;
-//! the quality of Phase I depends on the exploration budget the selection policy
-//! allocates.  This coupling is what the objective manifold framework formalizes.
-//!
-//! In the **contextual** regime, detection requires sampling where the regret-optimal
-//! policy does not go (uniformly across covariate space, rather than near decision
-//! boundaries).  Monitoring has a real cost that the routing policy must explicitly
-//! budget for.
-//!
-//! ## Post-detection investigation
-//!
-//! The `worst_first` module is the **triage/investigation** complement to detection:
-//! after this module flags a change (high drift score), worst-first prioritizes the
-//! flagged arm to characterize the change.  The real open problem is not "how to
-//! switch modes" but **when a detected change invalidates the current objective
-//! weighting** -- a meta-level inference problem about whether the system's goals
-//! need to shift (e.g., from exploitation to characterization).
+//! Wilson bounds in this module are fixed-sample score adjustments used by routing.
+//! They are not time-uniform confidence sequences under adaptive sampling or stopping.
+//! Calibration helpers cover the simulated detector bank and finite horizon supplied
+//! by the caller. A system-wide false-alarm claim requires simulation of the complete
+//! router, including all arms, allocation decisions, and reset episodes.
 
-use crate::{Outcome, Summary, Window};
+use crate::{ObservationId, Outcome, Summary, Window};
 
 /// Categorical drift metric used for comparing two outcome distributions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -183,6 +112,11 @@ pub struct MonitoredWindow {
 
 impl MonitoredWindow {
     /// Create a new monitored window with baseline and recent capacities.
+    ///
+    /// This low-level constructor preserves its original infallible API and does
+    /// not validate the capacity relationship. Use `recent_cap < baseline_cap`.
+    /// Equal capacities compare identical full windows. [`crate::Router`] rejects
+    /// zero, equal, and reversed monitoring capacities.
     pub fn new(baseline_cap: usize, recent_cap: usize) -> Self {
         Self {
             baseline: Window::new(baseline_cap),
@@ -206,16 +140,51 @@ impl MonitoredWindow {
         self.recent.push(o);
     }
 
+    /// Push a new identified outcome to both baseline and recent windows.
+    pub fn push_with_id(&mut self, id: ObservationId, o: Outcome) {
+        self.baseline.push_with_id(id, o);
+        self.recent.push_with_id(id, o);
+    }
+
+    pub(crate) fn contains_id(&mut self, id: ObservationId) -> bool {
+        self.baseline.contains_id(id) || self.recent.contains_id(id)
+    }
+
     /// Best-effort: mutate the most recent outcome in both windows.
+    ///
+    /// This is correct only if no later outcome has entered either window.
     pub fn set_last_junk_level(&mut self, junk: bool, hard_junk: bool) {
         self.baseline.set_last_junk_level(junk, hard_junk);
         self.recent.set_last_junk_level(junk, hard_junk);
     }
 
+    /// Update junk labels for an identified outcome in either retained window.
+    #[must_use]
+    pub fn set_junk_level_for_id(
+        &mut self,
+        id: ObservationId,
+        junk: bool,
+        hard_junk: bool,
+    ) -> bool {
+        let baseline = self.baseline.set_junk_level_for_id(id, junk, hard_junk);
+        let recent = self.recent.set_junk_level_for_id(id, junk, hard_junk);
+        baseline || recent
+    }
+
     /// Best-effort: set the continuous quality score for the most recent outcome in both windows.
+    ///
+    /// This is correct only if no later outcome has entered either window.
     pub fn set_last_quality_score(&mut self, score: f64) {
         self.baseline.set_last_quality_score(score);
         self.recent.set_last_quality_score(score);
+    }
+
+    /// Update the quality score for an identified outcome in either retained window.
+    #[must_use]
+    pub fn set_quality_score_for_id(&mut self, id: ObservationId, score: f64) -> bool {
+        let baseline = self.baseline.set_quality_score_for_id(id, score);
+        let recent = self.recent.set_quality_score_for_id(id, score);
+        baseline || recent
     }
 
     /// Summary of the recent window (what selection should use by default).
@@ -233,17 +202,112 @@ impl MonitoredWindow {
         self.recent.len()
     }
 
-    /// Acknowledge a confirmed change: keep the current baseline, then clear
-    /// the recent window.
+    /// Clear the recent window while retaining the rolling baseline.
     ///
-    /// Call this after investigating and confirming a regression on this arm.
-    /// Observations are already written to both windows by [`Self::push`].
-    /// Subsequent observations build a fresh recent window so drift detection
-    /// can track further changes.
+    /// This resets recent evidence only. It does not establish a frozen reference,
+    /// rebaseline the detector, dismiss an operational incident, or quarantine an arm.
+    pub fn acknowledge_change(&mut self) {
+        self.recent = Window::new(self.recent.cap());
+    }
+}
+
+/// A pair of disjoint rolling windows for descriptive drift monitoring.
+///
+/// Unlike [`MonitoredWindow`], each retained outcome belongs to exactly one
+/// side. The baseline contains the older observations and the recent window
+/// contains the newest observations. This removes the attenuation caused by
+/// comparing a recent window with a baseline that contains the same samples.
+/// It is still a descriptive rolling comparison, not a persistent detector
+/// with a frozen reference distribution.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DisjointMonitoredWindow {
+    baseline: Window,
+    recent: Window,
+}
+
+impl DisjointMonitoredWindow {
+    /// Create an empty disjoint monitor with the given capacities.
     ///
-    /// This is the standard post-detection protocol:
-    /// 1. [`crate::TriageSession::reset_arm`] — resets the CUSUM bank.
-    /// 2. This method — resets the monitoring windows.
+    /// The low-level constructor keeps the infallible window API. A baseline
+    /// or recent capacity of zero is normalized by [`Window::new`] to one.
+    pub fn new(baseline_cap: usize, recent_cap: usize) -> Self {
+        Self {
+            baseline: Window::new(baseline_cap),
+            recent: Window::new(recent_cap),
+        }
+    }
+
+    /// Access the older, baseline side of the comparison.
+    pub fn baseline(&self) -> &Window {
+        &self.baseline
+    }
+
+    /// Access the newest, recent side of the comparison.
+    pub fn recent(&self) -> &Window {
+        &self.recent
+    }
+
+    /// Push an outcome, moving the oldest recent outcome into the baseline
+    /// whenever the recent window is full.
+    pub fn push(&mut self, outcome: Outcome) {
+        self.push_with_optional_id(None, outcome);
+    }
+
+    /// Push an identified outcome into the disjoint windows.
+    pub fn push_with_id(&mut self, id: ObservationId, outcome: Outcome) {
+        self.push_with_optional_id(Some(id), outcome);
+    }
+
+    fn push_with_optional_id(&mut self, id: Option<ObservationId>, outcome: Outcome) {
+        if self.recent.len() == self.recent.cap() {
+            if let Some((evicted_id, evicted)) = self.recent.pop_front() {
+                self.baseline.push_with_optional_id(evicted_id, evicted);
+            }
+        }
+        self.recent.push_with_optional_id(id, outcome);
+    }
+
+    /// Update the junk label for a retained identified outcome.
+    #[must_use]
+    pub fn set_junk_level_for_id(
+        &mut self,
+        id: ObservationId,
+        junk: bool,
+        hard_junk: bool,
+    ) -> bool {
+        let baseline = self.baseline.set_junk_level_for_id(id, junk, hard_junk);
+        let recent = self.recent.set_junk_level_for_id(id, junk, hard_junk);
+        baseline || recent
+    }
+
+    /// Update the quality score for a retained identified outcome.
+    #[must_use]
+    pub fn set_quality_score_for_id(&mut self, id: ObservationId, score: f64) -> bool {
+        let baseline = self.baseline.set_quality_score_for_id(id, score);
+        let recent = self.recent.set_quality_score_for_id(id, score);
+        baseline || recent
+    }
+
+    /// Summary of the recent window.
+    pub fn recent_summary(&self) -> Summary {
+        self.recent.summary()
+    }
+
+    /// Number of outcomes currently in the baseline window.
+    pub fn baseline_len(&self) -> usize {
+        self.baseline.len()
+    }
+
+    /// Number of outcomes currently in the recent window.
+    pub fn recent_len(&self) -> usize {
+        self.recent.len()
+    }
+
+    /// Clear recent observations while retaining the current baseline.
+    ///
+    /// This does not establish a frozen reference distribution or rebaseline
+    /// a persistent detector.
     pub fn acknowledge_change(&mut self) {
         self.recent = Window::new(self.recent.cap());
     }
@@ -854,30 +918,10 @@ fn default_cusum_alt_p() -> [f64; 4] {
 /// - `p0`: baseline empirical distribution (with optional smoothing)
 /// - `p1`: alternative distribution (fixed, with optional smoothing)
 ///
-/// ## Detection sensitivity (concrete)
-///
-/// For this categorical CUSUM, the expected detection delay given a shift from
-/// p0 to the true post-change distribution q is approximately:
-///
-/// ```text
-/// E[delay] ~ threshold / KL(q || p0)
-/// ```
-///
-/// where threshold is the alarm boundary (here: infinity, so we report the score
-/// rather than alarming) and KL is the per-observation log-likelihood ratio.
-///
-/// The sensitivity function (how detection delay changes with sampling at a
-/// context point x in the contextual regime) is:
-///
-/// ```text
-/// s_detection(a, x) = -1 / (n_recent(a, x) * KL(q_a(x) || p0_a(x)))
-/// ```
-///
-/// This is generically different from `s_regret(a, x) = gap_a(x)` and
-/// `s_estimation(a, x) = -leverage_a(x)`, because KL depends on the distribution
-/// shape rather than the mean.  In the non-contextual case, `n_recent(a, x) = n_a`
-/// for all x, so `s_detection` is proportional to `s_estimation` (both ~ 1/n_a).
-/// In the contextual case, they diverge.
+/// The expected increment under a true post-change distribution `q` is
+/// `KL(q || p0) - KL(q || p1)`, not generally `KL(q || p0)`. This function
+/// reports a replayed score with an infinite alarm threshold; it does not provide
+/// a detection-delay guarantee.
 ///
 /// Returns `None` if either side is under-sampled.
 pub fn cusum_score_between_windows(
@@ -944,7 +988,7 @@ pub struct ThresholdCalibration {
     pub threshold: f64,
     /// Empirical false-alarm estimate: \(\hat p = \#\{M \ge h\}/n\).
     pub fa_hat: f64,
-    /// Wilson upper bound for the false-alarm probability at the same threshold.
+    /// Pointwise Wilson upper bound for the false-alarm probability at the same threshold.
     pub fa_wilson_hi: f64,
     /// Number of Monte Carlo trials used.
     pub trials: u64,
@@ -967,6 +1011,9 @@ pub struct ThresholdCalibration {
 /// - If the grid is empty, the returned threshold is `0.0` and `grid_satisfied=false`.
 /// - The grid is assumed to be sorted in ascending order; the function returns the first grid point
 ///   that satisfies the requested constraint.
+/// - The threshold and Wilson bound use the same trials. The bound is not adjusted
+///   for selecting a threshold from the grid; use independent validation trials if
+///   you need a coverage claim for the selected threshold.
 #[must_use]
 pub fn calibrate_threshold_from_max_scores(
     max_scores: &mut [f64],
@@ -1175,7 +1222,7 @@ pub fn simulate_cusum_null_max_scores(
     Ok(max_scores)
 }
 
-/// Calibrate a CUSUM threshold to satisfy `P[τ < m] ≤ alpha` under the null.
+/// Select a CUSUM threshold from simulated null max-scores.
 ///
 /// Combines [`simulate_cusum_null_max_scores`] with
 /// [`calibrate_threshold_from_max_scores`] into a single convenience call.
@@ -1185,17 +1232,18 @@ pub fn simulate_cusum_null_max_scores(
 /// - `p0`: null categorical distribution.
 /// - `alts`: CUSUM alternative distributions.
 /// - `alpha`: target false-alarm rate (e.g. `0.05` for 5%).
-/// - `m`: survival horizon (rounds).  The returned threshold satisfies
-///   approximately `P[alarm within m null rounds] ≤ alpha`.
+/// - `m`: simulated survival horizon (rounds).
 /// - `n_trials`: Monte Carlo sample count (1000–10000 typical).
 /// - `cusum_alpha`: Dirichlet smoothing.
 /// - `min_n`: minimum observations before detector can alarm.
 /// - `seed`: RNG seed.
-/// - `require_wilson`: if true, require the Wilson upper bound ≤ alpha
-///   (more conservative; needs larger `n_trials`).
+/// - `require_wilson`: if true, require the pointwise Wilson upper bound ≤ alpha.
 ///
 /// Returns the [`ThresholdCalibration`] result, or `Err` if the CUSUM bank
-/// cannot be initialised.
+/// cannot be initialised. The same trials generate the threshold grid, select
+/// the threshold, and report `fa_hat`/`fa_wilson_hi`; use independent validation
+/// trials for an out-of-sample claim. This helper simulates one detector bank in
+/// sample time, not a multi-arm Router with allocation and reset episodes.
 ///
 /// # Example
 ///
@@ -1700,10 +1748,7 @@ mod tests {
     }
 
     // ========================================================================
-    // CUSUM detection delay / sensitivity formula verification
-    //
-    // These tests connect muxer's CusumCatDetector to the theoretical detection
-    // delay formulas from the objective manifold research program.
+    // CUSUM behavior for deterministic positive-LLR streams
     //
     // Background: Page's CUSUM (1954) maintains a running sum
     //   S_t = max(0, S_{t-1} + log(p1(X_t) / p0(X_t)))
@@ -1846,19 +1891,15 @@ mod tests {
     }
 
     // ========================================================================
-    // Product bound and proportionality tests (analytical)
+    // Fixed-schedule algebra examples
     //
-    // These verify the core identities from the objective manifold framework
-    // using closed-form formulas (no simulation, no approximation).
+    // These are identities under the formulas defined inside each test. They do
+    // not establish bounds for Router or an adaptive policy.
     // ========================================================================
 
-    /// R_T * D_avg = 2*b*Delta*T / delta^2 for all n_2.
+    /// In the toy fixed-allocation formulas below, `R_T * D_avg` is constant.
     ///
-    /// This is Theorem 1 from the research program.  The product depends only on
-    /// the problem parameters (gap Delta, change magnitude delta, threshold b,
-    /// horizon T), not on the allocation n_2.  This means the regret-detection
-    /// tradeoff is a hyperbola: you slide along it by changing n_2, but you
-    /// cannot escape it.
+    /// This is an algebra check, not a lower bound for adaptive routing.
     #[test]
     fn product_bound_regret_times_delay_is_constant() {
         let delta = 0.5_f64;
@@ -1889,8 +1930,7 @@ mod tests {
     ///   D_avg / MSE = 2 * ln(1/alpha) * T / delta^2
     ///                 (when sigma^2 = 1)
     ///
-    /// This is the proportionality that makes average detection structurally
-    /// redundant with estimation in the non-contextual case.
+    /// This checks only the two formulas declared in the test.
     #[test]
     fn detection_mse_ratio_is_constant() {
         let sigma2 = 1.0_f64;

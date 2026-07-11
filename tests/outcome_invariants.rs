@@ -23,7 +23,9 @@
 //!    (they are independent counts), but each rate is in `[0, 1]`.
 
 use muxer::monitor::{apply_rate_bound, RateBoundMode};
-use muxer::{coverage_pick_under_sampled, CoverageConfig, MabConfig, Outcome, Summary, Window};
+use muxer::{
+    coverage_pick_under_sampled, CoverageConfig, MabConfig, ObservationId, Outcome, Summary, Window,
+};
 use proptest::prelude::*;
 use std::collections::BTreeMap;
 
@@ -141,6 +143,25 @@ fn set_last_junk_level_soft_junk_only() {
     let s = w.summary();
     assert_eq!(s.junk, 1);
     assert_eq!(s.hard_junk, 0, "hard_junk must remain 0 for soft junk");
+}
+
+#[test]
+fn identified_labels_update_the_matching_outcome_out_of_order() {
+    let first = ObservationId::new(1);
+    let second = ObservationId::new(2);
+    let mut w = Window::new(10);
+    w.push_with_id(first, Outcome::success(0, 0));
+    w.push_with_id(second, Outcome::success(0, 0));
+
+    assert!(w.set_quality_score_for_id(first, 0.9));
+    assert!(w.set_quality_score_for_id(second, 0.1));
+    assert!((w.mean_quality_score().unwrap() - 0.5).abs() < 1e-12);
+
+    assert!(w.set_junk_level_for_id(first, true, false));
+    assert!(w.set_junk_level_for_id(second, false, true));
+    let summary = w.summary();
+    assert_eq!(summary.junk, 1);
+    assert_eq!(summary.hard_junk, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -415,6 +436,23 @@ fn set_last_quality_score_clamps_and_updates() {
     assert_eq!(w.iter().last().unwrap().quality_score, Some(1.0));
     w.set_last_quality_score(-0.5); // clamped to 0.0
     assert_eq!(w.iter().last().unwrap().quality_score, Some(0.0));
+}
+
+#[test]
+fn non_finite_quality_scores_are_treated_as_unmeasured() {
+    for score in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let outcome = Outcome::with_quality(true, false, false, 0, 0, score);
+        assert_eq!(outcome.quality_score, None);
+
+        let mut w = Window::new(1);
+        let mut outcome = Outcome::success(0, 0);
+        outcome.quality_score = Some(score);
+        w.push(outcome);
+        assert_eq!(w.iter().last().unwrap().quality_score, None);
+
+        w.set_last_quality_score(score);
+        assert_eq!(w.iter().last().unwrap().quality_score, None);
+    }
 }
 
 #[test]

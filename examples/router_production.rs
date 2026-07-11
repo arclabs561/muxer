@@ -1,12 +1,15 @@
-//! Production routing pattern — monitoring + triage + coverage + control + calibration.
+//! Combined routing configuration demo.
 //!
-//! This example demonstrates the full production configuration:
+//! This example combines several independent primitives:
 //!
-//! 1. Calibrate a CUSUM threshold before deployment.
+//! 1. Select a CUSUM threshold from simulated null scores.
 //! 2. Build a `Router` with monitoring, triage, coverage, and control arms.
 //! 3. Run a simulated routing loop with gradual quality degradation.
-//! 4. Observe triage mode firing, investigate, and acknowledge.
+//! 4. Observe triage mode firing and reset its current evidence.
 //! 5. Snapshot the router state (for persistence across restarts).
+//!
+//! The threshold helper covers one detector bank in sample time. It is not a
+//! system-wide calibration for the Router composition shown below.
 //!
 //! Run with:
 //!   cargo run --example router_production --features stochastic
@@ -27,10 +30,9 @@ fn main() {
     let mut rng = rand::rngs::SmallRng::seed_from_u64(42);
 
     // -----------------------------------------------------------------------
-    // Step 1: Calibrate CUSUM threshold
+    // Step 1: Select an illustrative CUSUM threshold
     // -----------------------------------------------------------------------
-    // We want P[alarm within 500 rounds under null] ≤ 0.05.
-    // Use a small n_trials for demo speed; production should use >= 2000.
+    // Target an in-sample null alarm estimate of at most 0.05 over 500 samples.
     println!("Calibrating CUSUM threshold (n_trials=500)...");
     let p0 = vec![0.85, 0.05, 0.05, 0.05]; // expected null: 85% ok, 5% each degraded category
     let alts = vec![
@@ -46,14 +48,14 @@ fn main() {
     println!("  grid_satisfied: {}", cal.grid_satisfied);
 
     // -----------------------------------------------------------------------
-    // Step 2: Build Router with full production config
+    // Step 2: Build a Router combining the available primitives
     // -----------------------------------------------------------------------
     let arms: Vec<String> = vec!["svc-alpha", "svc-beta", "svc-gamma"]
         .into_iter()
         .map(|s| s.to_string())
         .collect();
 
-    // SW-UCB-derived window: ~500 calls/day, expect change ~once a week → cap ~60.
+    // Rule of thumb: ~500 calls/day, expect change ~once a week → cap ~60.
     let window = suggested_window_cap(500, 1.0 / 7.0);
     println!("\nSuggested window cap: {window}");
 
@@ -65,10 +67,10 @@ fn main() {
 
     let cfg = RouterConfig::default()
         .with_monitoring(400, 80) // baseline/recent windows
-        .with_triage_cfg(tcfg) // calibrated CUSUM threshold
-        .with_coverage(0.05, 3) // ≥5% of traffic to each arm
-        .with_guardrail(2_000.0) // filter arms with mean latency > 2s
-        .with_control(1) // 1 random control pick per k=3 batch
+        .with_triage_cfg(tcfg) // threshold selected by the single-bank simulation above
+        .with_coverage(0.05, 3) // target a 5% empirical share and at least 3 calls
+        .with_guardrail(2_000.0) // base-policy mean-latency filter at 2s
+        .with_control(1) // 1 seeded comparison pick per k=3 batch
         .window_cap(window);
 
     let mut router = Router::new(arms.clone(), cfg).unwrap();
@@ -127,9 +129,9 @@ fn main() {
         println!("  (CUSUM not yet alarmed — may need more observations or lower threshold)");
     }
 
-    // Phase C: acknowledge and return to normal.
+    // Phase C: clear current alert evidence and return to normal mode.
     if router.mode().is_triage() {
-        println!("\nPhase C: acknowledging regression...");
+        println!("\nPhase C: clearing current alert evidence...");
         router.acknowledge_all_changes();
         println!("  mode after acknowledge: {:?}", router.mode());
     }
@@ -158,8 +160,8 @@ fn main() {
             "window data should be identical after restore"
         );
     }
-    println!("  window data identical after restore ✓");
-    println!("  CUSUM state reset after restore (no stale alarms) ✓");
+    println!("  window data identical after restore");
+    println!("  CUSUM state starts fresh after restore");
     assert!(!router2.mode().is_triage());
 
     println!("\nDone.");

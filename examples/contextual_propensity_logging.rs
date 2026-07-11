@@ -12,8 +12,9 @@ fn main() {
     use rand::Rng;
     use rand::SeedableRng;
 
-    // Motivated example: when doing contextual routing, it's often useful to log
-    // (chosen_arm, probability distribution) so you can do offline analysis later.
+    // Log the chosen arm and the distribution that selected it. This is one
+    // required input for propensity-based analysis; a complete event record also
+    // needs request identity, context, candidate set, and the executed action.
     let arms = vec!["small".to_string(), "big".to_string()];
 
     let mut pol = LinUcb::new(LinUcbConfig {
@@ -36,12 +37,11 @@ fn main() {
         let chosen = d.chosen.as_str();
         let probs = d.probs.clone().unwrap_or_default();
 
-        // Example: compute a "propensity" for the chosen arm (approximate).
+        // Probability assigned to the chosen arm by this call's sampling policy.
         let propensity = probs.get(chosen).copied().unwrap_or(0.0);
 
-        // Premise: a logged propensity is a probability, and the per-action
-        // distribution it comes from is normalized. These must hold every round
-        // for the logged data to be valid for offline (IPS-style) analysis.
+        // These checks are necessary for propensity-based analysis, but do not
+        // by themselves make the event record sufficient for IPS.
         assert!(
             (0.0..=1.0).contains(&propensity),
             "propensity must be in [0,1], got {propensity} at t={t}"

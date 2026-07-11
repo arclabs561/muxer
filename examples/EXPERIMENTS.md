@@ -37,6 +37,17 @@ use `muxer` for matrix routing (slice selection + backend selection + feedback):
   - search traffic cells (`intent x locale x device`) with retrieval-model drift and latency constraints.
 - `cargo run --example medical_triage_harness`
   - triage cells (`setting x acuity x cohort`) with protocol-shift degradation in critical cohorts.
+- `cargo run --example uci_mushroom_router -- /path/to/agaricus-lepiota.data`
+  - real categorical trace from the UCI Mushroom dataset, with fixed classifier policies and an offline per-row oracle.
+- `cargo run --example validation_trace_matrix -- data/traces/classification-traces.csv`
+  - replays categorical, numeric, mixed, and missing-value UCI traces through both the quality Router and the generic metric-vector selector.
+
+The multi-dataset trace uses UCI Mushroom (categorical), Car Evaluation
+(categorical), Bank Marketing (mixed categorical/numeric), Wine Quality
+(numeric), and Adult (mixed with missing-value categories). Run
+`scripts/fetch_validation_datasets.sh` followed by
+`uv run scripts/build_validation_traces.py` to reproduce it. Downloads and
+generated CSVs live under the ignored `data/` directory.
 
 ## How to read the output
 
@@ -45,6 +56,30 @@ use `muxer` for matrix routing (slice selection + backend selection + feedback):
 - **`wall(mean/p90)`**: wall-clock delay after the change, mean / 90th percentile (over detected trials).
 - **`post(mean/p90)`**: post-change samples from the changed arm, mean / p90 (over detected trials).
 - **`wrong`** (when present): alarmed after the change, but on the wrong arm.
+
+## Real-data replay
+
+### `uci_mushroom_router.rs`
+
+The UCI Mushroom dataset contains 8,124 rows with 22 categorical features and
+an edible/poisonous label. The example uses every fifth row to fit the policy
+surrogates, then replays the other rows through `Router`. It reports both the
+router's selected accuracy and each policy's accuracy over the full evaluation
+trace, so exposure bias is visible.
+
+Download the dataset from the [UCI Machine Learning Repository](https://archive.ics.uci.edu/dataset/73/mushro),
+then run:
+
+```bash
+curl -L https://archive.ics.uci.edu/static/public/73/mushroom.zip -o /tmp/mushroom.zip
+unzip -o /tmp/mushroom.zip -d /tmp/mushroom
+cargo run --example uci_mushroom_router -- /tmp/mushroom/agaricus-lepiota.data
+```
+
+The local run on the 8,124-row file produced 6,499 evaluation rows, 98.42%
+selected accuracy, 0.54 percentage points of gap to the per-row policy oracle,
+and 94 hard failures. These are benchmark observations, not a claim
+about deployment performance.
 
 ## Concepts (minimal)
 
@@ -56,17 +91,18 @@ In bandit sensing, you only observe an arm when you sample it.
 - **Sample time** \(n_k\): observations from a particular arm.
 
 A useful approximation is \(delay\_{wall} \approx delay\_{samples} / sampling\_{rate}\).
-Coverage lets you set a **sampling rate floor**.
+Coverage targets a minimum empirical sampling share in these simulations.
 
 ### Drift feature vs alarm
 
 - `CatKlDetector` (cumulative drift): good drift *feature*, can have inertia (pre-history matters).
 - `CusumCatDetector` (reflected LLR): designed for low post-change sample delay; good *alarm*.
 
-### False alarms (the contract)
+### False alarms (simulation target)
 
 `detector_calibration` and `bqcd_calibrated` use: \(P_\infty[\tau < m] \le \alpha\).
-Interpretation: under the null, you should almost always **survive at least** \(m\) wall steps.
+This target is evaluated in each program's finite synthetic world. It is not a
+system-wide guarantee for `Router`.
 
 ## Experiments
 
@@ -135,7 +171,8 @@ cargo run --example detector_calibration --features stochastic
 ```
 
 What it does:
-- Calibrates thresholds under the null to satisfy \(P_\infty[\tau < m] \le \alpha\) at a given sampling interval.
+- Selects thresholds whose in-sample null alarm estimate meets
+  \(\hat P_\infty[\tau < m] \le \alpha\) at a given sampling interval.
 - Evaluates post-change sample delays under a fixed shift.
 - Uses the same “threshold-free max-score” trick as `bqcd_calibrated`:
   simulate the null once per trial with `threshold=+∞`, record \(M=\max_{t<m} S(t)\), then pick the smallest
@@ -143,10 +180,12 @@ What it does:
 
 Notes:
 - You can control the calibration conservatism via `CAL_Z` (default `1.96`) and `CAL_REQUIRE_WILSON=1`.
+- The threshold and pointwise Wilson bound use the same trials. Validate the
+  selected threshold on independent trials before making an out-of-sample claim.
 
 Takeaway:
-- To enforce a strict “survive to \(m\)” constraint, CUSUM thresholds can need to be **much larger**
-  when sampling is frequent.
+- In these simulations, lower in-sample alarm targets require larger CUSUM
+  thresholds when sampling is frequent.
 - Even after calibration, CUSUM tends to require far fewer post-change samples than cumulative drift scores.
 
 ### 4) `bqcd_sampling.rs`
@@ -225,7 +264,7 @@ cargo run --release --example bqcd_calibrated --features stochastic
 
 What it does:
 - Same “exactly one arm changes at time \(\nu\)” world as `bqcd_sampling`, but adds **two knobs**:
-  - **Global multi-arm false-alarm calibration**: for each (policy, alt-bank) pair, choose a threshold \(h\)
+  - **Toy-world multi-arm false-alarm calibration**: for each (policy, alt-bank) pair, choose a threshold \(h\)
     so that under the null \(P_\infty^\pi[\tau < m] \le \alpha\), where \(\tau\) is the first alarm across *any* arm.
   - **Unknown post-change robustification (GLR-lite)**: instead of one \(p_1\), run a small bank of CUSUMs
     (one per alternative) and alarm if \(\max_j S^{(j)}_t \ge h\).
@@ -245,6 +284,8 @@ Notes:
 - You can override Monte Carlo counts via env vars: `CAL_TRIALS` and `EVAL_TRIALS`.
 - Calibration reports a Wilson upper bound `hi` (set `CAL_Z`, default `1.96`). If you want the
   calibration to *require* `hi <= alpha`, set `CAL_REQUIRE_WILSON=1` (you’ll usually need a much larger `CAL_TRIALS`).
+- The separate evaluation trials test the selected threshold only within this
+  synthetic policy, arm set, horizon, and reset model.
 
 Takeaways (from a representative run; Monte Carlo noise is real):
 - `cusum_max` focusing can yield **tiny post-change sample counts** (tens of samples) but can also yield

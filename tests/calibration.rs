@@ -1,7 +1,7 @@
 //! Integration tests for CUSUM threshold calibration.
 //!
-//! These use small `n_trials` / `m` to keep CI fast.  For production calibration
-//! use `n_trials >= 2000` and the Wilson-conservative mode.
+//! These use small `n_trials` / `m` to keep CI fast. They test deterministic helper
+//! behavior, not an end-to-end false-alarm guarantee.
 
 use muxer::monitor::{calibrate_threshold_from_max_scores, ThresholdCalibration};
 
@@ -51,7 +51,7 @@ fn null_max_scores_are_deterministic() {
 fn calibrate_threshold_produces_valid_output() {
     let p0 = vec![0.85, 0.05, 0.05, 0.05];
     let alts = vec![vec![0.40, 0.10, 0.40, 0.10]];
-    // Small n_trials for CI speed; production should use >= 2000.
+    // Small n_trials for CI speed.
     let cal = calibrate_cusum_threshold(&p0, &alts, 0.10, 200, 300, 1e-3, 10, 42, false)
         .expect("calibration should succeed");
     assert!(cal.threshold > 0.0, "threshold must be positive");

@@ -1,7 +1,8 @@
 use muxer::monitor::{DriftConfig, DriftMetric};
 use muxer::{
-    select_mab_monitored_explain, select_mab_monitored_explain_with_summaries, MabConfig,
-    MonitoredMabConfig, MonitoredWindow, Outcome, Summary,
+    select_mab_monitored_explain, select_mab_monitored_explain_with_summaries,
+    DisjointMonitoredWindow, MabConfig, MonitoredMabConfig, MonitoredWindow, ObservationId,
+    Outcome, Summary,
 };
 use proptest::prelude::*;
 use std::collections::BTreeMap;
@@ -10,6 +11,24 @@ fn fill_monitored(w: &mut MonitoredWindow, seq: &[Outcome]) {
     for &o in seq {
         w.push(o);
     }
+}
+
+#[test]
+fn disjoint_monitor_keeps_reference_and_recent_samples_separate() {
+    let mut window = DisjointMonitoredWindow::new(3, 2);
+    for cost in 0..8 {
+        window.push(Outcome::success(1, cost));
+    }
+
+    let baseline: Vec<u64> = window.baseline().iter().map(|o| o.elapsed_ms).collect();
+    let recent: Vec<u64> = window.recent().iter().map(|o| o.elapsed_ms).collect();
+    assert_eq!(baseline, vec![3, 4, 5]);
+    assert_eq!(recent, vec![6, 7]);
+
+    let identified = ObservationId::new(99);
+    window.push_with_id(identified, Outcome::success(1, 8));
+    assert!(window.set_junk_level_for_id(identified, true, false));
+    assert_eq!(window.recent().summary().junk, 1);
 }
 
 fn outcome_strategy() -> impl Strategy<Value = Outcome> {

@@ -148,18 +148,15 @@ impl ThompsonSampling {
     /// Draws `n_samples` from each arm's Beta posterior and counts how often each
     /// arm's sample is the highest. Returns a distribution over arms that sums to 1.
     ///
-    /// This is the standard A/B testing "probability of being best" metric
-    /// (Garivier & Kaufmann 2016). It answers "should I commit to this arm?" --
-    /// when `P(best) > 0.95` for some arm, further exploration has diminishing returns.
+    /// This is a caller-facing posterior diagnostic. Any stopping threshold is a
+    /// separate decision rule and is not calibrated by this method.
     ///
     /// **RNG caveat**: this method draws `n_samples * K` from the internal RNG,
     /// advancing its state. Calling `probability_best` between `select()` calls
     /// changes the subsequent selection sequence. If you need stable selection
     /// determinism, call this only at diagnostic checkpoints, not in the hot path.
     ///
-    /// Note: under adaptive sampling, the posteriors themselves carry selection bias
-    /// (Shin et al 2019), so these probabilities are calibrated only approximately.
-    /// They are diagnostic, not frequentist guarantees.
+    /// These are model-based posterior probabilities, not frequentist guarantees.
     ///
     /// # Example
     ///
@@ -320,7 +317,7 @@ impl ThompsonSampling {
     /// Select via mean-softmax sampling and return a unified `Decision`.
     ///
     /// Notes:
-    /// - Always includes `probs` (the mean-softmax allocation).
+    /// - Always includes the `probs` distribution that selected the arm.
     /// - Records explore-first vs sampling and numerical fallback.
     pub fn decide_softmax_mean(
         &mut self,
@@ -341,10 +338,14 @@ impl ThompsonSampling {
         for a in arms_in_order {
             let s = *self.get_or_create_stats(a);
             if s.uses == 0 {
+                let actual_probs = arms_in_order
+                    .iter()
+                    .map(|candidate| (candidate.clone(), if candidate == a { 1.0 } else { 0.0 }))
+                    .collect();
                 return Some(Decision {
                     policy: DecisionPolicy::Thompson,
                     chosen: a.clone(),
-                    probs: Some(probs),
+                    probs: Some(actual_probs),
                     notes: vec![DecisionNote::ExploreFirst],
                 });
             }
@@ -413,7 +414,12 @@ impl ThompsonSampling {
     /// Interprets reward as a fractional “success”:
     /// - `alpha += reward`
     /// - `beta += 1 - reward`
+    ///
+    /// Non-finite rewards are ignored.
     pub fn update_reward(&mut self, arm: &str, reward01: f64) {
+        if !reward01.is_finite() {
+            return;
+        }
         let r = reward01.clamp(0.0, 1.0);
         let (a0, b0) = self.prior_for(arm);
         let decay = if self.cfg.decay.is_finite() && self.cfg.decay > 0.0 && self.cfg.decay <= 1.0 {
@@ -486,6 +492,26 @@ mod tests {
         assert_eq!(ts.select(&arms).unwrap(), "b");
         ts.update_reward("b", 1.0);
         assert_eq!(ts.select(&arms).unwrap(), "c");
+    }
+
+    #[test]
+    fn softmax_decision_reports_point_mass_during_explore_first() {
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let mut ts = ThompsonSampling::default();
+
+        let decision = ts.decide_softmax_mean(&arms, 0.5).unwrap();
+        assert_eq!(decision.chosen, "a");
+        assert_eq!(
+            decision.probs.unwrap(),
+            BTreeMap::from([("a".to_string(), 1.0), ("b".to_string(), 0.0)])
+        );
+    }
+
+    #[test]
+    fn non_finite_reward_is_ignored() {
+        let mut ts = ThompsonSampling::default();
+        ts.update_reward("a", f64::NAN);
+        assert!(!ts.stats().contains_key("a"));
     }
 
     #[test]

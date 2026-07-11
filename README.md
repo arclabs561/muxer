@@ -3,12 +3,12 @@
 [![crates.io](https://img.shields.io/crates/v/muxer.svg)](https://crates.io/crates/muxer)
 [![Documentation](https://docs.rs/muxer/badge.svg)](https://docs.rs/muxer)
 
-Multi-objective bandit routing with drift detection.
+Multi-objective arm selection and bandit routing with drift detection.
 
-Select among K arms (models, endpoints, backends) using per-call
-outcomes. Handles non-stationary reward distributions.
+Select among K arms using caller-defined metric vectors or the built-in
+quality-oriented router. Handles non-stationary reward distributions.
 
-See [examples/EXPERIMENTS.md](examples/EXPERIMENTS.md) for derivations and failure modes.
+See [examples/EXPERIMENTS.md](examples/EXPERIMENTS.md) for simulations and failure modes.
 
 ## Usage
 
@@ -38,11 +38,27 @@ loop {
 
     let outcome = Outcome::success(5, 120);
     assert!(router.observe(&arm, outcome));
-
-    if router.mode().is_triage() {
-        router.acknowledge_change(&arm);
-    }
 }
+```
+
+When availability or capability varies by request, pass the allowed arms
+explicitly. Every Router selection stage stays inside this set:
+
+```rust
+let eligible = vec!["backend-b".to_string()];
+let d = router.select_from(&eligible, 1, 0).unwrap();
+assert_eq!(d.primary(), Some("backend-b"));
+```
+
+For overlapping calls whose labels arrive later, use caller-owned observation
+IDs so labels target the original outcome:
+
+```rust
+use muxer::{ObservationId, Outcome};
+
+let id = ObservationId::new(1);
+assert!(router.observe_with_id(id, "backend-b", Outcome::success(5, 120)));
+assert!(router.set_quality_score_for_id(id, 0.9));
 ```
 
 For larger arm counts, pass `k > 1` to batch exploration:
@@ -69,6 +85,29 @@ let sel = select_mab(&arms, &summaries, MabConfig::default());
 assert_eq!(sel.chosen, "a"); // lower junk rate wins
 ```
 
+### Domain-neutral metric selection
+
+When the metrics are not quality labels, pass them directly. Metric positions
+are caller-defined; each objective declares whether to maximize or minimize it.
+
+```rust
+use muxer::{select_candidate_assessments, CandidateAssessment, MetricObjective};
+
+let candidates = vec![
+    CandidateAssessment::new("accurate", 100, vec![0.95, 240.0]),
+    CandidateAssessment::new("fast", 100, vec![0.90, 80.0]),
+];
+let objectives = [
+    MetricObjective::maximize(0, 40.0), // metric 0: caller-defined utility
+    MetricObjective::minimize(1, 0.01), // metric 1: caller-defined latency
+];
+let selection = select_candidate_assessments(&candidates, &objectives).unwrap();
+assert_eq!(selection.chosen.as_deref(), Some("accurate"));
+```
+
+`Router`, `Outcome`, and `Summary` remain the quality-profile adapter. Use the
+metric-vector selector when the feedback schema is different.
+
 ### Detect-then-triage
 
 ```rust
@@ -92,8 +131,8 @@ Start here:
 ```bash
 cargo run --example getting_started        # minimal 3-backend routing loop
 cargo run --release --example llm_gateway_harness  # model routing under drift
-cargo run --example router_quickstart      # full lifecycle with CUSUM triage
-cargo run --example router_production --features stochastic  # production config
+cargo run --example router_quickstart      # eligibility, routing, and CUSUM triage
+cargo run --example router_production --features stochastic  # combined config demo
 cargo run --example off_policy_evaluation  # IPS over logged rewards and propensities
 ```
 
@@ -111,20 +150,6 @@ cargo bench -p muxer --bench coverage
 ```
 
 [Quickstart guide](docs/QUICKSTART.md) | [API docs](https://docs.rs/muxer) | [Changelog](CHANGELOG.md)
-
-## References
-
-1. P. Auer, N. Cesa-Bianchi, and P. Fischer. "Finite-time analysis of the multiarmed bandit problem." *Machine Learning*, 47(2-3):235--256, 2002.
-2. S. Agrawal and N. Goyal. "Analysis of Thompson Sampling for the Multi-armed Bandit Problem." *COLT*, 2012.
-3. P. Auer, N. Cesa-Bianchi, Y. Freund, and R. E. Schapire. "The Nonstochastic Multiarmed Bandit Problem." *SIAM J. Comput.*, 32(1):48--77, 2002.
-4. W. Chu, L. Li, L. Reyzin, and R. Schapire. "Contextual Bandits with Linear Payoff Functions." *AISTATS*, 2011.
-5. E. S. Page. "Continuous inspection schemes." *Biometrika*, 41(1-2):100--115, 1954.
-6. A. Garivier and E. Moulines. "On Upper-Confidence Bound Policies for Switching Bandit Problems." *ALT*, 2011.
-7. R. R. Drugan and A. Nowe. "Designing multi-objective multi-armed bandits algorithms: A study." *IJCNN*, 2013.
-8. L. Besson, E. Kaufmann, O.-A. Maillard, and J. Seznec. "Efficient Change-Point Detection for Tackling Piecewise-Stationary Bandits." arXiv:1902.01575, 2019.
-9. M. Ehrgott and S. Nickel. "On the number of criteria needed to decide Pareto optimality." *Math. Meth. Oper. Res.*, 55:329--345, 2002.
-10. T. Banerjee and V. V. Veeravalli. "Data-efficient quickest change detection." arXiv:1211.3729, 2012.
-11. V. Hadad, D. A. Hirshberg, R. Zhan, S. Wager, and S. Athey. "Confidence Intervals for Policy Evaluation in Adaptive Experiments." arXiv:1911.02768, 2021.
 
 ## License
 

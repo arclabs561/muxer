@@ -7,10 +7,35 @@ failure-mode discussion, and longer experiment notes, see
 
 ## Start Here
 
+### `validation_trace_matrix`: how do the generic and quality paths behave on real data?
+
+Downloads are kept outside the repository. The script builds one common trace
+format from categorical, numeric, mixed, and missing-value UCI datasets. The
+example replays the traces through the quality-oriented `Router` and, separately,
+through `select_candidate_assessments` using rolling utility, cost, and latency
+vectors. The generic path is a full-information offline replay; the Router path
+only observes its selected arm.
+
+```bash
+scripts/fetch_validation_datasets.sh data/uci
+uv run scripts/build_validation_traces.py --input data/uci --output data/traces/classification-traces.csv
+cargo run --example validation_trace_matrix -- data/traces/classification-traces.csv
+```
+
+The trace fields are deliberately explicit (`label`, `predicted`, `cost_units`,
+`elapsed_ms`). A caller with a different schema can use
+`select_candidate_assessments` directly instead of manufacturing `Outcome`
+flags.
+
+The current local trace has 6,499 mushroom, 1,382 car, 36,168 bank, 1,279 red
+wine, 3,918 white wine, and 39,073 adult evaluation rows. The resulting
+quality-router and generic-selector accuracies are printed per dataset; the
+per-row oracle is an offline upper reference, not a deployment estimate.
+
 ### `getting_started`: what does the basic routing loop do?
 
-Creates three backends, lets the router explore each one, records delayed quality
-labels, and shows how `quality_weight` breaks a tie.
+Creates three backends, lets the router explore each one, records finalized outcomes,
+and shows how `quality_weight` resolves a quality-versus-cost tradeoff.
 
 ```bash
 cargo run --example getting_started
@@ -26,7 +51,8 @@ cargo run --example getting_started
   claude-sonnet    calls=10  ok=1.00  junk=0.00  quality=0.78
   gemini-pro       calls=10  ok=1.00  junk=1.00  quality=0.55
 
-Best arm now: "gpt-4o"  (mode: Normal)
+Best arm now: "claude-sonnet"  (mode: Normal)
+
 With quality_weight=1.0: best arm is "gpt-4o"
 ```
 
@@ -91,6 +117,22 @@ balanced           36  0.972  1.000    0.650       4.00    338.9
 local-small        57  0.965  0.140    0.796       1.00    137.5
 verifier          137  1.000  0.066    0.889      12.00    631.5
 ```
+
+### `uci_mushroom_router`: does routing work on a real categorical dataset?
+
+Replays the UCI Mushroom data through three fixed policies: a majority-class
+baseline, an odor-only classifier, and a categorical naive-Bayes classifier.
+The router sees only the selected policy's outcome; the full trace is used as
+an offline per-row oracle reference.
+
+```bash
+curl -L https://archive.ics.uci.edu/static/public/73/mushroom.zip -o /tmp/mushroom.zip
+unzip -o /tmp/mushroom.zip -d /tmp/mushroom
+cargo run --example uci_mushroom_router -- /tmp/mushroom/agaricus-lepiota.data
+```
+
+The example exits successfully with a clear message when no dataset path is
+provided, so the default build does not depend on a download.
 
 ### `synthetic_drift_harness`: which backend changes after drift?
 

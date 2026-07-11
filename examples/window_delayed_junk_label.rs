@@ -1,15 +1,17 @@
-use muxer::{Outcome, Window};
+use muxer::{ObservationId, Outcome, Window};
 
 fn main() {
-    // Production pattern: you push an initial outcome when the request returns,
-    // then later (after downstream parsing/validation) you may learn it was "junk".
+    // Caller-owned IDs make delayed labels safe when calls overlap or complete
+    // out of order.
     let mut w = Window::new(5);
+    let first = ObservationId::new(1);
+    let second = ObservationId::new(2);
 
-    // Request returned OK; we don't yet know junk-ness.
-    w.push(Outcome::success(2, 420));
+    w.push_with_id(first, Outcome::success(2, 420));
+    w.push_with_id(second, Outcome::success(2, 380));
 
-    // Later, downstream validation decides it was "soft junk".
-    w.set_last_junk_level(true, false);
+    // The first request's validation arrives after the second request.
+    w.set_junk_level_for_id(first, true, false);
 
     let s = w.summary();
     eprintln!(

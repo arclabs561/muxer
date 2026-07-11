@@ -70,7 +70,7 @@ pub struct Exp3IxState {
     /// Probability distribution aligned with `arms`.
     ///
     /// This is redundant (it can be recomputed from `cum_loss_hat`), but storing it avoids
-    /// small numerical drift and makes persistence/replay cheaper.
+    /// small numerical drift when restoring persisted state.
     #[cfg_attr(feature = "serde", serde(default))]
     pub probs: Vec<f64>,
 }
@@ -308,7 +308,9 @@ impl Exp3Ix {
     /// - apply external hard constraints (e.g. latency guardrail) that shrink the eligible set
     /// - want a deterministic decision given a seed, without persisting RNG state
     ///
-    /// The returned `Decision.probs` is over `eligible_in_order` (renormalized).
+    /// The returned `Decision.probs` is the distribution that selected the arm.
+    /// During explore-first it is a point mass; otherwise it is the base
+    /// distribution renormalized over `eligible_in_order`.
     /// If you update using this decision, prefer `update_reward_with_prob(...)` with
     /// `prob_used := decision.probs[chosen]`.
     pub fn decide_deterministic_filtered(
@@ -322,7 +324,7 @@ impl Exp3Ix {
             return None;
         }
 
-        // Always capture probabilities as of this decision.
+        // Capture the distribution used once explore-first is complete.
         let probs = self.filtered_probs(eligible_in_order);
 
         // Explore-first within the eligible set (stable order).
@@ -334,10 +336,14 @@ impl Exp3Ix {
                 .and_then(|i| self.uses.get(i).copied())
                 .unwrap_or(0);
             if uses == 0 {
+                let actual_probs = eligible_in_order
+                    .iter()
+                    .map(|candidate| (candidate.clone(), if candidate == a { 1.0 } else { 0.0 }))
+                    .collect();
                 return Some(Decision {
                     policy: DecisionPolicy::Exp3Ix,
                     chosen: a.clone(),
-                    probs: Some(probs),
+                    probs: Some(actual_probs),
                     notes: vec![DecisionNote::ExploreFirst],
                 });
             }
@@ -374,9 +380,9 @@ impl Exp3Ix {
     ///
     /// This is useful when the decision was made from a filtered/renormalized distribution
     /// (e.g. a latency guardrail) and you want the importance weighting to use the exact
-    /// probability mass function that was actually sampled.
+    /// probability mass function that was actually sampled. Non-finite rewards are ignored.
     pub fn update_reward_with_prob(&mut self, arm: &str, reward01: f64, prob_used: f64) {
-        if self.arms.is_empty() {
+        if self.arms.is_empty() || !reward01.is_finite() {
             return;
         }
         let Some(idx) = self.arms.iter().position(|a| a == arm) else {
@@ -461,10 +467,10 @@ impl Exp3Ix {
         arms_in_order.last()
     }
 
-    /// Select an arm and return a unified `Decision` (recommended for logging/replay).
+    /// Select an arm and return a unified `Decision` with selection probabilities.
     ///
     /// Notes:
-    /// - Always includes a `probs` distribution over arms as of this decision.
+    /// - Always includes the `probs` distribution that selected the arm.
     /// - Records whether explore-first occurred and whether numerical fallback was used.
     pub fn decide(&mut self, arms_in_order: &[String]) -> Option<Decision> {
         self.ensure_arms(arms_in_order);
@@ -472,16 +478,20 @@ impl Exp3Ix {
             return None;
         }
 
-        // Always capture probabilities as of this decision.
+        // Capture the distribution used once explore-first is complete.
         let probs = self.probabilities(arms_in_order);
 
         // Explore first (stable order).
         for (i, a) in arms_in_order.iter().enumerate() {
             if self.uses.get(i).copied().unwrap_or(0) == 0 {
+                let actual_probs = arms_in_order
+                    .iter()
+                    .map(|candidate| (candidate.clone(), if candidate == a { 1.0 } else { 0.0 }))
+                    .collect();
                 return Some(Decision {
                     policy: DecisionPolicy::Exp3Ix,
                     chosen: a.clone(),
-                    probs: Some(probs),
+                    probs: Some(actual_probs),
                     notes: vec![DecisionNote::ExploreFirst],
                 });
             }
@@ -515,6 +525,11 @@ impl Exp3Ix {
     }
 
     /// Update EXP3-IX with a bounded reward in `[0, 1]`.
+    ///
+    /// This assumes feedback follows the corresponding decision before another
+    /// update for the same arm. During first-use exploration it applies probability
+    /// `1.0`. For filtered, delayed, or out-of-order feedback, pass the logged
+    /// decision probability to [`Self::update_reward_with_prob`].
     pub fn update_reward(&mut self, arm: &str, reward01: f64) {
         if self.arms.is_empty() {
             // No-op if not initialized.
@@ -523,7 +538,11 @@ impl Exp3Ix {
         let Some(idx) = self.arms.iter().position(|a| a == arm) else {
             return;
         };
-        let p = self.probs.get(idx).copied().unwrap_or(0.0);
+        let p = if self.uses.get(idx).copied().unwrap_or(0) == 0 {
+            1.0
+        } else {
+            self.probs.get(idx).copied().unwrap_or(0.0)
+        };
         self.update_reward_with_prob(arm, reward01, p);
     }
 }
@@ -557,6 +576,67 @@ mod tests {
         let p = ex.probabilities(&arms);
         let s: f64 = p.values().sum();
         assert!((s - 1.0).abs() < 1e-9, "sum={}", s);
+    }
+
+    #[test]
+    fn decisions_report_point_mass_during_explore_first() {
+        let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+
+        let mut sampled = Exp3Ix::default();
+        let decision = sampled.decide(&arms).unwrap();
+        assert_eq!(decision.chosen, "a");
+        assert_eq!(
+            decision.probs.unwrap(),
+            BTreeMap::from([
+                ("a".to_string(), 1.0),
+                ("b".to_string(), 0.0),
+                ("c".to_string(), 0.0),
+            ])
+        );
+
+        let mut filtered = Exp3Ix::default();
+        let eligible = vec!["b".to_string(), "c".to_string()];
+        let decision = filtered
+            .decide_deterministic_filtered(&arms, &eligible, 42)
+            .unwrap();
+        assert_eq!(decision.chosen, "b");
+        assert_eq!(
+            decision.probs.unwrap(),
+            BTreeMap::from([("b".to_string(), 1.0), ("c".to_string(), 0.0)])
+        );
+    }
+
+    #[test]
+    fn implicit_update_uses_explore_first_probability() {
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let mut implicit = Exp3Ix::default();
+        let mut explicit = Exp3Ix::default();
+        let _ = implicit.decide(&arms).unwrap();
+        let _ = explicit.decide(&arms).unwrap();
+
+        implicit.update_reward("a", 0.25);
+        explicit.update_reward_with_prob("a", 0.25, 1.0);
+
+        let implicit = implicit.snapshot();
+        let explicit = explicit.snapshot();
+        assert_eq!(implicit.uses, explicit.uses);
+        assert_eq!(implicit.cum_loss_hat, explicit.cum_loss_hat);
+        assert_eq!(implicit.probs, explicit.probs);
+    }
+
+    #[test]
+    fn non_finite_reward_is_ignored() {
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let mut policy = Exp3Ix::default();
+        let _ = policy.probabilities(&arms);
+        let before = policy.snapshot();
+
+        policy.update_reward_with_prob("a", f64::NAN, 0.5);
+        let after = policy.snapshot();
+
+        assert_eq!(after.uses, before.uses);
+        assert_eq!(after.cum_loss_hat, before.cum_loss_hat);
+        assert_eq!(after.probs, before.probs);
     }
 
     #[test]

@@ -195,7 +195,7 @@ impl StickyMab {
         sel
     }
 
-    /// Apply stickiness and return a unified `Decision` (recommended for logging/replay).
+    /// Apply stickiness and return a unified `Decision` with diagnostic metadata.
     ///
     /// Includes constraint gating metadata and stickiness actions (kept previous / switched).
     pub fn apply_mab_decide(&mut self, decision: MabSelectionDecision) -> Decision {
