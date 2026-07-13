@@ -6,7 +6,7 @@ starvation, detector inertia, false alarms, and “fast on mean” vs “reliabl
 ## Start here (recommended order)
 
 - `cargo run --example guardrail_semantics`
-  - shows what “soft” vs “guardrail-first (strict)” means when novelty/coverage is enabled.
+  - shows where empirical latency filtering runs relative to novelty/coverage.
 - `cargo run --example coverage_autotune --features stochastic`
   - turns a wall-delay target into a `CoverageConfig` floor using \(h/KL\), then simulates.
 - `cargo run --example bqcd_sampling --features stochastic`
@@ -58,6 +58,33 @@ generated CSVs live under the ignored `data/` directory.
 - **`wrong`** (when present): alarmed after the change, but on the wrong arm.
 
 ## Real-data replay
+
+### `feedback_regime_matrix.rs` (pre-registered)
+
+Hypothesis:
+- Native-schema replays will expose limitations hidden by the classification
+  traces: lower effective support under Thompson-sampling logs than uniform
+  logs, a nonzero gap between history-only algorithm selection and a per-instance
+  oracle, coverage-versus-stability tradeoffs across fuzzers, and larger
+  categorical drift inside annotated windows than held-out normal periods for
+  at least three of five streams.
+
+Method:
+- Fetch checksum-pinned small releases from Open Bandit Dataset, ASlib,
+  FuzzBench, and NAB into `data/feedback/raw/`.
+- Build four separate derived schemas under `data/feedback/derived/`; do not
+  coerce clicks, runtimes, edge counts, or anomaly windows into `Outcome` flags.
+- Replay the schemas through scalar OPE, metric-vector selection, Pareto
+  filtering, and categorical drift. Report each dataset separately and keep
+  the per-instance or per-trial oracle as an offline reference only.
+
+Data provenance:
+- Source revisions, URLs, byte counts, and SHA-256 digests live in
+  `scripts/feedback_sources.toml`. The build writes a deterministic provenance
+  record beside the ignored derived data.
+
+Results:
+- Not recorded. This hypothesis was written before the first evaluation run.
 
 ### `uci_mushroom_router.rs`
 
