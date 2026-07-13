@@ -37,7 +37,11 @@ def read_delimited(path: Path, delimiter: str, label_index: int = -1) -> list[Re
             label = row[label_index].rstrip(".")
             if label in {"y", "quality"} and row[0].lower() in {"age", "fixed acidity"}:
                 continue
-            features = tuple(row[:label_index] if label_index == -1 else row[:label_index] + row[label_index + 1 :])
+            features = tuple(
+                row[:label_index]
+                if label_index == -1
+                else row[:label_index] + row[label_index + 1 :]
+            )
             if label and all(features):
                 records.append(Record(label, features))
     return records
@@ -135,27 +139,43 @@ class Models:
             for row in train:
                 counts[row.features[column]][row.label] += 1
             mapping = {
-                value: max(self.classes, key=lambda label: (counts[value][label], label))
+                value: max(
+                    self.classes, key=lambda label: (counts[value][label], label)
+                )
                 for value in values
             }
             self.feature_maps.append(mapping)
             self.feature_counts.append(counts)
 
-        self.best_feature = max(range(len(self.feature_maps)), key=lambda column: self.feature_accuracy(column, train))
+        self.best_feature = max(
+            range(len(self.feature_maps)),
+            key=lambda column: self.feature_accuracy(column, train),
+        )
 
     def feature_accuracy(self, column: int, rows: list[Record]) -> float:
         mapping = self.feature_maps[column]
-        correct = sum(mapping.get(row.features[column], self.majority) == row.label for row in rows)
+        correct = sum(
+            mapping.get(row.features[column], self.majority) == row.label
+            for row in rows
+        )
         return correct / max(1, len(rows))
 
     def predict_feature(self, row: Record) -> str:
-        return self.feature_maps[self.best_feature].get(row.features[self.best_feature], self.majority)
+        return self.feature_maps[self.best_feature].get(
+            row.features[self.best_feature], self.majority
+        )
 
     def predict_bayes(self, row: Record) -> str:
-        total = sum(self.feature_counts[0][value][label] for value in self.feature_counts[0] for label in self.classes)
+        total = sum(
+            self.feature_counts[0][value][label]
+            for value in self.feature_counts[0]
+            for label in self.classes
+        )
         scores: dict[str, float] = {}
         for label in self.classes:
-            class_count = sum(counts[label] for counts in self.feature_counts[0].values())
+            class_count = sum(
+                counts[label] for counts in self.feature_counts[0].values()
+            )
             score = math.log((class_count + 1) / (total + len(self.classes)))
             for column, value in enumerate(row.features):
                 counts = self.feature_counts[column].get(value, Counter())
@@ -194,7 +214,9 @@ def iter_datasets(root: Path) -> list[tuple[str, list[Record], set[str]]]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=Path("data/uci"))
-    parser.add_argument("--output", type=Path, default=Path("data/traces/classification-traces.csv"))
+    parser.add_argument(
+        "--output", type=Path, default=Path("data/traces/classification-traces.csv")
+    )
     args = parser.parse_args()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -226,7 +248,12 @@ def main() -> None:
             policies = (
                 ("majority", lambda row: models.majority, 1, 2),
                 ("feature", models.predict_feature, 3, 8),
-                ("naive_bayes", models.predict_bayes, 10, 24 + len(train[0].features) * 2),
+                (
+                    "naive_bayes",
+                    models.predict_bayes,
+                    10,
+                    24 + len(train[0].features) * 2,
+                ),
             )
             for row_id, row in enumerate(eval_rows):
                 for arm, predictor, cost, elapsed_ms in policies:
