@@ -1,0 +1,155 @@
+format_version = 1
+
+[[source]]
+id = "obd_random_all"
+lane = "logged_bandit"
+role = "data"
+path = "open_bandit/random/all.csv"
+url = "https://raw.githubusercontent.com/st-tech/zr-obp/8cbd5fa4558b7ad2ba4781546d6604e4cc3e07c4/obd/random/all/all.csv"
+sha256 = "7168295b6e0a9eabcf3392320a5dd434e542b68e705d5cd9491499af589812f1"
+bytes = 5039451
+revision = "8cbd5fa4558b7ad2ba4781546d6604e4cc3e07c4"
+source_page = "https://github.com/st-tech/zr-obp/tree/8cbd5fa4558b7ad2ba4781546d6604e4cc3e07c4/obd"
+
+[[source]]
+id = "obd_bts_all"
+lane = "logged_bandit"
+role = "data"
+path = "open_bandit/bts/all.csv"
+url = "https://raw.githubusercontent.com/st-tech/zr-obp/8cbd5fa4558b7ad2ba4781546d6604e4cc3e07c4/obd/bts/all/all.csv"
+sha256 = "0ad874e4dbf6902f0845dd478ad8dde5ef6903583d3ffaace78411bdad064106"
+bytes = 5084456
+revision = "8cbd5fa4558b7ad2ba4781546d6604e4cc3e07c4"
+source_page = "https://github.com/st-tech/zr-obp/tree/8cbd5fa4558b7ad2ba4781546d6604e4cc3e07c4/obd"
+
+[[source]]
+id = "obd_readme"
+lane = "logged_bandit"
+role = "metadata"
+path = "open_bandit/README.md"
+url = "https://raw.githubusercontent.com/st-tech/zr-obp/8cbd5fa4558b7ad2ba4781546d6604e4cc3e07c4/obd/README.md"
+sha256 = "46bba393a44b63ddbb735d21d48ea447a073261eac93b4f06e1b19e9b41db2fe"
+bytes = 3170
+revision = "8cbd5fa4558b7ad2ba4781546d6604e4cc3e07c4"
+source_page = "https://github.com/st-tech/zr-obp/tree/8cbd5fa4558b7ad2ba4781546d6604e4cc3e07c4/obd"
+
+[[source]]
+id = "aslib_csp_runs"
+lane = "algorithm_selection"
+role = "data"
+path = "aslib/CSP-Minizinc-Time-2016/algorithm_runs.arff"
+url = "https://raw.githubusercontent.com/coseal/aslib_data/551b22beef8df17de59286b4822ef720e0aa4d6f/CSP-Minizinc-Time-2016/algorithm_runs.arff"
+sha256 = "052c3887f491bd73e34dfca3f16d663c3fb9a9f84d63a108c4157a26c9130b3f"
+bytes = 81359
+revision = "551b22beef8df17de59286b4822ef720e0aa4d6f"
+source_page = "https://github.com/coseal/aslib_data/tree/551b22beef8df17de59286b4822ef720e0aa4d6f/CSP-Minizinc-Time-2016"
+
+[[source]]
+id = "aslib_csp_description"
+lane = "algorithm_selection"
+role = "metadata"
+path = "aslib/CSP-Minizinc-Time-2016/description.txt"
+url = "https://raw.githubusercontent.com/coseal/aslib_data/551b22beef8df17de59286b4822ef720e0aa4d6f/CSP-Minizinc-Time-2016/description.txt"
+sha256 = "b1548263a2f67d0ece17314d879217ad00c81123e68def4072d816bf65e1d277"
+bytes = 6091
+revision = "551b22beef8df17de59286b4822ef720e0aa4d6f"
+source_page = "https://github.com/coseal/aslib_data/tree/551b22beef8df17de59286b4822ef720e0aa4d6f/CSP-Minizinc-Time-2016"
+
+[[source]]
+id = "aslib_openml_runs"
+lane = "algorithm_selection"
+role = "data"
+path = "aslib/OPENML-WEKA-2017/algorithm_runs.arff"
+url = "https://raw.githubusercontent.com/coseal/aslib_data/551b22beef8df17de59286b4822ef720e0aa4d6f/OPENML-WEKA-2017/algorithm_runs.arff"
+sha256 = "23ae3f012b8caabdd1cf1604c2ad6e05e9fb50558eb6692879f60266398d2a94"
+bytes = 131404
+revision = "551b22beef8df17de59286b4822ef720e0aa4d6f"
+source_page = "https://github.com/coseal/aslib_data/tree/551b22beef8df17de59286b4822ef720e0aa4d6f/OPENML-WEKA-2017"
+
+[[source]]
+id = "aslib_openml_description"
+lane = "algorithm_selection"
+role = "metadata"
+path = "aslib/OPENML-WEKA-2017/description.txt"
+url = "https://raw.githubusercontent.com/coseal/aslib_data/551b22beef8df17de59286b4822ef720e0aa4d6f/OPENML-WEKA-2017/description.txt"
+sha256 = "9d6e3d1846849dc20b4e46e3b73d83304ebcb743db91e4f69e78612e5658fb4c"
+bytes = 6036
+revision = "551b22beef8df17de59286b4822ef720e0aa4d6f"
+source_page = "https://github.com/coseal/aslib_data/tree/551b22beef8df17de59286b4822ef720e0aa4d6f/OPENML-WEKA-2017"
+
+[[source]]
+id = "fuzzbench_sample"
+lane = "coverage_trajectory"
+role = "data"
+path = "fuzzbench/sample/data.csv.gz"
+url = "https://www.fuzzbench.com/reports/sample/data.csv.gz"
+sha256 = "4bcdd8c9c9096ca90a8e4a83f600bd153681aae5a0a211029509342ec40f3402"
+bytes = 5021096
+revision = "google-storage-generation-1599503982891234"
+source_page = "https://www.fuzzbench.com/reports/sample/"
+
+[[source]]
+id = "nab_labels"
+lane = "streaming_shift"
+role = "labels"
+path = "nab/labels/combined_windows.json"
+url = "https://raw.githubusercontent.com/numenta/NAB/ea702d75cc2258d9d7dd35ca8e5e2539d71f3140/labels/combined_windows.json"
+sha256 = "1e1fbc4601321aad8d0f8b3784c8134299379f68f6c1f7777565f8ffd57ab6b1"
+bytes = 15359
+revision = "ea702d75cc2258d9d7dd35ca8e5e2539d71f3140"
+source_page = "https://github.com/numenta/NAB/tree/ea702d75cc2258d9d7dd35ca8e5e2539d71f3140"
+
+[[source]]
+id = "nab_aws_cpu"
+lane = "streaming_shift"
+role = "data"
+path = "nab/data/realAWSCloudwatch/ec2_cpu_utilization_5f5533.csv"
+url = "https://raw.githubusercontent.com/numenta/NAB/ea702d75cc2258d9d7dd35ca8e5e2539d71f3140/data/realAWSCloudwatch/ec2_cpu_utilization_5f5533.csv"
+sha256 = "01613e6f632d067f11a5dfd40a188b0789752b388d9bc77a398bd06333878a76"
+bytes = 119229
+revision = "ea702d75cc2258d9d7dd35ca8e5e2539d71f3140"
+source_page = "https://github.com/numenta/NAB/tree/ea702d75cc2258d9d7dd35ca8e5e2539d71f3140/data/realAWSCloudwatch"
+
+[[source]]
+id = "nab_nyc_taxi"
+lane = "streaming_shift"
+role = "data"
+path = "nab/data/realKnownCause/nyc_taxi.csv"
+url = "https://raw.githubusercontent.com/numenta/NAB/ea702d75cc2258d9d7dd35ca8e5e2539d71f3140/data/realKnownCause/nyc_taxi.csv"
+sha256 = "d8fa6f7f0734bf5c8be12c52a94e20a82664c397d9dec4449156bd453d32856d"
+bytes = 265771
+revision = "ea702d75cc2258d9d7dd35ca8e5e2539d71f3140"
+source_page = "https://github.com/numenta/NAB/tree/ea702d75cc2258d9d7dd35ca8e5e2539d71f3140/data/realKnownCause"
+
+[[source]]
+id = "nab_traffic_speed"
+lane = "streaming_shift"
+role = "data"
+path = "nab/data/realTraffic/speed_6005.csv"
+url = "https://raw.githubusercontent.com/numenta/NAB/ea702d75cc2258d9d7dd35ca8e5e2539d71f3140/data/realTraffic/speed_6005.csv"
+sha256 = "7976e7596cd1e579696c737576e96a26fe041484472ed7d0a463ce2b094d7aa7"
+bytes = 57538
+revision = "ea702d75cc2258d9d7dd35ca8e5e2539d71f3140"
+source_page = "https://github.com/numenta/NAB/tree/ea702d75cc2258d9d7dd35ca8e5e2539d71f3140/data/realTraffic"
+
+[[source]]
+id = "nab_twitter_aapl"
+lane = "streaming_shift"
+role = "data"
+path = "nab/data/realTweets/Twitter_volume_AAPL.csv"
+url = "https://raw.githubusercontent.com/numenta/NAB/ea702d75cc2258d9d7dd35ca8e5e2539d71f3140/data/realTweets/Twitter_volume_AAPL.csv"
+sha256 = "826f5cf404c2890784a7824f7102fd00cb134a4948e12e44ec320d095cbbc217"
+bytes = 368111
+revision = "ea702d75cc2258d9d7dd35ca8e5e2539d71f3140"
+source_page = "https://github.com/numenta/NAB/tree/ea702d75cc2258d9d7dd35ca8e5e2539d71f3140/data/realTweets"
+
+[[source]]
+id = "nab_ad_exchange_cpc"
+lane = "streaming_shift"
+role = "data"
+path = "nab/data/realAdExchange/exchange-2_cpc_results.csv"
+url = "https://raw.githubusercontent.com/numenta/NAB/ea702d75cc2258d9d7dd35ca8e5e2539d71f3140/data/realAdExchange/exchange-2_cpc_results.csv"
+sha256 = "d869ab165254f3ee77ee21fd9fab2be1d07c1f80b8133cf01bbaf2d768c2ac64"
+bytes = 58887
+revision = "ea702d75cc2258d9d7dd35ca8e5e2539d71f3140"
+source_page = "https://github.com/numenta/NAB/tree/ea702d75cc2258d9d7dd35ca8e5e2539d71f3140/data/realAdExchange"
