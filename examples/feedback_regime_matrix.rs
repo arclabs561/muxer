@@ -16,10 +16,11 @@ use muxer::{
     ips_value, select_candidate_assessments, self_normalized_ips_value, CandidateAssessment,
     DriftMetric, LoggedReward, MetricObjective,
 };
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
-use std::fs::File;
-use std::io::{self, BufRead, BufReader, Lines};
+use std::fs::{self, File};
+use std::io::{self, BufRead, BufReader, Lines, Read};
 use std::path::{Path, PathBuf};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -28,8 +29,134 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
+fn path_error(path: &Path, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+}
+
+fn open_file(path: &Path) -> io::Result<File> {
+    File::open(path).map_err(|error| path_error(path, error))
+}
+
 fn open_lines(path: &Path) -> io::Result<Lines<BufReader<File>>> {
-    Ok(BufReader::new(File::open(path)?).lines())
+    Ok(BufReader::new(open_file(path)?).lines())
+}
+
+fn sha256_path(path: &Path) -> io::Result<String> {
+    let mut file = open_file(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| path_error(path, error))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn provenance_error(path: &Path, message: impl AsRef<str>) -> io::Error {
+    invalid_data(format!("{}: {}", path.display(), message.as_ref()))
+}
+
+fn verify_derived_data(root: &Path) -> Result<()> {
+    const EXPECTED_OUTPUTS: [&str; 4] =
+        ["open_bandit.csv", "aslib.csv", "fuzzbench.csv", "nab.csv"];
+
+    let provenance_path = root.join("provenance.json");
+    let document: serde_json::Value = serde_json::from_reader(open_file(&provenance_path)?)
+        .map_err(|error| provenance_error(&provenance_path, format!("invalid JSON: {error}")))?;
+    if document
+        .get("format_version")
+        .and_then(|value| value.as_u64())
+        != Some(1)
+    {
+        return Err(provenance_error(&provenance_path, "unsupported format_version").into());
+    }
+    if document.get("builder").and_then(|value| value.as_str())
+        != Some("scripts/build_feedback_traces.py")
+    {
+        return Err(provenance_error(&provenance_path, "unexpected builder").into());
+    }
+    let outputs = document
+        .get("outputs")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| provenance_error(&provenance_path, "outputs must be an array"))?;
+    let mut seen = BTreeSet::<String>::new();
+    for output in outputs {
+        let name = output
+            .get("path")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| provenance_error(&provenance_path, "output path must be a string"))?;
+        if !EXPECTED_OUTPUTS.contains(&name) {
+            return Err(provenance_error(
+                &provenance_path,
+                format!("unexpected output path {name}"),
+            )
+            .into());
+        }
+        if !seen.insert(name.to_string()) {
+            return Err(provenance_error(
+                &provenance_path,
+                format!("duplicate output path {name}"),
+            )
+            .into());
+        }
+        let expected_bytes = output
+            .get("bytes")
+            .and_then(|value| value.as_u64())
+            .ok_or_else(|| {
+                provenance_error(&provenance_path, format!("{name} bytes must be an integer"))
+            })?;
+        let expected_sha256 = output
+            .get("sha256")
+            .and_then(|value| value.as_str())
+            .filter(|digest| {
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+            .ok_or_else(|| {
+                provenance_error(
+                    &provenance_path,
+                    format!("{name} sha256 must be 64 lowercase hexadecimal characters"),
+                )
+            })?;
+        let path = root.join(name);
+        let metadata = fs::metadata(&path).map_err(|error| path_error(&path, error))?;
+        if !metadata.is_file() {
+            return Err(invalid_data(format!("{} is not a file", path.display())).into());
+        }
+        if metadata.len() != expected_bytes {
+            return Err(invalid_data(format!(
+                "{} has {} bytes, expected {expected_bytes}",
+                path.display(),
+                metadata.len(),
+            ))
+            .into());
+        }
+        let actual_sha256 = sha256_path(&path)?;
+        if actual_sha256 != expected_sha256 {
+            return Err(invalid_data(format!(
+                "{} has SHA-256 {actual_sha256}, expected {expected_sha256}",
+                path.display(),
+            ))
+            .into());
+        }
+    }
+    for expected in EXPECTED_OUTPUTS {
+        if !seen.contains(expected) {
+            return Err(provenance_error(
+                &provenance_path,
+                format!("missing output record {expected}"),
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 fn expect_header(lines: &mut Lines<BufReader<File>>, path: &Path, expected: &str) -> Result<()> {
@@ -681,10 +808,82 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    verify_derived_data(&root)?;
     println!("== native feedback-regime validation ==\n");
     evaluate_open_bandit(&root.join("open_bandit.csv"))?;
     evaluate_aslib(&root.join("aslib.csv"))?;
     evaluate_fuzzbench(&root.join("fuzzbench.csv"))?;
     evaluate_nab(&root.join("nab.csv"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+    struct Fixture {
+        root: PathBuf,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "muxer-feedback-provenance-{}-{}",
+                std::process::id(),
+                NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed),
+            ));
+            fs::create_dir(&root).expect("create fixture directory");
+
+            let mut outputs = Vec::new();
+            for (index, name) in ["open_bandit.csv", "aslib.csv", "fuzzbench.csv", "nab.csv"]
+                .into_iter()
+                .enumerate()
+            {
+                let path = root.join(name);
+                let contents = format!("fixture-{index}\n");
+                fs::write(&path, contents).expect("write fixture output");
+                outputs.push(serde_json::json!({
+                    "path": name,
+                    "bytes": fs::metadata(&path).expect("fixture metadata").len(),
+                    "sha256": sha256_path(&path).expect("fixture digest"),
+                }));
+            }
+            let provenance = serde_json::json!({
+                "format_version": 1,
+                "builder": "scripts/build_feedback_traces.py",
+                "outputs": outputs,
+            });
+            fs::write(
+                root.join("provenance.json"),
+                serde_json::to_vec_pretty(&provenance).expect("serialize provenance"),
+            )
+            .expect("write provenance");
+            Self { root }
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.root).expect("remove fixture directory");
+        }
+    }
+
+    #[test]
+    fn derived_outputs_match_provenance() {
+        let fixture = Fixture::new();
+        verify_derived_data(&fixture.root).unwrap();
+    }
+
+    #[test]
+    fn changed_output_is_rejected_with_its_path() {
+        let fixture = Fixture::new();
+        let changed = fixture.root.join("open_bandit.csv");
+        fs::write(&changed, "fixture-x\n").unwrap();
+        let error = verify_derived_data(&fixture.root).unwrap_err().to_string();
+        assert!(error.contains(&changed.display().to_string()));
+        assert!(error.contains("SHA-256"));
+    }
 }
