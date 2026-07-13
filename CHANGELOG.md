@@ -49,6 +49,14 @@
 
 ### Fixed
 
+- Router and window restoration now reject invalid capacities; runtime arm
+  insertion rejects empty names.
+- Generic assessment rejects empty objective lists and negative scalarization
+  weights instead of silently reversing or inventing preferences.
+- `triage_fraction = 0.0` now disables investigation picks, and invalid
+  fractions are rejected during router construction.
+- Delayed junk setters now enforce `hard_junk => junk` consistently with
+  outcome construction and deserialization.
 - `Router::acknowledge_change` no longer double-counts recent observations in
   the monitoring baseline.
 - Monitoring config validation now rejects window capacities that cannot satisfy

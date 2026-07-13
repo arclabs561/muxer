@@ -44,8 +44,8 @@ pub struct MetricObjective {
     pub metric: usize,
     /// Whether larger or smaller values are preferred.
     pub direction: Direction,
-    /// Scalarization weight. Zero keeps the Pareto axis but omits its
-    /// contribution to the scalarized tie-break.
+    /// Non-negative scalarization weight. Zero keeps the Pareto axis but omits
+    /// its contribution to the scalarized tie-break.
     pub weight: f64,
 }
 
@@ -219,6 +219,11 @@ fn validate_assessments(
     assessments: &[CandidateAssessment],
     objectives: &[MetricObjective],
 ) -> Result<(), logp::Error> {
+    if !assessments.is_empty() && objectives.is_empty() {
+        return Err(logp::Error::Domain(
+            "candidate selection requires at least one objective",
+        ));
+    }
     let mut names = std::collections::BTreeSet::new();
     for assessment in assessments {
         if assessment.arm.is_empty() || !names.insert(assessment.arm.clone()) {
@@ -241,9 +246,9 @@ fn validate_assessments(
                 "candidate objective metric index exceeds assessment dimensions",
             ));
         }
-        if !objective.weight.is_finite() {
+        if !objective.weight.is_finite() || objective.weight < 0.0 {
             return Err(logp::Error::Domain(
-                "candidate objective weights must be finite",
+                "candidate objective weights must be finite and non-negative",
             ));
         }
         if assessments.iter().any(|assessment| {
@@ -334,6 +339,21 @@ mod tests {
             MetricObjective::maximize(0, 1.0),
             MetricObjective::maximize(1, 1.0),
         ];
+        assert!(select_candidate_assessments(&assessments, &objectives).is_err());
+    }
+
+    #[test]
+    fn nonempty_assessments_require_an_objective() {
+        let assessments = [CandidateAssessment::new("a", 1, vec![1.0])];
+
+        assert!(select_candidate_assessments(&assessments, &[]).is_err());
+    }
+
+    #[test]
+    fn negative_objective_weights_are_rejected() {
+        let assessments = [CandidateAssessment::new("a", 1, vec![1.0])];
+        let objectives = [MetricObjective::maximize(0, -1.0)];
+
         assert!(select_candidate_assessments(&assessments, &objectives).is_err());
     }
 }

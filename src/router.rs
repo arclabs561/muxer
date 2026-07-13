@@ -76,10 +76,11 @@ pub struct RouterConfig {
     pub triage_cfg: Option<TriageSessionConfig>,
     /// Worst-first scoring for the triage investigation phase.
     pub triage_wf: WorstFirstConfig,
-    /// Fraction of k picks to route to alarmed arms during triage (clamped 0..1).
+    /// Fraction of k picks to route to alarmed arms during triage.
     ///
     /// Example: `0.5` means half the picks go to worst-first investigation,
-    /// half go to normal MAB selection.  Default: 0.5.
+    /// half go to normal MAB selection. Must be finite and in `[0.0, 1.0]`;
+    /// zero disables investigation picks. Default: 0.5.
     pub triage_fraction: f64,
 
     // --- Pipeline ---
@@ -198,6 +199,11 @@ impl RouterConfig {
                 "RouterConfig: window_cap must be non-zero",
             ));
         }
+        if !(0.0..=1.0).contains(&self.triage_fraction) {
+            return Err(logp::Error::Domain(
+                "RouterConfig: triage_fraction must be finite and in [0, 1]",
+            ));
+        }
         if !self.enable_monitoring {
             return Ok(());
         }
@@ -275,6 +281,15 @@ fn validate_snapshot(snap: &RouterSnapshot) -> Result<(), logp::Error> {
             "RouterSnapshot: window keys must match arm names",
         ));
     }
+    if snap
+        .windows
+        .values()
+        .any(|window| window.cap() != snap.cfg.window_cap)
+    {
+        return Err(logp::Error::Domain(
+            "RouterSnapshot: window capacity must match RouterConfig",
+        ));
+    }
 
     if snap.cfg.enable_monitoring != snap.monitored.is_some() {
         return Err(logp::Error::Domain(
@@ -294,6 +309,14 @@ fn validate_snapshot(snap: &RouterSnapshot) -> Result<(), logp::Error> {
         {
             return Err(logp::Error::Domain(
                 "RouterSnapshot: recent monitoring capacity must be smaller than baseline",
+            ));
+        }
+        if monitored.values().any(|window| {
+            window.baseline().cap() != snap.cfg.baseline_cap
+                || window.recent().cap() != snap.cfg.recent_cap
+        }) {
+            return Err(logp::Error::Domain(
+                "RouterSnapshot: monitoring capacities must match RouterConfig",
             ));
         }
     }
@@ -479,6 +502,7 @@ impl Router {
     /// Returns an error if triage is enabled and the CUSUM bank for the new
     /// arm cannot be initialised. Existing triage state is preserved.
     pub fn add_arm(&mut self, arm: String) -> Result<(), logp::Error> {
+        validate_arm_names(std::slice::from_ref(&arm))?;
         if self.arms.contains(&arm) {
             return Ok(());
         }
@@ -608,12 +632,17 @@ impl Router {
             .collect();
 
         // Step 2: Triage picks (investigation traffic).
-        let triage_k = if !eligible_alarmed.is_empty() {
-            let frac = self.cfg.triage_fraction.clamp(0.0, 1.0);
-            ((remaining_k as f64 * frac).ceil() as usize)
+        let available_alarmed = eligible_alarmed
+            .iter()
+            .filter(|arm| !chosen.contains(*arm))
+            .count();
+        let triage_k = if available_alarmed > 0 && remaining_k > 0 && self.cfg.triage_fraction > 0.0
+        {
+            let normal_reserve = usize::from(remaining_k > 1);
+            ((remaining_k as f64 * self.cfg.triage_fraction).ceil() as usize)
                 .max(1)
-                .min(eligible_alarmed.len())
-                .min(remaining_k.saturating_sub(1).max(1))
+                .min(available_alarmed)
+                .min(remaining_k - normal_reserve)
         } else {
             0
         };

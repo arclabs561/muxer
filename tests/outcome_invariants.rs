@@ -5,8 +5,8 @@
 //! 1. **`hard_junk ⊆ junk`**: for any sequence of outcomes pushed into a `Window`,
 //!    `summary.hard_junk <= summary.junk` always holds.
 //!
-//! 2. **`set_last_junk_level` contract**: setting `hard_junk=true` with `junk=false`
-//!    must clear `hard_junk` (the struct enforces `hard_junk && junk`).
+//! 2. **`set_last_junk_level` contract**: setting `hard_junk=true` forces
+//!    `junk=true`, matching `Outcome::new` and deserialization.
 //!
 //! 3. **Wilson half-width monotonicity**: more observations → tighter confidence
 //!    interval.  This is the operational basis for the two-clocks claim: more
@@ -113,15 +113,13 @@ proptest! {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn set_last_junk_level_hard_junk_cleared_when_junk_false() {
-    // Contract: `set_last_junk_level(false, true)` must NOT set hard_junk,
-    // because hard_junk is only meaningful when junk=true.
+fn set_last_junk_level_hard_junk_implies_junk() {
     let mut w = Window::new(10);
     w.push(Outcome::success(0, 0));
     w.set_last_junk_level(false, true); // junk=false, hard_junk=true (invalid combo)
     let s = w.summary();
-    assert_eq!(s.hard_junk, 0, "hard_junk must be cleared when junk=false");
-    assert_eq!(s.junk, 0, "junk must be 0");
+    assert_eq!(s.hard_junk, 1, "hard_junk must retain the severe label");
+    assert_eq!(s.junk, 1, "hard_junk must imply junk");
 }
 
 #[test]
@@ -160,8 +158,24 @@ fn identified_labels_update_the_matching_outcome_out_of_order() {
     assert!(w.set_junk_level_for_id(first, true, false));
     assert!(w.set_junk_level_for_id(second, false, true));
     let summary = w.summary();
-    assert_eq!(summary.junk, 1);
-    assert_eq!(summary.hard_junk, 0);
+    assert_eq!(summary.junk, 2);
+    assert_eq!(summary.hard_junk, 1);
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn window_deserialization_rejects_invalid_capacity() {
+    let mut window = Window::new(2);
+    window.push(Outcome::success(0, 0));
+    window.push(Outcome::success(0, 0));
+
+    let mut zero_capacity = serde_json::to_value(window.clone()).unwrap();
+    zero_capacity["cap"] = serde_json::json!(0);
+    assert!(serde_json::from_value::<Window>(zero_capacity).is_err());
+
+    let mut overfull = serde_json::to_value(window).unwrap();
+    overfull["cap"] = serde_json::json!(1);
+    assert!(serde_json::from_value::<Window>(overfull).is_err());
 }
 
 // ---------------------------------------------------------------------------

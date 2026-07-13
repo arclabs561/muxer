@@ -2,6 +2,7 @@
 
 use muxer::{
     ObservationId, Outcome, PipelineOrder, Router, RouterConfig, RouterMode, TriageSessionConfig,
+    Window,
 };
 use proptest::prelude::*;
 
@@ -15,6 +16,59 @@ fn bad() -> Outcome {
 
 fn arms(n: usize) -> Vec<String> {
     (0..n).map(|i| format!("arm{i}")).collect()
+}
+
+#[test]
+fn router_add_arm_rejects_an_empty_name() {
+    let mut router = Router::new(Vec::new(), RouterConfig::default()).unwrap();
+
+    assert!(router.add_arm(String::new()).is_err());
+    assert!(router.arms().is_empty());
+}
+
+#[test]
+fn router_rejects_invalid_triage_fractions() {
+    for triage_fraction in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
+        let cfg = RouterConfig {
+            triage_fraction,
+            ..RouterConfig::default()
+        };
+        assert!(Router::new(vec!["a".to_string()], cfg).is_err());
+    }
+}
+
+#[test]
+fn router_rejects_snapshot_window_capacity_mismatch() {
+    let router = Router::new(vec!["a".to_string()], RouterConfig::default()).unwrap();
+    let mut snapshot = router.snapshot();
+    snapshot.windows.insert("a".to_string(), Window::new(1));
+
+    assert!(Router::from_snapshot(snapshot).is_err());
+}
+
+#[test]
+fn zero_triage_fraction_allocates_no_investigation_picks() {
+    let triage_cfg = TriageSessionConfig {
+        min_n: 5,
+        threshold: 2.0,
+        ..TriageSessionConfig::default()
+    };
+    let cfg = RouterConfig {
+        triage_cfg: Some(triage_cfg),
+        triage_fraction: 0.0,
+        ..RouterConfig::default()
+    };
+    let mut router = Router::new(vec!["a".to_string()], cfg).unwrap();
+    for _ in 0..10 {
+        let _ = router.observe("a", clean());
+    }
+    for _ in 0..20 {
+        let _ = router.observe("a", bad());
+    }
+    assert!(router.mode().is_triage());
+
+    let decision = router.select(1, 0);
+    assert!(decision.triage_cells.is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -199,8 +253,8 @@ fn router_identified_labels_match_out_of_order_and_reject_duplicate_ids() {
     assert!(router.set_junk_level_for_id(first, true, false));
     assert!(router.set_junk_level_for_id(second, false, true));
     let summary = router.summary("arm0");
-    assert_eq!(summary.junk, 1);
-    assert_eq!(summary.hard_junk, 0);
+    assert_eq!(summary.junk, 2);
+    assert_eq!(summary.hard_junk, 1);
     assert!(!router.set_quality_score_for_id(ObservationId::new(99), 0.5));
 }
 

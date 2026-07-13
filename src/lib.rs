@@ -253,6 +253,11 @@ impl Outcome {
         self
     }
 
+    fn set_junk_level(&mut self, junk: bool, hard_junk: bool) {
+        self.junk = junk || hard_junk;
+        self.hard_junk = hard_junk;
+    }
+
     /// Create an outcome with the `hard_junk => junk` invariant enforced.
     ///
     /// If `hard_junk` is true, `junk` is forced to true regardless of the
@@ -365,12 +370,53 @@ impl<'de> serde::Deserialize<'de> for Outcome {
 
 /// Sliding-window statistics for an arm.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Window {
     cap: usize,
     buf: VecDeque<Outcome>,
     #[cfg_attr(feature = "serde", serde(default))]
     ids: VecDeque<Option<ObservationId>>,
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Window {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct Raw {
+            cap: usize,
+            buf: VecDeque<Outcome>,
+            #[serde(default)]
+            ids: VecDeque<Option<ObservationId>>,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+        if raw.cap == 0 {
+            return Err(serde::de::Error::custom(
+                "Window: capacity must be non-zero",
+            ));
+        }
+        if raw.buf.len() > raw.cap {
+            return Err(serde::de::Error::custom(
+                "Window: retained outcomes exceed capacity",
+            ));
+        }
+        if raw.ids.len() > raw.buf.len() {
+            return Err(serde::de::Error::custom(
+                "Window: observation IDs exceed retained outcomes",
+            ));
+        }
+
+        let mut window = Self {
+            cap: raw.cap,
+            buf: raw.buf,
+            ids: raw.ids,
+        };
+        window.align_ids();
+        Ok(window)
+    }
 }
 
 impl Window {
@@ -419,7 +465,7 @@ impl Window {
 
     pub(crate) fn push_with_optional_id(&mut self, id: Option<ObservationId>, o: Outcome) {
         self.align_ids();
-        if self.buf.len() == self.cap {
+        if self.buf.len() >= self.cap {
             self.buf.pop_front();
             self.ids.pop_front();
         }
@@ -450,16 +496,17 @@ impl Window {
 
     /// Best-effort: set “junk” and whether it is “hard junk” for the most recent outcome.
     ///
+    /// `hard_junk=true` forces `junk=true`, matching [`Outcome::new`].
     /// This is correct only if no later outcome has entered the window.
     pub fn set_last_junk_level(&mut self, junk: bool, hard_junk: bool) {
         if let Some(last) = self.buf.back_mut() {
-            last.junk = junk;
-            last.hard_junk = hard_junk && junk;
+            last.set_junk_level(junk, hard_junk);
         }
     }
 
     /// Update junk labels for the identified outcome.
     ///
+    /// `hard_junk=true` forces `junk=true`, matching [`Outcome::new`].
     /// Returns `true` when the ID is retained by this window.
     pub fn set_junk_level_for_id(
         &mut self,
@@ -470,8 +517,7 @@ impl Window {
         self.align_ids();
         for (candidate, outcome) in self.ids.iter().zip(self.buf.iter_mut()) {
             if *candidate == Some(id) {
-                outcome.junk = junk;
-                outcome.hard_junk = hard_junk && junk;
+                outcome.set_junk_level(junk, hard_junk);
                 return true;
             }
         }
