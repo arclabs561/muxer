@@ -39,7 +39,7 @@ serde = ["dep:serde"]
 stochastic = ["dep:rand", "dep:rand_distr"]
 contextual = ["dep:rand"]
 # Boltzmann (softmax-temperature) arm selection via drawset's Gumbel-max trick.
-# Adds a deterministic-with-seed alternative to Thompson and EXP3-IX.
+# Adds a stochastic softmax alternative to Thompson and EXP3-IX.
 boltzmann = ["dep:drawset"]
 
 [[bench]]

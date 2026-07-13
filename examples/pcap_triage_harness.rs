@@ -1,6 +1,6 @@
 //! PCAP triage harness example (network security), offline and deterministic.
 //!
-//! This demonstrates a realistic routing loop for packet-analysis backends:
+//! This demonstrates a domain-shaped routing loop for packet-analysis backends:
 //! - matrix slices are `(dataset, protocol, environment)`,
 //! - backend eligibility depends on protocol/data constraints,
 //! - muxer picks a small backend set per slice with coverage + guardrails,
@@ -82,7 +82,7 @@ fn observed_calls_and_elapsed(
 }
 
 fn simulated_outcome(round: u64, engine: &str, slice: PcapSlice) -> Outcome {
-    // One realistic drift: signature engine underperforms on encrypted traffic after a change.
+    // Inject one drift: the signature engine regresses on encrypted traffic.
     let tls_evasion_wave = round >= 52 && slice.protocol == "tls" && engine == "suricata_sig";
 
     let base_quality: f64 = match engine {

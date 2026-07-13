@@ -1,6 +1,6 @@
 //! Search-ranking harness example, offline and deterministic.
 //!
-//! This models a realistic retrieval/ranking routing loop:
+//! This models a domain-shaped retrieval/ranking routing loop:
 //! - slices are `(intent, locale, device)` traffic cells,
 //! - ranker eligibility varies by slice capabilities,
 //! - muxer picks a small ranker set with coverage + guardrails,

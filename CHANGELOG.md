@@ -10,6 +10,8 @@
   sample overlap.
 - Reproducible UCI validation scripts and multi-dataset trace examples covering
   categorical, numeric, mixed, and missing-value data.
+- Checksum-pinned Open Bandit, ASlib, FuzzBench, and NAB fetch/build scripts,
+  plus a native-schema feedback-regime evaluator over 362,662 derived rows.
 - Caller-owned `ObservationId` updates for delayed quality and junk labels that
   arrive after later observations for the same arm.
 - `Router::select_from`, which validates a request-local arm set and keeps
@@ -51,6 +53,8 @@
   observation time.
 - Described latency guardrails as empirical routing filters and worst-first
   scoring as quality-profile behavior rather than domain-neutral safety logic.
+- Pinned the five UCI source archives by byte count and SHA-256 digest. Cached
+  runs now revalidate raw inputs and refuse to overwrite unverified datasets.
 
 ### Fixed
 
@@ -77,6 +81,9 @@
   captured output matches the runnable example.
 - `RouterDecision::mab_eligible` now reports the actual candidate set passed to
   MAB selection after a NoveltyFirst guardrail fallback.
+- The `boltzmann` feature now builds without also enabling `stochastic`.
+- The real-data evaluator now rejects incomplete or modified derived outputs
+  with path-specific provenance errors before computing metrics.
 
 ## [0.5.3]
 

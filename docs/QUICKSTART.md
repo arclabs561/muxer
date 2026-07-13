@@ -83,7 +83,9 @@ assert_eq!(selection.chosen.as_deref(), Some("accurate"));
 
 Metric positions are caller-defined. The selector validates finite values and
 matching dimensions, then returns the frontier and resolved score rows for
-inspection or serialization.
+inspection or, with `serde`, serialization. It is stateless: the caller owns
+aggregation, normalization, history, and context. The `observations` value is
+diagnostic metadata and does not affect selection.
 
 ## Typical output shape
 
@@ -114,7 +116,7 @@ arm-b  calls=50  ok_rate=0.84  junk_rate=0.12  quality=0.65
 - **`missing field mean_quality_score`** when constructing `Summary`: add `mean_quality_score: None`.
 - **Triage never fires**: use `.with_triage()` on `RouterConfig`; default has no CUSUM.
 - **All arms always explore first**: expected behavior — each arm is tried once before
-  exploitation.  Use `select(k=3)` to batch initial exploration over many arms.
+  exploitation. Use `select(3, seed)` to batch initial exploration over many arms.
 - **An unavailable arm was selected**: pass the authoritative request-local set to
   `select_from`; Router filters are empirical preferences, not readiness checks.
 - **CI can't resolve muxer**: the crate is on [crates.io](https://crates.io/crates/muxer).

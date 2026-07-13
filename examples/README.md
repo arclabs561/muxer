@@ -7,14 +7,59 @@ failure-mode discussion, and longer experiment notes, see
 
 ## Start Here
 
-### `validation_trace_matrix`: how do the generic and quality paths behave on real data?
+### `feedback_regime_matrix`: how do four feedback regimes retain source semantics?
 
-Downloads are kept outside the repository. The script builds one common trace
-format from categorical, numeric, mixed, and missing-value UCI datasets. The
-example replays the traces through the quality-oriented `Router` and, separately,
-through `select_candidate_assessments` using rolling utility, cost, and latency
-vectors. The generic path is a full-information offline replay; the Router path
-only observes its selected arm.
+This offline matrix keeps four source schemas separate: logged rewards and
+propensities, full-information algorithm runs, fuzzer coverage trajectories,
+and annotated time-series windows. It exercises propensity estimators, the
+stateless `select_candidate_assessments` function, Pareto-frontier diagnostics,
+and marginal Hellinger comparisons without translating every source into
+`Outcome`, `junk`, or `hard_junk`. It does not use `Router` or perform NAB
+anomaly scoring.
+
+```bash
+uv run scripts/fetch_feedback_datasets.py
+uv run scripts/build_feedback_traces.py
+cargo run --example feedback_regime_matrix
+```
+
+The full run uses 362,662 derived rows. This is abridged output from commit
+`8447c281f2e54d459093c56c5d214c215e64ea41`:
+
+```text
+logger   rows   support  click    ips      snips    ess       max_weight
+random  10000     4995   0.0038   0.0034   0.0034    4995.0        2.00
+bts     10000     3645   0.0042   0.0012   0.0011     177.8      294.12
+
+scenario                    instances  ascending   descending  fixed        oracle       gap_range
+CSP-Minizinc-Time-2016            100   3375.9088   3648.7464   3372.4510   2061.8024  1314.106..1586.944
+OPENML-WEKA-2017                  105      0.8528      0.8484      0.8557      0.8757   0.023.. 0.027
+
+spread weight sensitivity (benchmarks choosing below-best median):
+  weight=0.00: 0/20
+  weight=0.10: 1/20
+  weight=0.50: 1/20
+baseline fraction sensitivity (streams with larger annotated drift):
+  baseline=1/5: 3/5
+  baseline=1/3: 3/5
+  baseline=1/2: 3/5
+```
+
+The ASlib oracle is a per-instance hindsight reference. The FuzzBench best
+median is a post-hoc aggregate over final trial coverage. Neither is available
+to an online policy. See [`EXPERIMENTS.md`](EXPERIMENTS.md) for the
+pre-registered directions, result summary, and limitations.
+
+### `validation_trace_matrix`: how do the generic and quality paths behave on classification data?
+
+Downloads are kept under the ignored `data/` tree. The script builds one common
+trace format from whichever supported categorical, numeric, mixed, and
+missing-value UCI datasets are present; it fails only when none are available.
+The example replays the traces through the quality-oriented `Router` and,
+separately, through `select_candidate_assessments` using caller-maintained
+rolling utility, cost, and latency vectors. The generic path is a
+full-information offline replay; the Router path only observes its selected
+arm.
 
 ```bash
 scripts/fetch_validation_datasets.sh data/uci
@@ -23,14 +68,18 @@ cargo run --example validation_trace_matrix -- data/traces/classification-traces
 ```
 
 The trace fields are deliberately explicit (`label`, `predicted`, `cost_units`,
-`elapsed_ms`). A caller with a different schema can use
-`select_candidate_assessments` directly instead of manufacturing `Outcome`
-flags.
+`elapsed_ms`). The builder maps every misclassification to `junk`; only a
+misclassified caller-designated hard label becomes `hard_junk`. In the
+mushroom data, that means a poisonous mushroom predicted edible. This is an
+example caller policy, not a generic muxer rule. A caller with a different
+schema can use `select_candidate_assessments` directly instead of manufacturing
+`Outcome` flags.
 
-The current local trace has 6,499 mushroom, 1,382 car, 36,168 bank, 1,279 red
-wine, 3,918 white wine, and 39,073 adult evaluation rows. The resulting
-quality-router and generic-selector accuracies are printed per dataset; the
-per-row oracle is an offline upper reference, not a deployment estimate.
+With all five source archives present, the trace has 6,499 mushroom, 1,382 car,
+36,168 bank, 1,279 red-wine, 3,918 white-wine, and 39,073 adult evaluation
+rows. The resulting quality-router and generic-selector accuracies are printed
+per dataset; the per-row oracle is an offline upper reference, not a deployment
+estimate.
 
 ### `getting_started`: what does the basic routing loop do?
 
@@ -124,7 +173,9 @@ verifier          137  1.000  0.066    0.889      12.00    631.5
 Replays the UCI Mushroom data through three fixed policies: a majority-class
 baseline, an odor-only classifier, and a categorical naive-Bayes classifier.
 The router sees only the selected policy's outcome; the full trace is used as
-an offline per-row oracle reference.
+an offline per-row oracle reference. The example classifies every error as
+`junk` and only a poisonous mushroom predicted edible as `hard_junk`; that is
+the caller's severity mapping for this example.
 
 ```bash
 curl -L https://archive.ics.uci.edu/static/public/73/mushroom.zip -o /tmp/mushroom.zip

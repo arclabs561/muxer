@@ -10,4 +10,4 @@
 | docs/design/api-1.0-checklist.md | PROPOSAL | 1.0 API release gates |
 | docs/design/ope-primitives.md | IMPLEMENTED | Minimal off-policy evaluation surface |
 | docs/design/muxer-tower.md | PROPOSAL | Tower integration boundary |
-| examples/EXPERIMENTS.md | NOTE | Theoretical background; may drift |
+| examples/EXPERIMENTS.md | ACTIVE | Experiment commands, measured outputs, and scoped limitations |

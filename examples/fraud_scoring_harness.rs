@@ -1,6 +1,6 @@
 //! Fraud-scoring harness example (payments risk), offline and deterministic.
 //!
-//! This models a realistic risk-routing loop:
+//! This models a domain-shaped risk-routing loop:
 //! - slices are `(channel, region, segment)` traffic cells,
 //! - scorer eligibility depends on feature availability by slice,
 //! - muxer picks a small scorer set with coverage + guardrails,

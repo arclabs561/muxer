@@ -1,20 +1,25 @@
 # `muxer` examples: make routing tradeoffs visible
 
-These programs are intentionally small. They exist so you can **see** the failure modes in the output:
-starvation, detector inertia, false alarms, and “fast on mean” vs “reliable on tail”.
+Most programs are small enough to expose one failure mode directly in their
+output: starvation, detector inertia, false alarms, and “fast on mean” versus
+“reliable on tail.” The real-data matrix is larger because it preserves four
+source schemas and their provenance.
 
 ## Start here (recommended order)
 
 - `cargo run --example guardrail_semantics`
   - shows where empirical latency filtering runs relative to novelty/coverage.
 - `cargo run --example coverage_autotune --features stochastic`
-  - turns a wall-delay target into a `CoverageConfig` floor using \(h/KL\), then simulates.
+  - turns a wall-delay target into a `CoverageConfig` floor using $h/KL$, then simulates.
 - `cargo run --example bqcd_sampling --features stochastic`
   - shows why “focus” without coverage can look great on mean and bad on det_rate/p90.
 - `cargo run --example significant_shift_sim --features stochastic`
   - shows why a harmless non-best-arm drift should not necessarily restart routing.
 - `cargo run --example off_policy_evaluation`
   - shows why logged rewards need propensities before offline target-policy evaluation.
+- `cargo run --example feedback_regime_matrix`
+  - applies separate evaluators to logged bandit, algorithm-selection,
+    fuzzer-coverage, and annotated time-series data.
 
 ## Applied harness examples
 
@@ -64,27 +69,85 @@ generated CSVs live under the ignored `data/` directory.
 Hypothesis:
 - Native-schema replays will expose limitations hidden by the classification
   traces: lower effective support under Thompson-sampling logs than uniform
-  logs, a nonzero gap between history-only algorithm selection and a per-instance
-  oracle, coverage-versus-stability tradeoffs across fuzzers, and larger
-  categorical drift inside annotated windows than held-out normal periods for
-  at least three of five streams.
+  logs, a nonzero gap between order-dependent algorithm selection and a
+  per-instance hindsight oracle, median-final-coverage versus cross-trial-IQR
+  tradeoffs across fuzzers, and larger marginal four-bin Hellinger distance
+  inside annotated windows than held-out normal periods for at least three of
+  five streams.
+
+The terminology above was tightened after the run without changing the four
+recorded directional predictions.
 
 Method:
-- Fetch checksum-pinned small releases from Open Bandit Dataset, ASlib,
-  FuzzBench, and NAB into `data/feedback/raw/`.
+- Fetch checksum-pinned artifacts from [Open Bandit Dataset], [ASlib],
+  [FuzzBench], and [NAB] into `data/feedback/raw/`.
 - Build four separate derived schemas under `data/feedback/derived/`; do not
   coerce clicks, runtimes, edge counts, or anomaly windows into `Outcome` flags.
 - Replay the schemas through scalar OPE, metric-vector selection, Pareto
-  filtering, and categorical drift. Report each dataset separately and keep
-  the per-instance or per-trial oracle as an offline reference only.
+  filtering, and marginal four-bin Hellinger comparisons. Report each dataset
+  separately. Keep the per-instance oracle and post-hoc best median as offline
+  references only.
 
 Data provenance:
 - Source revisions, URLs, byte counts, and SHA-256 digests live in
   `scripts/feedback_sources.toml`. The build writes a deterministic provenance
-  record beside the ignored derived data.
+  record beside the ignored derived data. The evaluator verifies all four
+  derived byte counts and digests before computing metrics.
 
 Results:
-- Not recorded. This hypothesis was written before the first evaluation run.
+- The hypothesis above was recorded before the first run. The sensitivity run
+  was captured from commit `8447c281f2e54d459093c56c5d214c215e64ea41`:
+
+  ```bash
+  uv run scripts/fetch_feedback_datasets.py
+  uv run scripts/build_feedback_traces.py
+  cargo run --example feedback_regime_matrix
+  ```
+
+- The four derived files contained 362,662 rows: 20,000 Open Bandit rows,
+  5,150 ASlib runs, 303,134 FuzzBench trajectory points, and 34,378 NAB
+  observations.
+- Open Bandit: the evaluator-defined target is uniform over item IDs 0 through
+  39. The uniform logger had effective sample size 4,995.0 and maximum
+  importance weight 2.00. The Bernoulli Thompson-sampling logger had effective
+  sample size 177.8 and maximum weight 294.12 despite 3,645 of 10,000 rows
+  having nonzero target support. Clicks are sparse and no uncertainty interval
+  is reported, so these IPS and SNIPS values diagnose overlap rather than
+  establish a policy-value conclusion.
+- ASlib: the order-dependent full-information selector's gap to the
+  per-instance hindsight oracle changed from 1,314.106 to 1,586.944 PAR10
+  under ascending versus descending instance order for CSP-Minizinc, and from
+  0.023 to 0.027 accuracy for OPENML-WEKA. The fixed aggregate choice beat the
+  history-based selection in both scenarios. The replay uses no instance
+  features and updates every algorithm after every instance.
+- FuzzBench: a zero spread penalty chose the best median coverage on all 20
+  benchmarks. At each tested positive weight (0.05, 0.10, 0.25, and 0.50), the
+  selector accepted lower median coverage on one benchmark. This is a post-hoc
+  final-coverage aggregation, not online trajectory routing; a zero scalar
+  weight also leaves the IQR dimension on the Pareto frontier.
+- NAB: marginal four-bin Hellinger distance was larger inside annotated windows
+  than in held-out normal rows for NYC taxi, traffic speed, and Twitter AAPL,
+  but not for ad-exchange CPC or AWS CPU. The count remained 3 of 5 with
+  baseline fractions of one fifth, one third, and one half. The comparison
+  ignores temporal ordering and does not evaluate NAB anomaly scores.
+
+Interpretation and limits:
+- All four directional predictions held. The FuzzBench result affected only one
+  benchmark, and the NAB direction reversed on two streams, so neither should
+  be generalized to every workload.
+- Native schemas composed with existing muxer primitives without coercion into
+  `Outcome`. No one-schema baseline was tested, so the run does not establish
+  that separate schemas are necessary or superior. It also does not show that
+  the quality `Router` is domain-neutral or justify a generic stateful router.
+- The runs are offline diagnostics over 14 pinned artifacts from four source
+  projects. Hindsight references and post-hoc aggregates use information
+  unavailable to an online policy. No result is a deployment guarantee or a
+  cross-dataset ranking of algorithms.
+
+[Open Bandit Dataset]: https://github.com/st-tech/zr-obp
+[ASlib]: https://github.com/coseal/aslib_data
+[FuzzBench]: https://google.github.io/fuzzbench/
+[NAB]: https://github.com/numenta/NAB
 
 ### `uci_mushroom_router.rs`
 
@@ -114,10 +177,10 @@ about deployment performance.
 
 In bandit sensing, you only observe an arm when you sample it.
 
-- **Wall time** \(t\): global decision steps.
-- **Sample time** \(n_k\): observations from a particular arm.
+- **Wall time** $t$: global decision steps.
+- **Sample time** $n_k$: observations from a particular arm.
 
-A useful approximation is \(delay\_{wall} \approx delay\_{samples} / sampling\_{rate}\).
+A useful approximation is $delay\_{wall} \approx delay\_{samples} / sampling\_{rate}$.
 Coverage targets a minimum empirical sampling share in these simulations.
 
 ### Drift feature vs alarm
@@ -127,7 +190,7 @@ Coverage targets a minimum empirical sampling share in these simulations.
 
 ### False alarms (simulation target)
 
-`detector_calibration` and `bqcd_calibrated` use: \(P_\infty[\tau < m] \le \alpha\).
+`detector_calibration` and `bqcd_calibrated` use: $P_\infty[\tau < m] \le \alpha$.
 This target is evaluated in each program's finite synthetic world. It is not a
 system-wide guarantee for `Router`.
 
@@ -201,11 +264,11 @@ cargo run --example detector_calibration --features stochastic
 
 What it does:
 - Selects thresholds whose in-sample null alarm estimate meets
-  \(\hat P_\infty[\tau < m] \le \alpha\) at a given sampling interval.
+  $\hat P_\infty[\tau < m] \le \alpha$ at a given sampling interval.
 - Evaluates post-change sample delays under a fixed shift.
 - Uses the same “threshold-free max-score” trick as `bqcd_calibrated`:
-  simulate the null once per trial with `threshold=+∞`, record \(M=\max_{t<m} S(t)\), then pick the smallest
-  grid threshold \(h\) such that \(\hat P[M \ge h] \le \alpha\) (optionally requiring a Wilson upper bound).
+  simulate the null once per trial with `threshold=+∞`, record $M=\max_{t<m} S(t)$, then pick the smallest
+  grid threshold $h$ such that $\hat P[M \ge h] \le \alpha$ (optionally requiring a Wilson upper bound).
 
 Notes:
 - You can control the calibration conservatism via `CAL_Z` (default `1.96`) and `CAL_REQUIRE_WILSON=1`.
@@ -226,7 +289,7 @@ cargo run --example bqcd_sampling --features stochastic
 ```
 
 What it does:
-- K-armed bandit sensing: exactly one arm changes at time \(\nu\).
+- K-armed bandit sensing: exactly one arm changes at time $\nu$.
 - Stops on a CUSUM alarm; compares sampling policies:
   - `round_robin`
   - epsilon-focus on “most suspicious” arm, where suspicion is CatKL vs CUSUM score
@@ -249,16 +312,16 @@ cargo run --example coverage_autotune --features stochastic
 ```
 
 What it does:
-- K-armed bandit sensing with one changed arm at time \(\nu\), like `bqcd_sampling`.
+- K-armed bandit sensing with one changed arm at time $\nu$, like `bqcd_sampling`.
 - Sampling policy: coverage-quota pre-picks, otherwise focus on max CUSUM score.
-- “Autotunes” a coverage floor for a target wall delay \(W\) using the information-theoretic scaling:
-  - predicted post-change samples \(N \approx h / KL(p_1\|p_0)\)
-  - target per-arm sampling floor \(r := N / W\) (capped at \(1/K\) for feasibility)
-- Prints predicted vs empirical behavior, including a `wrong` rate for “alarmed on the wrong arm after \(\nu\)”.
+- “Autotunes” a coverage floor for a target wall delay $W$ using the information-theoretic scaling:
+  - predicted post-change samples $N \approx h / KL(p_1\|p_0)$
+  - target per-arm sampling floor $r := N / W$ (capped at $1/K$ for feasibility)
+- Prints predicted vs empirical behavior, including a `wrong` rate for “alarmed on the wrong arm after $\nu$”.
 
 Takeaway:
-- \(h/KL\) is a decent predictor of **post-change samples** (the “sample clock”).
-- Meeting a **wall-clock** target requires you to translate \(h/KL\) into a minimum sampling rate,
+- $h/KL$ is a decent predictor of **post-change samples** (the “sample clock”).
+- Meeting a **wall-clock** target requires you to translate $h/KL$ into a minimum sampling rate,
   and `CoverageConfig` gives you a direct control for that.
 
 ### 6) `significant_shift_sim.rs`
@@ -292,15 +355,15 @@ cargo run --release --example bqcd_calibrated --features stochastic
 ```
 
 What it does:
-- Same “exactly one arm changes at time \(\nu\)” world as `bqcd_sampling`, but adds **two knobs**:
-  - **Toy-world multi-arm false-alarm calibration**: for each (policy, alt-bank) pair, choose a threshold \(h\)
-    so that under the null \(P_\infty^\pi[\tau < m] \le \alpha\), where \(\tau\) is the first alarm across *any* arm.
-  - **Unknown post-change robustification (GLR-lite)**: instead of one \(p_1\), run a small bank of CUSUMs
-    (one per alternative) and alarm if \(\max_j S^{(j)}_t \ge h\).
+- Same “exactly one arm changes at time $\nu$” world as `bqcd_sampling`, but adds **two knobs**:
+  - **Toy-world multi-arm false-alarm calibration**: for each (policy, alt-bank) pair, choose a threshold $h$
+    so that under the null $P_\infty^\pi[\tau < m] \le \alpha$, where $\tau$ is the first alarm across *any* arm.
+  - **Unknown post-change robustification (GLR-lite)**: instead of one $p_1$, run a small bank of CUSUMs
+    (one per alternative) and alarm if $\max_j S^{(j)}_t \ge h$.
 - Calibration is implemented via a threshold-free statistic:
   - simulate the null once per trial (with “never alarm” threshold),
-  - record \(M=\max_{t<m,\;arm,\;alt} S_{arm,alt}(t)\) (only after `min_n` for that arm),
-  - then pick the smallest grid threshold \(h\) with \(\hat P[M\ge h]\le \alpha\).
+  - record $M=\max_{t<m,\;arm,\;alt} S_{arm,alt}(t)$ (only after `min_n` for that arm),
+  - then pick the smallest grid threshold $h$ with $\hat P[M\ge h]\le \alpha$.
 - Reports for each configuration:
   threshold found, estimated null FA rate, shift FA rate, detection rate, mean wall delay,
   mean post-change samples on the changed arm, fraction of pulls spent on the changed arm,

@@ -27,7 +27,8 @@
 //! - **Non-stationarity friendly**: sliding-window summaries, not lifetime averages.
 //! - **Multi-objective**: Pareto frontier over configurable [`Objective`] dimensions,
 //!   then scalarization.  [`default_objectives`] provides ok/junk/cost/latency/quality.
-//! - **Small K**: designed for 2–10 arms; not intended for K in the hundreds.
+//! - **Small to moderate K**: examples and tests cover up to 30 arms; the crate
+//!   is not intended for K in the hundreds.
 //!
 //! **Selection policies:**
 //! - [`select_mab`] / [`select_mab_explain`] / [`select_mab_monitored_explain`]:

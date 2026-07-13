@@ -3,10 +3,10 @@
 [![crates.io](https://img.shields.io/crates/v/muxer.svg)](https://crates.io/crates/muxer)
 [![Documentation](https://docs.rs/muxer/badge.svg)](https://docs.rs/muxer)
 
-Multi-objective arm selection and bandit routing with drift detection.
+Multi-objective bandit routing with drift detection.
 
-Select among K arms using caller-defined metric vectors or the built-in
-quality-oriented router. Handles non-stationary reward distributions.
+Select among K arms from caller-aggregated metric vectors, or use the stateful
+quality router with rolling windows and drift detection.
 
 See [examples/EXPERIMENTS.md](examples/EXPERIMENTS.md) for simulations and failure modes.
 
@@ -23,6 +23,15 @@ Deterministic core only (no stochastic bandits):
 [dependencies]
 muxer = { version = "0.5", default-features = false }
 ```
+
+### Feature flags
+
+| Feature | Default | Adds |
+| --- | --- | --- |
+| `stochastic` | yes | Thompson sampling and EXP3-IX |
+| `contextual` | no | `LinUcb` contextual selection |
+| `serde` | no | serialization for supported public configs and state |
+| `boltzmann` | no | stochastic Gumbel-max softmax selection |
 
 ## Quickstart
 
@@ -110,8 +119,10 @@ let selection = select_candidate_assessments(&candidates, &objectives).unwrap();
 assert_eq!(selection.chosen.as_deref(), Some("accurate"));
 ```
 
-`Router`, `Outcome`, and `Summary` form the built-in quality-routing profile.
-Use the metric-vector selector when the feedback schema is different.
+`select_candidate_assessments` is stateless. The caller owns aggregation,
+normalization, history, and context; `observations` is diagnostic metadata and
+does not affect selection. `Router`, `Outcome`, and `Summary` form the separate
+stateful quality-routing profile.
 
 ### Detect-then-triage
 
@@ -139,13 +150,29 @@ cargo run --release --example llm_gateway_harness  # model routing under drift
 cargo run --example router_quickstart      # eligibility, routing, and CUSUM triage
 cargo run --example router_production --features stochastic  # combined config demo
 cargo run --example off_policy_evaluation  # IPS over logged rewards and propensities
+cargo run --example feedback_regime_matrix # real data; preparation in examples/README.md
 ```
 
 Algorithm variants: `deterministic_router`, `thompson_router`, `exp3ix_router`, `contextual_router` (requires `contextual` feature), `sticky_mab_router`, `monitored_router`.
 
-Domain harnesses simulate realistic routing with injected drift: LLM gateways (`llm_gateway_harness`), NLP (`matrix_harness`), network security (`pcap_triage_harness`), ad ranking, fraud scoring, clinical triage, search ranking.
+Domain harnesses simulate domain-shaped routing with injected drift: LLM
+gateways (`llm_gateway_harness`), NLP (`matrix_harness`), network security
+(`pcap_triage_harness`), ad ranking, fraud scoring, clinical triage, and search
+ranking.
 
 See [examples/README.md](examples/README.md) for runnable examples with captured output, and [examples/EXPERIMENTS.md](examples/EXPERIMENTS.md) for mini-experiments on trade-offs and failure modes.
+
+## Limitations
+
+The generic metric-vector selector does not retain observations or learn a
+policy. Callers that need stateful aggregation, contextual models, or online
+updates own that state. The built-in `Router` is stateful, but its `Outcome`,
+`Summary`, objectives, and triage categories form a quality-oriented profile.
+
+Latency filters, rolling-window comparisons, and detector thresholds are
+empirical routing mechanisms. They are not hard safety constraints or
+system-wide regret, false-alarm, or detection-delay guarantees. Request-local
+eligibility remains a caller decision enforced through `Router::select_from`.
 
 ## Development
 
