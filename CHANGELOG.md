@@ -46,6 +46,11 @@
   arbitrary metric schemas through `select_candidate_assessments`.
 - Preserved unaffected triage detector and cell history when arms are added or
   removed.
+- Clarified that delayed junk setters correct retained summaries without
+  replaying triage history, and that categorical triage labels are final at
+  observation time.
+- Described latency guardrails as empirical routing filters and worst-first
+  scoring as quality-profile behavior rather than domain-neutral safety logic.
 
 ### Fixed
 

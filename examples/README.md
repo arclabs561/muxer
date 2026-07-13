@@ -56,10 +56,11 @@ Best arm now: "claude-sonnet"  (mode: Normal)
 With quality_weight=1.0: best arm is "gpt-4o"
 ```
 
-### `guardrail_semantics`: are guardrails hard constraints?
+### `guardrail_semantics`: where does latency filtering run?
 
-Compares the soft pipeline, where novelty and coverage can pre-pick arms before
-guardrails, with the guardrail-first pipeline.
+Compares the fallback pipeline, where novelty and coverage can pre-pick arms
+before latency filtering, with the filter-first pipeline, where the empirical
+filter is strict inside the novelty/coverage/selector policy stage.
 
 ```bash
 cargo run --example guardrail_semantics
@@ -67,12 +68,12 @@ cargo run --example guardrail_semantics
 ```text
 == guardrail semantics demo ==
 -- novelty + require_measured --
-soft (novelty before guardrail): chosen=["unseen"]
-hard (guardrail first, strict): chosen=["seen"], stopped_early=false
+fallback (novelty first): chosen=["unseen"]
+filter-first: chosen=["seen"], stopped_early=false
 
 -- coverage + require_measured --
-soft (coverage before guardrail): chosen=["c"]
-hard (guardrail first, strict): chosen=["b"], stopped_early=false
+fallback (coverage first): chosen=["c"]
+filter-first: chosen=["b"], stopped_early=false
 ```
 
 ## Routing Harnesses

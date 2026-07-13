@@ -1,6 +1,11 @@
 //! `muxer`: deterministic, multi-objective routing primitives for
 //! piecewise-stationary multi-armed bandit problems.
 //!
+//! The crate has two layers. [`CandidateAssessment`], policy types, and
+//! monitoring primitives accept caller-defined values. [`Router`], [`Outcome`],
+//! and [`Summary`] form a built-in quality-routing profile with `junk`,
+//! `hard_junk`, cost, and latency semantics.
+//!
 //! Given `K` arms (model versions, inference endpoints, backends, or any
 //! discrete action set selected repeatedly), the agent observes
 //! vector-valued outcomes per call and selects the next arm.  Reward
@@ -42,7 +47,8 @@
 //!   per-cell (`arm × context-bin`) investigation.
 //! - [`WorstFirstConfig`] / [`worst_first_pick_k`]: post-detection investigation routing.
 //! - [`CoverageConfig`] / [`coverage_pick_under_sampled`]: maintenance sampling floor.
-//! - [`LatencyGuardrailConfig`]: hard pre-filter by mean latency.
+//! - [`LatencyGuardrailConfig`]: empirical mean-latency filter. Its strict
+//!   policy-stage mode is not an external safety or readiness constraint.
 //! - [`PipelineOrder`] / [`policy_plan_generic`] / [`policy_fill_generic`]: harness glue.
 //! - [`ObservationId`]: caller-owned identity for out-of-order delayed labels.
 //! - [`LoggedReward`] / [`ips_value`] / [`self_normalized_ips_value`]: scalar
@@ -83,6 +89,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 /// IDs let delayed labels update the observation that produced them instead of
 /// relying on the latest observation for an arm. The caller must not reuse an ID
 /// while the corresponding observation may still be retained by a [`Window`].
+/// Router-level setters correct retained windows but do not replay triage
+/// detector history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ObservationId(u64);

@@ -473,6 +473,32 @@ fn router_delayed_junk_labeling_updates_windows() {
 }
 
 #[test]
+fn delayed_junk_labels_do_not_rewrite_triage_history() {
+    let triage_cfg = TriageSessionConfig {
+        min_n: 5,
+        threshold: 2.0,
+        ..TriageSessionConfig::default()
+    };
+    let cfg = RouterConfig::default().with_triage_cfg(triage_cfg);
+    let mut delayed = Router::new(vec!["arm0".to_string()], cfg.clone()).unwrap();
+    let mut direct = Router::new(vec!["arm0".to_string()], cfg).unwrap();
+
+    for id in 0..10 {
+        assert!(delayed.observe_with_id(ObservationId::new(id), "arm0", clean()));
+        let _ = direct.observe("arm0", clean());
+    }
+    for id in 10..30 {
+        assert!(delayed.observe_with_id(ObservationId::new(id), "arm0", clean()));
+        assert!(delayed.set_junk_level_for_id(ObservationId::new(id), true, true));
+        let _ = direct.observe("arm0", bad());
+    }
+
+    assert_eq!(delayed.summary("arm0").hard_junk, 20);
+    assert_eq!(delayed.mode(), RouterMode::Normal);
+    assert!(direct.mode().is_triage());
+}
+
+#[test]
 fn router_control_picks_subset_of_chosen() {
     let cfg = RouterConfig::default().with_control(1);
     let r = Router::new(arms(5), cfg).unwrap();

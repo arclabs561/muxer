@@ -305,7 +305,7 @@ impl Exp3Ix {
     ///
     /// This is designed for callers that:
     /// - keep persistent EXP3-IX state across process runs
-    /// - apply external hard constraints (e.g. latency guardrail) that shrink the eligible set
+    /// - apply external eligibility constraints that shrink the eligible set
     /// - want a deterministic decision given a seed, without persisting RNG state
     ///
     /// The returned `Decision.probs` is the distribution that selected the arm.
@@ -378,9 +378,10 @@ impl Exp3Ix {
 
     /// Update EXP3-IX with a bounded reward in `[0, 1]`, using an explicit probability.
     ///
-    /// This is useful when the decision was made from a filtered/renormalized distribution
-    /// (e.g. a latency guardrail) and you want the importance weighting to use the exact
-    /// probability mass function that was actually sampled. Non-finite rewards are ignored.
+    /// This is useful when the decision was made from a filtered/renormalized
+    /// distribution (for example, after filtering by observed latency) and you
+    /// want the importance weighting to use the exact probability mass function
+    /// that was actually sampled. Non-finite rewards are ignored.
     pub fn update_reward_with_prob(&mut self, arm: &str, reward01: f64, prob_used: f64) {
         if self.arms.is_empty() || !reward01.is_finite() {
             return;

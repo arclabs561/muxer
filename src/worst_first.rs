@@ -32,7 +32,8 @@ pub struct WorstFirstConfig {
 /// - Otherwise pick the arm with the highest "worse" score:
 ///   \(score = hard_weight * hard_junk + soft_weight * soft_junk + exploration_c * sqrt(ln(total_calls) / calls)\).
 ///
-/// This helper is domain-agnostic: callers supply observed calls and summary rates/calls.
+/// The helper is independent of caller storage, but its hard/soft-junk score is
+/// specific to the quality-routing profile.
 pub fn worst_first_pick_one<FObs, FSum>(
     seed: u64,
     remaining: &[String],

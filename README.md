@@ -61,6 +61,11 @@ assert!(router.observe_with_id(id, "backend-b", Outcome::success(5, 120)));
 assert!(router.set_quality_score_for_id(id, 0.9));
 ```
 
+These setters correct retained window summaries only. They do not replay
+triage detectors. When triage is enabled, pass final `ok`, `junk`, and
+`hard_junk` categories to `observe_with_id`; continuous quality scores may
+arrive later.
+
 For larger arm counts, pass `k > 1` to batch exploration:
 
 ```rust
@@ -105,8 +110,8 @@ let selection = select_candidate_assessments(&candidates, &objectives).unwrap();
 assert_eq!(selection.chosen.as_deref(), Some("accurate"));
 ```
 
-`Router`, `Outcome`, and `Summary` remain the quality-profile adapter. Use the
-metric-vector selector when the feedback schema is different.
+`Router`, `Outcome`, and `Summary` form the built-in quality-routing profile.
+Use the metric-vector selector when the feedback schema is different.
 
 ### Detect-then-triage
 

@@ -1,7 +1,11 @@
 /// Latency guardrail configuration.
 ///
-/// This is an external hard filter typically applied *before* selection:
-/// exclude arms whose mean elapsed time is above `max_mean_ms`.
+/// This empirical filter excludes arms whose observed mean elapsed time is
+/// above `max_mean_ms`. [`crate::PipelineOrder::GuardrailFirst`] makes the
+/// result strict within the novelty/coverage/MAB policy stage; Router control
+/// and triage picks still run before it. This is not a safety, capability, or
+/// readiness constraint. Pass authoritative eligibility to
+/// [`crate::Router::select_from`] instead.
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LatencyGuardrailConfig {

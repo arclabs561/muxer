@@ -116,11 +116,13 @@ cargo run --example guardrail_semantics
 
 What it does:
 - Prints two tiny scenarios that show the difference between:
-  - the default “soft” pipeline (novelty/coverage pre-picks happen before guardrails), and
-  - the “guardrail-first” pipeline (strict guardrails happen first).
+  - the default fallback pipeline (novelty/coverage pre-picks happen before latency filtering), and
+  - the filter-first pipeline (latency filtering happens first with no fallback).
 
 Takeaway:
-- Decide whether guardrails are **soft preferences** or **hard constraints**, and pick the pipeline accordingly.
+- Choose whether an empirical latency filter runs before or after
+  novelty/coverage inside the policy stage. Authoritative safety and readiness
+  eligibility belongs in the caller-provided candidate set.
 
 ### 1) `free_lunch_investigation.rs`
 

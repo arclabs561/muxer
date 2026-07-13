@@ -895,7 +895,8 @@ impl Router {
     ///
     /// This is correct only if no later outcome for the same arm has been recorded.
     /// It patches retained windows but does not replay `TriageSession` detector or
-    /// cell-tracker state.
+    /// cell-tracker state. When triage is enabled, categorical labels passed to
+    /// [`Router::observe`] are final for detector history.
     pub fn set_last_junk_level(&mut self, arm: &str, junk: bool, hard_junk: bool) {
         if let Some(w) = self.windows.get_mut(arm) {
             w.set_last_junk_level(junk, hard_junk);
@@ -911,7 +912,9 @@ impl Router {
     ///
     /// Returns `true` when the ID is still retained by at least one window.
     /// Like the `set_last_*` methods, this patches retained windows but does not
-    /// replay triage detector or cell-tracker state.
+    /// replay triage detector or cell-tracker state. When triage is enabled,
+    /// categorical labels passed to [`Router::observe_with_id`] are final for
+    /// detector history.
     #[must_use]
     pub fn set_junk_level_for_id(
         &mut self,

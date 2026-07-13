@@ -15,6 +15,8 @@ pub struct CandidateAssessment {
     /// Arm identifier.
     pub arm: String,
     /// Number of observations represented by this assessment.
+    ///
+    /// This is diagnostic metadata and does not affect selection.
     pub observations: u64,
     /// Caller-defined metric vector.
     pub metrics: Vec<f64>,
@@ -91,7 +93,7 @@ pub struct MetricObjectiveValue {
 pub struct CandidateAssessmentDebug {
     /// Arm identifier.
     pub arm: String,
-    /// Observation count supplied by the caller.
+    /// Diagnostic observation count supplied by the caller.
     pub observations: u64,
     /// Caller-defined metric vector.
     pub metrics: Vec<f64>,
@@ -116,8 +118,9 @@ pub struct CandidateAssessmentSelection {
 /// Select from caller-provided metric vectors.
 ///
 /// This function does not know about rewards, quality labels, costs, latency,
-/// or monitoring categories. It validates metric dimensions and finite values,
-/// then applies Pareto filtering followed by weighted scalarization.
+/// or monitoring categories. Non-empty input requires at least one objective;
+/// weights must be finite and non-negative. It then applies Pareto filtering
+/// followed by weighted scalarization.
 pub fn select_candidate_assessments(
     assessments: &[CandidateAssessment],
     objectives: &[MetricObjective],

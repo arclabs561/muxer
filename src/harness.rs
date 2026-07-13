@@ -12,9 +12,10 @@
 //!   so unseen arms can bypass `require_measured`.  The guardrail applies only to the
 //!   remaining arms after pre-picks.  Fallback-on-empty uses the unguarded set.
 //!
-//! - **`GuardrailFirst`**: the guardrail applies as a hard constraint *before*
-//!   novelty/coverage, so `require_measured` blocks all unmeasured arms including unseen
-//!   ones.  No fallback: if the guardrail empties the set, `stop_early=true`.
+//! - **`GuardrailFirst`**: the latency filter applies *before* novelty/coverage,
+//!   so `require_measured` blocks all unmeasured arms including unseen ones. No
+//!   fallback: if the filter empties the set, `stop_early=true`. This is strict
+//!   within the routing pipeline, not an external safety or readiness check.
 
 use crate::{coverage_pick_under_sampled, CoverageConfig};
 use crate::{novelty_pick_unseen, stable_hash64, LatencyGuardrailConfig};
@@ -22,7 +23,8 @@ use crate::{novelty_pick_unseen, stable_hash64, LatencyGuardrailConfig};
 /// Pipeline ordering: whether novelty/coverage pre-picks run before or after the guardrail.
 ///
 /// - **`NoveltyFirst`** (default): novelty/coverage pre-picks run *before* the guardrail.
-/// - **`GuardrailFirst`**: the guardrail applies as a hard constraint *before* novelty/coverage.
+/// - **`GuardrailFirst`**: the latency filter applies before novelty/coverage
+///   with no fallback. It remains an empirical routing rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
@@ -31,8 +33,8 @@ pub enum PipelineOrder {
     /// Unseen arms can bypass `require_measured` if novelty fills all k.
     #[default]
     NoveltyFirst,
-    /// Guardrail applies first as a hard constraint (no fallback); novelty/coverage
-    /// run only within the guarded set.
+    /// The empirical latency filter applies first with no fallback;
+    /// novelty/coverage runs only within the passing set.
     GuardrailFirst,
 }
 
@@ -113,8 +115,9 @@ where
 /// - Otherwise filters by `mean_ms <= max_mean_ms` (and, if `require_measured`, `calls > 0`).
 /// - If filtering yields an empty set, returns `(vec![], true)` regardless of `allow_fewer`.
 ///
-/// This is useful when you want guardrails to be **hard constraints**, including for novelty/coverage
-/// pre-picks (see `*_guardrail_first_*` helpers below).
+/// This is useful when the empirical filter must be strict within the routing
+/// pipeline, including for novelty/coverage pre-picks (see the
+/// `*_guardrail_first_*` helpers below).
 pub fn guardrail_filter_observed_strict<F>(
     seed: u64,
     arms: &[String],

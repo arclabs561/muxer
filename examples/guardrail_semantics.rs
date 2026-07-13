@@ -6,8 +6,8 @@ use muxer::{
 fn main() {
     println!("== guardrail semantics demo ==");
     println!("This compares:");
-    println!("- soft pipeline: novelty/coverage pre-picks happen BEFORE guardrail");
-    println!("- guardrail-first: strict guardrail happens BEFORE novelty/coverage\n");
+    println!("- fallback pipeline: novelty/coverage runs before the latency filter");
+    println!("- filter-first pipeline: latency filtering runs first with no fallback\n");
 
     // --- Case 1: novelty vs require_measured ---
     {
@@ -36,7 +36,7 @@ fn main() {
             |_eligible, _k| panic!("soft pipeline should fill k via novelty here"),
         );
 
-        let hard = policy_fill_k_observed_guardrail_first_with_coverage(
+        let filter_first = policy_fill_k_observed_guardrail_first_with_coverage(
             123,
             &arms,
             1,
@@ -48,10 +48,10 @@ fn main() {
         );
 
         println!("-- novelty + require_measured --");
-        println!("soft (novelty before guardrail): chosen={:?}", soft.chosen);
+        println!("fallback (novelty first): chosen={:?}", soft.chosen);
         println!(
-            "hard (guardrail first, strict): chosen={:?}, stopped_early={}",
-            hard.chosen, hard.stopped_early
+            "filter-first: chosen={:?}, stopped_early={}",
+            filter_first.chosen, filter_first.stopped_early
         );
         println!();
     }
@@ -89,7 +89,7 @@ fn main() {
             |_eligible, _k| panic!("soft pipeline should fill k via coverage here"),
         );
 
-        let hard = policy_fill_k_observed_guardrail_first_with_coverage(
+        let filter_first = policy_fill_k_observed_guardrail_first_with_coverage(
             123,
             &arms,
             1,
@@ -101,10 +101,10 @@ fn main() {
         );
 
         println!("-- coverage + require_measured --");
-        println!("soft (coverage before guardrail): chosen={:?}", soft.chosen);
+        println!("fallback (coverage first): chosen={:?}", soft.chosen);
         println!(
-            "hard (guardrail first, strict): chosen={:?}, stopped_early={}",
-            hard.chosen, hard.stopped_early
+            "filter-first: chosen={:?}, stopped_early={}",
+            filter_first.chosen, filter_first.stopped_early
         );
         println!();
     }
