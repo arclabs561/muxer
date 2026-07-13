@@ -1,8 +1,8 @@
-//! Unified `BanditPolicy` trait for stateful stochastic policies.
+//! Unified `BanditPolicy` trait for stateful arm-only policies.
 //!
-//! [`ThompsonSampling`] and [`Exp3Ix`] both share the same two-method interface:
+//! `ThompsonSampling`, `Exp3Ix`, and `BoltzmannPolicy` share the same two-method
+//! interface when their respective features are enabled:
 //! `decide(arms) -> Option<Decision>` and `update_reward(arm, reward)`.
-//! This trait makes that explicit and enables generic code over both.
 //!
 //! `select_mab` is intentionally **not** included: it is a stateless function
 //! that operates on caller-maintained `Summary` snapshots and has different
@@ -12,19 +12,17 @@
 //! vector that doesn't fit the arm-only interface.  Use the `contextual`
 //! feature's `LinUcb::decide(arms, context)` directly.
 
-#[cfg(feature = "stochastic")]
 use crate::Decision;
 
-/// Common interface for stateful stochastic bandit policies.
+/// Common interface for stateful arm-only bandit policies.
 ///
-/// Both [`ThompsonSampling`][crate::ThompsonSampling] and
-/// [`Exp3Ix`][crate::Exp3Ix] implement this trait, enabling generic routing
-/// harnesses that can swap between policies without code changes.
+/// Feature-gated policies implement this trait so routing harnesses can swap
+/// between arm-only policies without changing their update loop.
 ///
 /// # Example
 ///
 /// ```rust
-/// use muxer::{BanditPolicy, Exp3Ix, Exp3IxConfig, ThompsonSampling, ThompsonConfig};
+/// use muxer::BanditPolicy;
 ///
 /// fn run_policy<P: BanditPolicy>(policy: &mut P, arms: &[String]) {
 ///     if let Some(d) = policy.decide(arms) {
@@ -32,15 +30,7 @@ use crate::Decision;
 ///         policy.update_reward(&d.chosen, 0.8);
 ///     }
 /// }
-///
-/// let arms = vec!["a".to_string(), "b".to_string()];
-/// let mut ts = ThompsonSampling::with_seed(ThompsonConfig::default(), 0);
-/// let mut ex = Exp3Ix::new(Exp3IxConfig::default());
-///
-/// run_policy(&mut ts, &arms);
-/// run_policy(&mut ex, &arms);
 /// ```
-#[cfg(feature = "stochastic")]
 pub trait BanditPolicy {
     /// Select an arm, returning a [`Decision`] with the chosen arm and
     /// optional probability distribution.

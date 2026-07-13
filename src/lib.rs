@@ -33,10 +33,11 @@
 //! - [`select_mab`] / [`select_mab_explain`] / [`select_mab_monitored_explain`]:
 //!   deterministic Pareto + scalarization over [`MabConfig::objectives`].
 //!   Each [`Objective`] defines an extraction, direction, and scalarization weight.
-//! - [`ThompsonSampling`]: seedable Thompson sampling for scalar rewards in `[0, 1]`.
-//! - [`Exp3Ix`]: seedable EXP3-IX for adversarial / fast-shifting rewards.
-//! - [`BanditPolicy`] (feature `stochastic`): common `decide`/`update_reward` trait
-//!   for `ThompsonSampling` and `Exp3Ix` — enables generic policy code.
+//! - `ThompsonSampling`: seedable Thompson sampling for scalar rewards in `[0, 1]`.
+//! - `Exp3Ix`: seedable EXP3-IX for adversarial / fast-shifting rewards.
+//! - [`BanditPolicy`]: common arm-only `decide`/`update_reward` trait. The
+//!   `stochastic` feature provides `ThompsonSampling` and `Exp3Ix`; the
+//!   `boltzmann` feature provides `BoltzmannPolicy`.
 //! - [`softmax_map`]: stable score → probability helper for traffic splitting.
 //! - [`CandidateAssessment`] / [`select_candidate_assessments`]: domain-neutral
 //!   Pareto selection over caller-defined metric vectors.
@@ -130,7 +131,6 @@ mod decision;
 pub use decision::{Decision, DecisionNote, DecisionPolicy};
 
 mod policy;
-#[cfg(feature = "stochastic")]
 pub use policy::BanditPolicy;
 
 mod alloc;
