@@ -100,7 +100,7 @@ fn evaluate_open_bandit(path: &Path) -> Result<()> {
     }
 
     println!("Open Bandit Dataset: uniform target over item_id 0..39");
-    println!("logger   rows   click    ips      snips    ess       max_weight");
+    println!("logger   rows   support  click    ips      snips    ess       max_weight");
     for behavior in ["random", "bts"] {
         let rows = by_behavior
             .get(behavior)
@@ -117,6 +117,7 @@ fn evaluate_open_bandit(path: &Path) -> Result<()> {
             .collect();
         let weight_sum = weights.iter().sum::<f64>();
         let weight_sq_sum = weights.iter().map(|weight| weight * weight).sum::<f64>();
+        let support = weights.iter().filter(|weight| **weight > 0.0).count();
         let ess = weight_sum * weight_sum / weight_sq_sum;
         let max_weight = weights.iter().copied().fold(0.0_f64, f64::max);
         if !ips.is_finite() || !(0.0..=1.0).contains(&snips) || !ess.is_finite() || ess <= 0.0 {
@@ -126,8 +127,8 @@ fn evaluate_open_bandit(path: &Path) -> Result<()> {
             .into());
         }
         println!(
-            "{behavior:7} {:>5}  {naive:>7.4}  {ips:>7.4}  {snips:>7.4}  {ess:>8.1}  {max_weight:>10.2}",
-            rows.len()
+            "{behavior:7} {:>5}  {support:>7}  {naive:>7.4}  {ips:>7.4}  {snips:>7.4}  {ess:>8.1}  {max_weight:>10.2}",
+            rows.len(),
         );
     }
     println!();
@@ -194,7 +195,58 @@ impl RunningMean {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AslibReplay {
+    mean: f64,
+    ok: u64,
+}
+
 type AslibData = BTreeMap<String, BTreeMap<String, BTreeMap<String, AlgorithmRun>>>;
+
+fn replay_aslib_order(
+    scenario: &str,
+    ordered: &[(&String, &BTreeMap<String, AlgorithmRun>)],
+    algorithms: &[String],
+    objective: Objective,
+) -> Result<AslibReplay> {
+    let mut history = BTreeMap::<String, RunningMean>::new();
+    let mut selected_sum = 0.0;
+    let mut selected_ok = 0_u64;
+    for (instance, runs) in ordered {
+        if runs.len() != algorithms.len() {
+            return Err(invalid_data(format!(
+                "ASlib scenario {scenario} instance {instance} is incomplete"
+            ))
+            .into());
+        }
+        let assessments: Vec<CandidateAssessment> = algorithms
+            .iter()
+            .map(|algorithm| {
+                let aggregate = history.get(algorithm).copied().unwrap_or_default();
+                CandidateAssessment::new(algorithm, aggregate.count, vec![aggregate.mean()])
+            })
+            .collect();
+        let selection = select_candidate_assessments(&assessments, &[objective.metric()])?;
+        let selected = selection
+            .chosen
+            .as_deref()
+            .ok_or_else(|| invalid_data("ASlib selector returned no choice"))?;
+        let selected_run = &runs[selected];
+        selected_sum += selected_run.value;
+        selected_ok += u64::from(selected_run.ok);
+
+        for (algorithm, run) in *runs {
+            history
+                .entry(algorithm.clone())
+                .or_default()
+                .push(run.value);
+        }
+    }
+    Ok(AslibReplay {
+        mean: selected_sum / ordered.len().max(1) as f64,
+        ok: selected_ok,
+    })
+}
 
 fn evaluate_aslib(path: &Path) -> Result<()> {
     let mut lines = open_lines(path)?;
@@ -258,7 +310,9 @@ fn evaluate_aslib(path: &Path) -> Result<()> {
     }
 
     println!("ASlib: history-only full-information selection");
-    println!("scenario                    instances  selected     fixed        oracle       gap  selected_ok");
+    println!(
+        "scenario                    instances  ascending   descending  fixed        oracle       gap_range      ok(asc/desc)"
+    );
     for (scenario, instances) in scenarios {
         let objective = objectives[&scenario];
         let algorithms: Vec<String> = instances
@@ -271,33 +325,15 @@ fn evaluate_aslib(path: &Path) -> Result<()> {
             return Err(invalid_data(format!("ASlib scenario {scenario} is empty")).into());
         }
 
-        let mut history = BTreeMap::<String, RunningMean>::new();
-        let mut selected_sum = 0.0;
-        let mut selected_ok = 0_u64;
-        let mut oracle_sum = 0.0;
-        for (instance, runs) in &instances {
-            if runs.len() != algorithms.len() {
-                return Err(invalid_data(format!(
-                    "ASlib scenario {scenario} instance {instance} is incomplete"
-                ))
-                .into());
-            }
-            let assessments: Vec<CandidateAssessment> = algorithms
-                .iter()
-                .map(|algorithm| {
-                    let aggregate = history.get(algorithm).copied().unwrap_or_default();
-                    CandidateAssessment::new(algorithm, aggregate.count, vec![aggregate.mean()])
-                })
-                .collect();
-            let selection = select_candidate_assessments(&assessments, &[objective.metric()])?;
-            let selected = selection
-                .chosen
-                .as_deref()
-                .ok_or_else(|| invalid_data("ASlib selector returned no choice"))?;
-            let selected_run = &runs[selected];
-            selected_sum += selected_run.value;
-            selected_ok += u64::from(selected_run.ok);
+        let ascending: Vec<_> = instances.iter().collect();
+        let mut descending = ascending.clone();
+        descending.reverse();
+        let asc = replay_aslib_order(&scenario, &ascending, &algorithms, objective)?;
+        let desc = replay_aslib_order(&scenario, &descending, &algorithms, objective)?;
 
+        let mut fixed_history = BTreeMap::<String, RunningMean>::new();
+        let mut oracle_sum = 0.0;
+        for runs in instances.values() {
             let oracle = runs
                 .values()
                 .fold(None, |best: Option<f64>, run| match best {
@@ -309,7 +345,7 @@ fn evaluate_aslib(path: &Path) -> Result<()> {
             oracle_sum += oracle;
 
             for (algorithm, run) in runs {
-                history
+                fixed_history
                     .entry(algorithm.clone())
                     .or_default()
                     .push(run.value);
@@ -317,9 +353,8 @@ fn evaluate_aslib(path: &Path) -> Result<()> {
         }
 
         let instance_count = instances.len() as f64;
-        let selected_mean = selected_sum / instance_count;
         let oracle_mean = oracle_sum / instance_count;
-        let fixed_mean = history
+        let fixed_mean = fixed_history
             .values()
             .map(|aggregate| aggregate.mean())
             .fold(None, |best: Option<f64>, value| match best {
@@ -328,11 +363,17 @@ fn evaluate_aslib(path: &Path) -> Result<()> {
                 Some(current) => Some(current),
             })
             .ok_or_else(|| invalid_data("ASlib scenario has no fixed reference"))?;
+        let asc_gap = objective.gap(asc.mean, oracle_mean);
+        let desc_gap = objective.gap(desc.mean, oracle_mean);
         println!(
-            "{scenario:27} {:>9}  {selected_mean:>10.4}  {fixed_mean:>10.4}  {oracle_mean:>10.4}  {:>8.4}  {selected_ok:>5}/{}",
+            "{scenario:27} {:>9}  {:>10.4}  {:>10.4}  {fixed_mean:>10.4}  {oracle_mean:>10.4}  {:>6.3}..{:>6.3}  {:>3}/{:>3}",
             instances.len(),
-            objective.gap(selected_mean, oracle_mean),
-            instances.len()
+            asc.mean,
+            desc.mean,
+            asc_gap.min(desc_gap),
+            asc_gap.max(desc_gap),
+            asc.ok,
+            desc.ok,
         );
     }
     println!();
@@ -350,6 +391,35 @@ struct FuzzerStats {
     median: u64,
     iqr: u64,
     trials: usize,
+}
+
+fn select_fuzzer(
+    stats: &[FuzzerStats],
+    best_median: u64,
+    spread_weight: f64,
+) -> Result<(String, usize)> {
+    let scale = best_median as f64;
+    let assessments: Vec<CandidateAssessment> = stats
+        .iter()
+        .map(|stat| {
+            CandidateAssessment::new(
+                &stat.name,
+                stat.trials as u64,
+                vec![stat.median as f64 / scale, stat.iqr as f64 / scale],
+            )
+        })
+        .collect();
+    let selection = select_candidate_assessments(
+        &assessments,
+        &[
+            MetricObjective::maximize(0, 1.0),
+            MetricObjective::minimize(1, spread_weight),
+        ],
+    )?;
+    let chosen = selection
+        .chosen
+        .ok_or_else(|| invalid_data("FuzzBench selector returned no choice"))?;
+    Ok((chosen, selection.frontier.len()))
 }
 
 fn evaluate_fuzzbench(path: &Path) -> Result<()> {
@@ -388,7 +458,8 @@ fn evaluate_fuzzbench(path: &Path) -> Result<()> {
     println!(
         "benchmark                     chosen             median      best       iqr  frontier"
     );
-    let mut tradeoffs = 0_usize;
+    let spread_weights = [0.0, 0.05, 0.10, 0.25, 0.50];
+    let mut lower_median = [0_usize; 5];
     for (benchmark, by_fuzzer) in &mut benchmarks {
         let mut stats = Vec::<FuzzerStats>::new();
         for (fuzzer, values) in by_fuzzer {
@@ -416,44 +487,34 @@ fn evaluate_fuzzbench(path: &Path) -> Result<()> {
                 invalid_data(format!("FuzzBench benchmark {benchmark} has zero coverage")).into(),
             );
         }
-        let scale = best_median as f64;
-        let assessments: Vec<CandidateAssessment> = stats
-            .iter()
-            .map(|stat| {
-                CandidateAssessment::new(
-                    &stat.name,
-                    stat.trials as u64,
-                    vec![stat.median as f64 / scale, stat.iqr as f64 / scale],
-                )
-            })
-            .collect();
-        let selection = select_candidate_assessments(
-            &assessments,
-            &[
-                MetricObjective::maximize(0, 1.0),
-                MetricObjective::minimize(1, 0.10),
-            ],
-        )?;
-        let chosen = selection
-            .chosen
-            .as_deref()
-            .ok_or_else(|| invalid_data("FuzzBench selector returned no choice"))?;
+        let mut primary = None;
+        for (index, spread_weight) in spread_weights.iter().copied().enumerate() {
+            let (chosen, frontier) = select_fuzzer(&stats, best_median, spread_weight)?;
+            let chosen_stats = stats
+                .iter()
+                .find(|stat| stat.name == chosen)
+                .ok_or_else(|| invalid_data("FuzzBench choice has no statistics"))?;
+            lower_median[index] += usize::from(chosen_stats.median < best_median);
+            if index == 2 {
+                primary = Some((chosen, frontier));
+            }
+        }
+        let (chosen, frontier) =
+            primary.ok_or_else(|| invalid_data("FuzzBench primary weight was not evaluated"))?;
         let chosen_stats = stats
             .iter()
             .find(|stat| stat.name == chosen)
             .ok_or_else(|| invalid_data("FuzzBench choice has no statistics"))?;
-        tradeoffs += usize::from(chosen_stats.median < best_median);
         println!(
             "{benchmark:29} {chosen:18} {:>7}  {best_median:>8}  {:>8}  {:>8}",
-            chosen_stats.median,
-            chosen_stats.iqr,
-            selection.frontier.len()
+            chosen_stats.median, chosen_stats.iqr, frontier,
         );
     }
-    println!(
-        "coverage/stability scalarization accepted lower median coverage on {tradeoffs}/{} benchmarks\n",
-        benchmarks.len()
-    );
+    println!("spread weight sensitivity (benchmarks choosing below-best median):");
+    for (weight, lower) in spread_weights.into_iter().zip(lower_median) {
+        println!("  weight={weight:>4.2}: {lower}/{}", benchmarks.len());
+    }
+    println!();
     Ok(())
 }
 
@@ -487,6 +548,52 @@ fn distribution(values: impl IntoIterator<Item = f64>, cuts: [f64; 3]) -> Vec<f6
     }
     let total = counts.iter().sum::<f64>();
     counts.into_iter().map(|count| count / total).collect()
+}
+
+fn nab_distances(
+    name: &str,
+    points: &[NabPoint],
+    baseline_numerator: usize,
+    baseline_denominator: usize,
+) -> Result<(f64, f64, usize)> {
+    let split = points.len() * baseline_numerator / baseline_denominator;
+    let mut baseline: Vec<f64> = points[..split]
+        .iter()
+        .filter(|point| !point.annotated)
+        .map(|point| point.value)
+        .collect();
+    let heldout: Vec<f64> = points[split..]
+        .iter()
+        .filter(|point| !point.annotated)
+        .map(|point| point.value)
+        .collect();
+    let annotated: Vec<f64> = points
+        .iter()
+        .filter(|point| point.annotated)
+        .map(|point| point.value)
+        .collect();
+    if baseline.is_empty() || heldout.is_empty() || annotated.is_empty() {
+        return Err(invalid_data(format!("NAB series {name} has an empty partition")).into());
+    }
+    baseline.sort_by(f64::total_cmp);
+    let cuts = [
+        quantile_f64(&baseline, 1, 4),
+        quantile_f64(&baseline, 1, 2),
+        quantile_f64(&baseline, 3, 4),
+    ];
+    let baseline_dist = distribution(baseline.iter().copied(), cuts);
+    let heldout_dist = distribution(heldout, cuts);
+    let annotated_count = annotated.len();
+    let annotated_dist = distribution(annotated, cuts);
+    let heldout_drift =
+        drift_simplex(&baseline_dist, &heldout_dist, DriftMetric::Hellinger, 1e-12)?;
+    let annotated_drift = drift_simplex(
+        &baseline_dist,
+        &annotated_dist,
+        DriftMetric::Hellinger,
+        1e-12,
+    )?;
+    Ok((heldout_drift, annotated_drift, annotated_count))
 }
 
 fn evaluate_nab(path: &Path) -> Result<()> {
@@ -531,56 +638,33 @@ fn evaluate_nab(path: &Path) -> Result<()> {
     println!(
         "series             rows   annotated  heldout_normal  annotated_window  window_larger"
     );
-    let mut window_larger = 0_usize;
+    let baseline_fractions = [(1, 5), (1, 3), (1, 2)];
+    let mut window_larger = [0_usize; 3];
     for (name, points) in &series {
-        let split = points.len() / 5;
-        let mut baseline: Vec<f64> = points[..split]
-            .iter()
-            .filter(|point| !point.annotated)
-            .map(|point| point.value)
-            .collect();
-        let heldout: Vec<f64> = points[split..]
-            .iter()
-            .filter(|point| !point.annotated)
-            .map(|point| point.value)
-            .collect();
-        let annotated: Vec<f64> = points
-            .iter()
-            .filter(|point| point.annotated)
-            .map(|point| point.value)
-            .collect();
-        if baseline.is_empty() || heldout.is_empty() || annotated.is_empty() {
-            return Err(invalid_data(format!("NAB series {name} has an empty partition")).into());
+        let mut primary = None;
+        for (index, (numerator, denominator)) in baseline_fractions.iter().copied().enumerate() {
+            let distances = nab_distances(name, points, numerator, denominator)?;
+            window_larger[index] += usize::from(distances.1 > distances.0);
+            if (numerator, denominator) == (1, 5) {
+                primary = Some(distances);
+            }
         }
-        baseline.sort_by(f64::total_cmp);
-        let cuts = [
-            quantile_f64(&baseline, 1, 4),
-            quantile_f64(&baseline, 1, 2),
-            quantile_f64(&baseline, 3, 4),
-        ];
-        let baseline_dist = distribution(baseline.iter().copied(), cuts);
-        let heldout_dist = distribution(heldout.iter().copied(), cuts);
-        let annotated_dist = distribution(annotated.iter().copied(), cuts);
-        let heldout_drift =
-            drift_simplex(&baseline_dist, &heldout_dist, DriftMetric::Hellinger, 1e-12)?;
-        let annotated_drift = drift_simplex(
-            &baseline_dist,
-            &annotated_dist,
-            DriftMetric::Hellinger,
-            1e-12,
-        )?;
+        let (heldout_drift, annotated_drift, annotated_count) =
+            primary.ok_or_else(|| invalid_data("NAB primary baseline was not evaluated"))?;
         let larger = annotated_drift > heldout_drift;
-        window_larger += usize::from(larger);
         println!(
             "{name:18} {:>6}  {:>9}  {heldout_drift:>14.4}  {annotated_drift:>16.4}  {larger:>13}",
             points.len(),
-            annotated.len()
+            annotated_count,
         );
     }
-    println!(
-        "annotated-window drift exceeded held-out normal drift on {window_larger}/{} streams",
-        series.len()
-    );
+    println!("baseline fraction sensitivity (streams with larger annotated drift):");
+    for ((numerator, denominator), larger) in baseline_fractions.into_iter().zip(window_larger) {
+        println!(
+            "  baseline={numerator}/{denominator}: {larger}/{}",
+            series.len()
+        );
+    }
     Ok(())
 }
 
