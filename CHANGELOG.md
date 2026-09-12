@@ -31,6 +31,7 @@
 
 ### Changed
 
+- Require drawset 0.1.2 for the optional `boltzmann` policy.
 - Cached monitoring scores once per router selection instead of recomputing
   them during each multi-pick round.
 - Raised the declared Rust version to 1.75, pinned `pare` to 0.2.2,
