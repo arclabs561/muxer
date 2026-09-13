@@ -5,6 +5,17 @@ using sliding-window statistics, Pareto selection, and optional CUSUM monitoring
 
 ## Start here
 
+For correlated requests and delayed rewards, start with the additive,
+unreleased `Muxer<P>` API:
+
+```bash
+cargo run --example unified_bernoulli
+```
+
+See [Shared decision lifecycle](UNIFIED_MUXER.md) for quality, contextual and
+externally scored profiles. The rest of this guide documents the existing
+lower-level `Router` API, whose behavior remains available.
+
 ```bash
 cargo run --example getting_started
 ```

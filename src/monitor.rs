@@ -146,7 +146,7 @@ impl MonitoredWindow {
         self.recent.push_with_id(id, o);
     }
 
-    pub(crate) fn contains_id(&mut self, id: ObservationId) -> bool {
+    pub(crate) fn contains_id(&self, id: ObservationId) -> bool {
         self.baseline.contains_id(id) || self.recent.contains_id(id)
     }
 

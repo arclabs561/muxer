@@ -433,6 +433,7 @@ impl RouterDecision {
 ///     // route extra traffic to investigation arms via d.triage_cells
 /// }
 /// ```
+#[derive(Debug, Clone)]
 pub struct Router {
     arms: Vec<String>,
     windows: BTreeMap<String, Window>,
@@ -807,6 +808,18 @@ impl Router {
         self.observe_inner(Some(id), arm, outcome, context)
     }
 
+    /// Whether an observation identity is retained by a quality window.
+    ///
+    /// This is crate-internal support for receipt-correlated profiles.  It is
+    /// intentionally not a public historical-observation API.
+    pub(crate) fn contains_observation_id(&self, id: ObservationId) -> bool {
+        self.windows.values().any(|window| window.contains_id(id))
+            || self
+                .monitored
+                .as_ref()
+                .is_some_and(|windows| windows.values().any(|window| window.contains_id(id)))
+    }
+
     fn observe_inner(
         &mut self,
         id: Option<ObservationId>,
@@ -819,11 +832,11 @@ impl Router {
             return false;
         }
         if let Some(id) = id {
-            let in_primary = self.windows.values_mut().any(|w| w.contains_id(id));
+            let in_primary = self.windows.values().any(|w| w.contains_id(id));
             let in_monitored = self
                 .monitored
-                .as_mut()
-                .is_some_and(|windows| windows.values_mut().any(|w| w.contains_id(id)));
+                .as_ref()
+                .is_some_and(|windows| windows.values().any(|w| w.contains_id(id)));
             if in_primary || in_monitored {
                 return false;
             }
@@ -1385,6 +1398,49 @@ mod tests {
             r.mode().alarmed_arms().contains(&"bad".to_string()),
             "'bad' arm should be alarmed"
         );
+    }
+
+    #[test]
+    fn router_clone_preserves_live_triage_state() {
+        let tcfg = TriageSessionConfig {
+            min_n: 5,
+            threshold: 2.0,
+            ..TriageSessionConfig::default()
+        };
+        let mut original = Router::new(
+            vec!["good".to_string(), "bad".to_string()],
+            RouterConfig::default().with_triage_cfg(tcfg),
+        )
+        .unwrap();
+
+        for _ in 0..10 {
+            assert!(original.observe("good", clean()));
+            assert!(original.observe("bad", clean()));
+        }
+        for _ in 0..20 {
+            assert!(original.observe("bad", bad()));
+        }
+        assert!(original.mode().is_triage());
+
+        let mut cloned = original.clone();
+        assert_eq!(cloned.mode(), original.mode());
+        assert_eq!(cloned.total_observations(), original.total_observations());
+        assert_eq!(
+            cloned.triage_session().unwrap().arm_state("bad").unwrap().n,
+            original
+                .triage_session()
+                .unwrap()
+                .arm_state("bad")
+                .unwrap()
+                .n,
+        );
+
+        assert!(cloned.observe("good", clean()));
+        assert_eq!(
+            cloned.total_observations(),
+            original.total_observations() + 1
+        );
+        assert_ne!(cloned.total_observations(), original.total_observations());
     }
 
     #[test]

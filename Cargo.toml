@@ -53,3 +53,15 @@ harness = false
 [[bench]]
 name = "router_select"
 harness = false
+
+[[bench]]
+name = "runtime_lifecycle"
+harness = false
+
+[[example]]
+name = "unified_bernoulli"
+required-features = ["stochastic"]
+
+[[example]]
+name = "unified_contextual"
+required-features = ["contextual"]

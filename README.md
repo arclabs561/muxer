@@ -5,8 +5,9 @@
 
 Multi-objective bandit routing with drift detection.
 
-Select among K arms from caller-aggregated metric vectors, or use the stateful
-quality router with rolling windows and drift detection.
+Select among K arms with a correlated decision/feedback runtime, caller-produced
+metrics, or the lower-level quality router with rolling windows and drift
+detection. The new `Muxer<P>` API is additive and currently unreleased.
 
 See [examples/EXPERIMENTS.md](examples/EXPERIMENTS.md) for simulations and failure modes.
 
@@ -34,6 +35,33 @@ muxer = { version = "0.5", default-features = false }
 | `boltzmann` | no | stochastic Gumbel-max softmax selection |
 
 ## Quickstart
+
+For a binary outcome, the shared runtime owns decision IDs and delayed-feedback
+correlation (default `stochastic` feature):
+
+These new APIs require this checkout (for example a local path dependency);
+they are not part of the published `0.5.3` dependency shown above.
+
+```rust
+use muxer::Muxer;
+
+let mut mux = Muxer::bernoulli(["backend-a", "backend-b"])?;
+let decision = mux.decide(&())?;
+// Execute decision.action(), then report its actual outcome.
+mux.tell(decision.id(), true)?;
+Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Feedback may arrive out of order. Bernoulli feedback is a `bool`; fractional
+scores use a separately named profile and validated `BoundedReward`. EXP3 and
+contextual profiles retain their decision-time probability or features.
+Externally supplied scores/distributions need no feedback or learner.
+
+See [the migration guide](docs/UNIFIED_MUXER.md) for profile selection, delayed
+quality scores, retention and evaluation boundaries. Existing APIs remain
+available:
+
+### Lower-level quality router
 
 ```rust
 use muxer::{Router, RouterConfig, Outcome};
@@ -164,10 +192,10 @@ See [examples/README.md](examples/README.md) for runnable examples with captured
 
 ## Limitations
 
-The generic metric-vector selector does not retain observations or learn a
-policy. Callers that need stateful aggregation, contextual models, or online
-updates own that state. The built-in `Router` is stateful, but its `Outcome`,
-`Summary`, objectives, and triage categories form a quality-oriented profile.
+The standalone metric-vector selector does not retain observations or learn a
+policy. `Muxer<P>` adds bounded correlation and typed learning profiles; it does
+not own execution, training, network inference, durable storage, or application
+concurrency. The built-in `Router` remains a quality-oriented stateful API.
 
 Latency filters, rolling-window comparisons, and detector thresholds are
 empirical routing mechanisms. They are not hard safety constraints or

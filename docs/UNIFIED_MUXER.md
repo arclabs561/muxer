@@ -1,0 +1,129 @@
+# Shared decision lifecycle
+
+The unreleased `Muxer<P>` API adds one owner for issuance, eligibility,
+decision-time learning evidence and delayed feedback. Existing `Router`,
+`BanditPolicy`, `Decision`, snapshot and standalone statistical APIs remain
+available. This is an additive migration, not a deprecation announcement.
+
+## Choose the evidence, then the policy
+
+| Evidence supplied by the application | Profile | Feedback |
+| --- | --- | --- |
+| Binary success/failure | `BernoulliThompson` | `bool` |
+| Bounded fractional score | `FractionalThompson` | `BoundedReward` |
+| Bounded adversarial reward | `Exp3Profile` | `BoundedReward` |
+| Fixed-schema feature vector | `ContextualProfile` | `BoundedReward` |
+| Finite scalar reward | `BoltzmannProfile` | `FiniteReward` |
+| Quality, cost and latency | `QualityProfile` | `QualityFeedback` |
+| Scores, metric assessments or masses from external inference | `ExternalScores`, `ExternalAssessments`, `ExternalDistribution` | None |
+
+Thompson and EXP3 require `stochastic`; LinUCB requires `contextual`;
+Boltzmann requires `boltzmann`. Quality and external adapters work without
+default features. Fractional Beta updates are pseudo-count updates, not an
+exact Bernoulli posterior for arbitrary real scores.
+
+## Migration rules
+
+- Replace arm-only delayed updates with `decide` followed by `tell(id, value)`.
+  Keep the immutable receipt until the application finishes execution and
+  feedback delivery. The runtime retains its own decision-time ticket.
+- Use `decide_from` for request-local readiness. Subset order is canonicalized
+  to registered order; unknown and repeated actions fail before issuance.
+- An issued decision does not mean an action executed. Cancellation and expiry
+  close outstanding work without inventing a zero reward.
+- `QualityProfile::with_delayed_score()` explicitly retains the score channel.
+  Default quality expects execution only. Scores join the original retained
+  execution row; they never add a second execution or replay categorical drift
+  observations. Legacy Router correction setters keep their existing semantics.
+  Immediate mode preserves an embedded `Outcome::with_quality` score; delayed
+  mode rejects an embedded score so execution and score cannot silently disagree.
+- Retention limits count entries, not arbitrary user payload bytes. Pending
+  capacity errors do not evict open work. Terminal retention bounds duplicate
+  detection and evaluation access; export application records before eviction.
+- Keep historical `Router::observe*` input separate from issued interactions.
+  Historical observations do not acquire fabricated behavior probabilities.
+
+The application still owns execution, retries, scheduling, locks, feature
+generation and external model storage. No network or training dependency is
+needed to adapt an externally trained scorer.
+
+## Revisions, advanced feedback and continuation
+
+`replace_policy_with_revisions(new_policy, model_revision, representation_revision)`
+starts a new policy epoch. Old receipts continue updating their original policy,
+including normalization and cleanup. Equal feature dimensions do not establish
+representation compatibility: provide a fresh contextual head when replacing
+embeddings. `replace_policy` also creates a new epoch, but leaves the explicit
+model/representation labels unchanged. The catalogue is immutable per runtime.
+
+Prior policies stay retained while either pending or terminal receipts reference
+them, so duplicate normalization uses the original policy too. Defaults allow
+1,024 pending decisions, 1,024 terminal decisions, 32 accepted events per decision
+and four retired epochs. `EpochCapacity` fails before replacement. Application
+code can explicitly `forget_terminal(id)` after exporting a completed record;
+this relinquishes duplicate detection and can release its old epoch. Event limits
+are shared across batch items, and admission reserves enough slots for each
+declared channel's first resolution. Additional provisional revisions can still
+exhaust the event limit, requiring expiry rather than silently dropping history.
+
+`FeedbackEvent` adds an event ID, execution position, actual action, channel,
+producer revision, value revision and optional Unix-millisecond observation
+time. `submit` normalizes before comparing retained envelopes. Provisionals do
+not train. Same-ID changes conflict; lower revisions are stale; finalized and
+missing channels never reopen. A source/schema change needs a separately named
+declared channel. Runtime `received_sequence` is the replay ordering key, not
+the caller's timestamp. Receipts expose immutable per-item `DecisionReason`
+diagnostics separately from probability availability.
+
+`into_checkpoint()` consumes the runtime and `Muxer::restore(checkpoint)` resumes
+its complete in-memory state, including RNG, pending tickets, retired policies,
+event ledgers and triage. It supports move-only external models without forking
+decision IDs. This release does **not** provide a serialized disk/restart format,
+automatic external model loading or durable exactly-once delivery. Legacy
+statistical snapshots are still warm starts, not complete runtime checkpoints.
+
+## Probability and evaluation
+
+Receipts distinguish an exact selected-action probability from `Unavailable`.
+Posterior-max Thompson has no exact propensity here. Contextual softmax is a
+different allocation rule from deterministic LinUCB. The new Boltzmann adapter
+uses the runtime's transactional random stream and one categorical distribution;
+the legacy drawset-based sampler is unchanged.
+
+`project_logged_reward` reads retained final feedback, checks execution and
+single-action probability, then calls the application's target-policy lookup
+with the original receipt. The lookup must resolve the original context and
+eligible actions, not substitute a new embedding or current availability set.
+It produces the existing `LoggedReward` type for `ips_value` or
+`self_normalized_ips_value`.
+
+`EvaluationCohort` counts exclusions explicitly. An absent label is not zero;
+filtering it out can bias an estimate. An exact observed-action propensity does
+not establish target-policy support over unobserved actions. Ordered batches
+are excluded from scalar OPE, and no confidence interval or missingness
+correction is implied.
+
+## Examples and executable contracts
+
+See the [performance measurements](UNIFIED_MUXER_PERFORMANCE.md) for the
+measured lifecycle cost and the next optimization gate.
+
+```bash
+cargo run --example unified_bernoulli
+cargo run --example unified_quality --no-default-features
+cargo run --example unified_external --no-default-features
+cargo run --example unified_contextual --no-default-features --features contextual
+cargo run --example unified_evaluation --no-default-features --features contextual
+cargo run --example unified_refresh --no-default-features --features contextual
+cargo test --test evaluation_projection --no-default-features
+```
+
+The evaluation test uses a synthetic environment with known full-information
+truth: action `a` always succeeds, action `b` fails, the logger favors `a`, and
+the target is uniform. IPS recovers the target's value while the naive logged
+reward mean reflects the logger's selection bias. This fixture is not a claim
+that real bandit logs contain unobserved outcomes.
+
+The [architecture](design/unified-muxer-architecture.md),
+[protocol](design/unified-muxer-protocol.md) and
+[roadmap](design/unified-muxer-roadmap.md) record the accepted design and gates.

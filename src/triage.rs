@@ -169,6 +169,7 @@ pub struct ArmTriageState {
 ///
 /// See module-level docs for the design and example.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TriageSession {
     banks: BTreeMap<String, (CusumCatBank, bool)>, // (bank, alarmed)
     tracker: ContextualCoverageTracker,

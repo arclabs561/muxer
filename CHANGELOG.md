@@ -4,6 +4,16 @@
 
 ### Added
 
+- Additive `Muxer<P>` lifecycle with immutable receipts, canonical eligibility,
+  per-item batch feedback, bounded pending/terminal/event retention, and typed
+  selection reasons.
+- Boolean/fractional Thompson, EXP3, contextual LinUCB, runtime-sampled
+  Boltzmann, external assessment/score/distribution and quality profiles.
+- Provisional/final/missing event envelopes, canonical idempotency, revision
+  conflicts, explicit expiry, retained policy epochs and consuming in-memory
+  checkpoint handoff. No serialized restart format is implied.
+- Checked retained-feedback projection into scalar OPE, exclusion counts,
+  unified lifecycle examples and lifecycle benchmarks.
 - Domain-neutral `CandidateAssessment` metric vectors with Pareto filtering,
   scalarization, deterministic tie-breaking, and serde-compatible diagnostics.
 - `DisjointMonitoredWindow` for descriptive comparisons without baseline/recent

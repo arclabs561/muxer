@@ -131,6 +131,37 @@ fn finite_scalar_weight(weight: f64, mut values: impl Iterator<Item = f64>) -> f
 mod decision;
 pub use decision::{Decision, DecisionNote, DecisionPolicy};
 
+mod interaction;
+pub use interaction::{
+    Channel, DecisionId, DecisionReason, Disposition, EngineId, EventDisposition, EventId,
+    ExecutionKey, FeedbackExpectation, InteractionError, Probability, ProbabilityAvailability,
+};
+
+mod runtime;
+pub use runtime::{
+    BatchInteractionPolicy, BatchSelection, DecisionReceipt, EventOutcome, FeedbackEvent,
+    InteractionPolicy, Muxer, MuxerCheckpoint, PolicyBatchDecision, PolicyDecision, PolicyError,
+    PolicyRequest, RuntimeConfig, RuntimeError, TerminalStatus, TrialRng,
+};
+
+pub mod profiles;
+#[cfg(feature = "boltzmann")]
+pub use profiles::BoltzmannProfile;
+#[cfg(feature = "stochastic")]
+pub use profiles::{BernoulliThompson, Exp3Profile, FractionalThompson};
+pub use profiles::{
+    BoundedReward, ExternalAssessments, ExternalDistribution, ExternalScores, FiniteReward,
+    QualityFeedback, QualityProfile, QualityScore,
+};
+#[cfg(feature = "contextual")]
+pub use profiles::{ContextualMode, ContextualProfile};
+
+mod evaluation;
+pub use evaluation::{
+    project_logged_reward, EvaluationCohort, EvaluationFeedback, ProjectionError,
+    TargetEvidenceUnavailable,
+};
+
 mod policy;
 pub use policy::BanditPolicy;
 
@@ -498,9 +529,14 @@ impl Window {
         }
     }
 
-    pub(crate) fn contains_id(&mut self, id: ObservationId) -> bool {
-        self.align_ids();
-        self.ids.iter().any(|candidate| *candidate == Some(id))
+    pub(crate) fn contains_id(&self, id: ObservationId) -> bool {
+        // `align_ids` keeps the retained tail when older IDs outnumber
+        // outcomes.  Search that same tail without mutating a read-only
+        // selection path; missing IDs are implicit `None`s and cannot match.
+        self.ids
+            .iter()
+            .skip(self.ids.len().saturating_sub(self.buf.len()))
+            .any(|candidate| *candidate == Some(id))
     }
 
     /// Best-effort: set “junk” and whether it is “hard junk” for the most recent outcome.
@@ -1991,6 +2027,25 @@ pub fn select_mab_monitored_decide(
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn window_contains_id_matches_alignment_for_legacy_mismatched_ids() {
+        let stale = ObservationId::new(1);
+        let retained = ObservationId::new(2);
+        let window = Window {
+            cap: 2,
+            buf: VecDeque::from([Outcome::success(1, 1)]),
+            ids: VecDeque::from([Some(stale), Some(retained)]),
+        };
+
+        assert!(!window.contains_id(stale));
+        assert!(window.contains_id(retained));
+
+        let mut aligned = window.clone();
+        aligned.align_ids();
+        assert_eq!(window.contains_id(stale), aligned.contains_id(stale));
+        assert_eq!(window.contains_id(retained), aligned.contains_id(retained));
+    }
 
     fn mk_test_candidate(name: &str, score: f64) -> CandidateDebug {
         CandidateDebug {
