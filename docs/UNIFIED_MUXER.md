@@ -31,6 +31,14 @@ exact Bernoulli posterior for arbitrary real scores.
   to registered order; unknown and repeated actions fail before issuance.
 - An issued decision does not mean an action executed. Cancellation and expiry
   close outstanding work without inventing a zero reward.
+- For an ordered batch, use `cancel_item(id, position)` to cancel an open item
+  that has accepted no provisional or final value. Its siblings remain live;
+  missing-only evidence is retained. Repeated cancellation is idempotent.
+  `item_status` distinguishes open, completed, cancelled and expired items,
+  including after the batch closes. A batch whose items all resolved or were
+  individually cancelled has overall `TerminalStatus::Completed`; this is not
+  an assertion that every item executed. Whole-decision expiry preserves the
+  statuses of already completed or cancelled siblings.
 - `QualityProfile::with_delayed_score()` explicitly retains the score channel.
   Default quality expects execution only. Scores join the original retained
   execution row; they never add a second execution or replay categorical drift

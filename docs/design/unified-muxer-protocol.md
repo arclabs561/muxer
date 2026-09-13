@@ -29,9 +29,13 @@ Position is zero for a single selection. Batch feedback and channel finality
 are keyed by execution key, not decision ID alone. `tell(id, value)` is single-
 selection convenience; batches use `tell_item(id, position, value)` and reject
 ambiguous position-free calls. A batch becomes terminal only after every item's
-expected channels are final/missing. Item-local missing-channel resolution is
-supported. A separate item-cancellation operation remains a target;
-the implemented whole-decision cancellation requires no accepted value feedback.
+expected channels are final/missing or the item was explicitly cancelled.
+`cancel_item(id, position)` rejects items with accepted provisional/final values,
+preserves missing-only evidence, and leaves siblings unchanged. Repeated item
+cancellation succeeds without repeating cleanup. `item_status` retains each
+item's result after batch completion; overall `Completed` means every item
+closed, not that each executed. Whole-decision cancellation requires no accepted
+value feedback. Expiry changes only the statuses of still-open items.
 
 ```rust,ignore
 struct Request<'a, C: ?Sized> {

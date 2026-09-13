@@ -1,7 +1,39 @@
 use muxer::{
-    context_bin, DecisionReason, EventDisposition, Muxer, Outcome, QualityFeedback, QualityProfile,
-    RouterConfig, RuntimeError, TriageSessionConfig,
+    context_bin, DecisionReason, EventDisposition, ItemStatus, Muxer, Outcome, QualityFeedback,
+    QualityProfile, RouterConfig, RuntimeError, TriageSessionConfig,
 };
+
+#[test]
+fn cancelling_one_quality_batch_item_preserves_executed_sibling() {
+    let profile = QualityProfile::new(arms(), RouterConfig::default()).unwrap();
+    let mut muxer = Muxer::new(arms(), profile).unwrap();
+    let receipt = muxer.decide_batch(2, &[]).unwrap();
+    muxer
+        .tell_item(receipt.id(), 0, QualityFeedback::execution(outcome()))
+        .unwrap();
+    assert_eq!(
+        muxer.item_status(receipt.id(), 0),
+        Some(ItemStatus::Completed)
+    );
+    muxer.cancel_item(receipt.id(), 1).unwrap();
+    assert_eq!(
+        muxer.item_status(receipt.id(), 1),
+        Some(ItemStatus::Cancelled)
+    );
+    assert_eq!(
+        muxer
+            .policy()
+            .router()
+            .summary(receipt.selected().next().unwrap())
+            .calls,
+        1
+    );
+    assert!(matches!(
+        muxer.tell_item(receipt.id(), 1, QualityFeedback::execution(outcome())),
+        Err(RuntimeError::Cancelled)
+    ));
+    assert_eq!(muxer.cancel_item(receipt.id(), 1), Ok(()));
+}
 
 fn arms() -> Vec<String> {
     vec!["a".to_owned(), "b".to_owned()]

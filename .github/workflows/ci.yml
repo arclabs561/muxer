@@ -60,6 +60,21 @@ jobs:
           cargo run -p muxer --example contextual_router --features contextual
           cargo run -p muxer --example contextual_propensity_logging --features contextual
 
+      # The unified examples exercise runtime issuance, correlated feedback,
+      # policy refresh, and retained-feedback evaluation.  Compile-only target
+      # checks do not execute those assertions.
+      - name: run unified example assertions (default)
+        run: |
+          cargo run -p muxer --example unified_bernoulli
+          cargo run -p muxer --example unified_quality --no-default-features
+          cargo run -p muxer --example unified_external --no-default-features
+
+      - name: run unified example assertions (contextual)
+        run: |
+          cargo run -p muxer --example unified_contextual --no-default-features --features contextual
+          cargo run -p muxer --example unified_evaluation --no-default-features --features contextual
+          cargo run -p muxer --example unified_refresh --no-default-features --features contextual
+
       - name: clippy (no default features)
         run: cargo clippy -p muxer --all-targets --no-default-features -- -D warnings
 

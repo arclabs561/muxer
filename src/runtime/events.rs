@@ -1,6 +1,6 @@
 //! Advanced feedback envelopes for receipt-correlated runtime updates.
 
-use super::{InteractionPolicy, Muxer, RuntimeError};
+use super::{InteractionPolicy, ItemStatus, Muxer, RuntimeError};
 use crate::interaction::{Channel, Disposition, EventId, ExecutionKey};
 use std::collections::BTreeMap;
 
@@ -162,6 +162,12 @@ impl<C> EventLedger<C> {
             .values()
             .any(|event| !matches!(event.envelope.disposition, Disposition::Missing(_)))
     }
+    pub(super) fn has_value_at(&self, position: usize) -> bool {
+        self.events.values().any(|event| {
+            event.envelope.execution.position() == position
+                && !matches!(event.envelope.disposition, Disposition::Missing(_))
+        })
+    }
     pub(super) fn len(&self) -> usize {
         self.events.len()
     }
@@ -320,6 +326,9 @@ impl<P: InteractionPolicy> Muxer<P> {
         }
         if let Some(error) = self.closed_error(id) {
             return Err(error);
+        }
+        if self.item_status(id, position) == Some(ItemStatus::Cancelled) {
+            return Err(RuntimeError::Cancelled);
         }
         let ledger = self
             .retained_ledger(id)

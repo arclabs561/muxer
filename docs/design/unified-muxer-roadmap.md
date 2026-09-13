@@ -1,6 +1,6 @@
 # Unified muxer technical roadmap
 
-status: additive core delivered locally; serialized restart and release remain
+status: additive core pushed with passing CI; serialized restart and release remain
 
 date: 2026-09-13
 
@@ -23,7 +23,9 @@ Clippy, default/all/Boltzmann doctests, both strict rustdoc configurations,
 all-feature build, formatting, canonical examples and all six new unified
 examples. New integration suites cover lifecycle, events, epochs, checkpoint
 handoff, profile kernel comparisons, delayed quality and synthetic OPE truth.
-This is local validation, not remote CI or a semver release check.
+The initial core commit `26070f5` also passed
+[remote CI](https://github.com/arclabs561/muxer/actions/runs/34773221754).
+The pull-request-only semver check was not run on this main-branch push.
 
 Remaining gates and deliberate boundaries:
 
@@ -33,12 +35,14 @@ Remaining gates and deliberate boundaries:
 - Quality reuses the existing Router kernels under the shared lifecycle.
   Further reducer extraction needs parity and performance evidence; it is not
   required to remove the legacy public Router API.
-- Item-local missing-channel resolution is implemented; a separate item-local
-  cancellation operation remains a protocol target.
+- Item-local missing-channel resolution and cancellation are implemented,
+  including retained per-item status, sibling isolation and original-epoch
+  cleanup. The cancellation suite covers checkpoint handoff, event-ID
+  precedence and rejection after provisional/final feedback.
 - Runtime lifecycle overhead exceeds the provisional 20% review threshold.
   It remains opt-in, with the measured tradeoff recorded rather than hidden.
-- No legacy deprecation, package publication, commit, push or remote release
-  gate was performed. The release owner must run those gates before shipping.
+- No legacy deprecation or package publication was performed. The release owner
+  must run compatibility and package release gates before publishing.
 
 The phase descriptions below retain the original acceptance targets; this
 outcome section is the authoritative distinction between delivered work and
@@ -175,6 +179,35 @@ lifecycle engines does not pass. Cut duplicated orchestration after parity.
 
 Consumer: out-of-band training pipelines and restarted routing applications.
 Partially reversible.
+
+### Next implementation slices
+
+Complete disk checkpoints must preserve pending work; a drain-only warm-start
+API would not satisfy this phase. The existing Thompson, EXP3 and LinUCB
+statistical snapshots omit kernel RNG state, and Router warm-start restoration
+resets triage. Reusing those formats as complete checkpoints would lose state.
+
+1. Establish a versioned RNG-state contract for high-level profiles and inject
+   its stream into the kernels that still own hidden random state. Preserve
+   legacy kernel APIs and test any change to seeded selection traces. SplitMix64
+   is non-cryptographic; an adapter must not implement `CryptoRng` for it.
+2. Add strict, complete policy and ticket state adapters, including Router
+   triage, quality score buffers and retired epochs. Reject malformed state
+   instead of using warm-start methods that silently skip invalid rows.
+3. Encode runtime receipts, pending items, cancellation/finality, event ledgers,
+   sequences and terminal eviction order under an explicit same-build format
+   and policy-schema compatibility envelope. Corruption and wrong-version
+   tests must fail before a runtime is constructed.
+4. Resolve cross-process identity and model ownership before exposing portable
+   resume. Copied checkpoint files can fork a namespace: durable single-writer
+   fencing belongs to the application/store and cannot be proved by an opaque
+   token alone. Model references require an explicit caller-owned resolver;
+   no credentials, model loader or network service belongs in the core.
+
+Acceptance requires an actual process-boundary round trip with pending delayed
+quality feedback, triage and a retired policy epoch, followed by the same
+accepted events and identical next decisions within the compatibility envelope.
+An in-memory move or statistics-only JSON round trip does not pass this gate.
 
 - Add explicit model/representation/config revisions and compatibility checks.
   Start with drain-before-incompatible-replace, then bounded retained epochs

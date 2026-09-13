@@ -140,8 +140,8 @@ pub use interaction::{
 mod runtime;
 pub use runtime::{
     BatchInteractionPolicy, BatchSelection, DecisionReceipt, EventOutcome, FeedbackEvent,
-    InteractionPolicy, Muxer, MuxerCheckpoint, PolicyBatchDecision, PolicyDecision, PolicyError,
-    PolicyRequest, RuntimeConfig, RuntimeError, TerminalStatus, TrialRng,
+    InteractionPolicy, ItemStatus, Muxer, MuxerCheckpoint, PolicyBatchDecision, PolicyDecision,
+    PolicyError, PolicyRequest, RuntimeConfig, RuntimeError, TerminalStatus, TrialRng,
 };
 
 pub mod profiles;

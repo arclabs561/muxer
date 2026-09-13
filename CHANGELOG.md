@@ -4,6 +4,8 @@
 
 ### Added
 
+- Per-item batch cancellation with retained lifecycle status, idempotent
+  cleanup in the issuing policy epoch, and sibling-preserving expiry.
 - Additive `Muxer<P>` lifecycle with immutable receipts, canonical eligibility,
   per-item batch feedback, bounded pending/terminal/event retention, and typed
   selection reasons.
