@@ -14,7 +14,31 @@ pub use events::{EventOutcome, FeedbackEvent};
 
 static NEXT_ENGINE: AtomicU64 = AtomicU64::new(1);
 
+/// Versioned complete state of the non-cryptographic trial random stream.
+///
+/// With `serde`, this record can cross a process boundary. Restore it through
+/// [`TrialRng::from_state`] to reject unsupported algorithms. It does not encode
+/// policy state or imply that a full muxer checkpoint is serializable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
+pub struct TrialRngState {
+    version: u32,
+    state: u64,
+}
+
+impl TrialRngState {
+    /// Algorithm and draw-consumption format version.
+    #[must_use]
+    pub const fn version(&self) -> u32 {
+        self.version
+    }
+}
+
 /// A deterministic random stream whose proposed position is committed only on issue.
+///
+/// Version 1 uses SplitMix64. This stream is not cryptographically secure and
+/// must not be used to generate secrets or externally unique engine identities.
 #[derive(Debug, Clone)]
 pub struct TrialRng {
     state: u64,
@@ -24,6 +48,24 @@ impl TrialRng {
     #[must_use]
     pub const fn seeded(seed: u64) -> Self {
         Self { state: seed }
+    }
+    /// Capture the complete stream position without advancing it.
+    #[must_use]
+    pub const fn state(&self) -> TrialRngState {
+        TrialRngState {
+            version: 1,
+            state: self.state,
+        }
+    }
+    /// Restore a supported stream state.
+    ///
+    /// Raw bits continue exactly for version 1. Distribution algorithms layered
+    /// over these bits additionally require the same compatible build to replay.
+    pub fn from_state(state: TrialRngState) -> Result<Self, PolicyError> {
+        if state.version != 1 {
+            return Err(PolicyError::new("unsupported trial RNG state version"));
+        }
+        Ok(Self { state: state.state })
     }
     /// Draw the next uniformly distributed bits.
     pub fn next_u64(&mut self) -> u64 {
@@ -49,6 +91,27 @@ impl TrialRng {
             if draw < threshold {
                 return Some((draw % upper) as usize);
             }
+        }
+    }
+}
+
+// Keep draw consumption explicit: each u32 consumes a full u64; fill_bytes
+// emits little-endian u64 chunks and discards unused bytes in its last chunk.
+// Changing these rules requires a TrialRngState version change.
+#[cfg(any(feature = "stochastic", feature = "contextual"))]
+impl rand::RngCore for TrialRng {
+    fn next_u32(&mut self) -> u32 {
+        self.next_u64() as u32
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        TrialRng::next_u64(self)
+    }
+
+    fn fill_bytes(&mut self, dst: &mut [u8]) {
+        for chunk in dst.chunks_mut(8) {
+            let bytes = self.next_u64().to_le_bytes();
+            chunk.copy_from_slice(&bytes[..chunk.len()]);
         }
     }
 }

@@ -97,6 +97,17 @@ decision IDs. This release does **not** provide a serialized disk/restart format
 automatic external model loading or durable exactly-once delivery. Legacy
 statistical snapshots are still warm starts, not complete runtime checkpoints.
 
+As a restart prerequisite, `TrialRng::state()` captures a versioned SplitMix64
+position, serializable with `serde`; `TrialRng::from_state` rejects unsupported
+versions. This is non-cryptographic state, not an engine identity generator.
+Both Thompson profiles now own such a stream, initialized by their `with_seed`
+argument and committed only with accepted issuance. Their unreleased seeded
+choice sequences therefore change from the initial `StdRng`-backed adapter;
+legacy `ThompsonSampling` seeded behavior is unchanged. Restoring distribution
+choices additionally requires the same compatible build and policy state,
+not just matching RNG bits. This prerequisite does not serialize the runtime,
+pending tickets or complete profile state.
+
 ## Probability and evaluation
 
 Receipts distinguish an exact selected-action probability from `Unavailable`.

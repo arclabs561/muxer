@@ -36,6 +36,37 @@ fn bernoulli_profile_correlates_feedback_and_deduplicates() {
 
 #[cfg(feature = "stochastic")]
 #[test]
+fn bernoulli_profile_seed_controls_post_exploration_trace_and_failed_issue_preserves_it() {
+    use muxer::{BernoulliThompson, ThompsonConfig};
+    fn run(seed: u64, reject_first: bool) -> Vec<String> {
+        let mut muxer = Muxer::new(
+            actions(),
+            BernoulliThompson::with_seed(ThompsonConfig::default(), seed),
+        )
+        .unwrap();
+        if reject_first {
+            assert!(muxer.decide_from(&["missing".to_owned()], &()).is_err());
+        }
+        for _ in 0..3 {
+            let decision = muxer.decide(&()).unwrap();
+            muxer.tell(decision.id(), true).unwrap();
+        }
+        (0..24)
+            .map(|_| {
+                let decision = muxer.decide(&()).unwrap();
+                let action = decision.action().to_owned();
+                muxer.tell(decision.id(), true).unwrap();
+                action
+            })
+            .collect()
+    }
+    assert_eq!(run(17, false), run(17, false));
+    assert_eq!(run(17, false), run(17, true));
+    assert_ne!(run(17, false), run(18, false));
+}
+
+#[cfg(feature = "stochastic")]
+#[test]
 fn exp3_profile_logs_actual_filtered_propensity() {
     use muxer::{Exp3IxConfig, Exp3Profile};
     let mut muxer = Muxer::new(

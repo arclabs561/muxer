@@ -195,6 +195,11 @@ resets triage. Reusing those formats as complete checkpoints would lose state.
    its stream into the kernels that still own hidden random state. Preserve
    legacy kernel APIs and test any change to seeded selection traces. SplitMix64
    is non-cryptographic; an adapter must not implement `CryptoRng` for it.
+   The first prerequisite is implemented: `TrialRngState` versions the complete
+   stream position and rand draw consumption; high-level Thompson profiles own
+   a transactionally committed stream initialized by their profile seed. Legacy
+   Thompson selection uses the same sampler with its existing internal RNG.
+   Complete policy-state encoding is still required before portable resume.
 2. Add strict, complete policy and ticket state adapters, including Router
    triage, quality score buffers and retired epochs. Reject malformed state
    instead of using warm-start methods that silently skip invalid rows.

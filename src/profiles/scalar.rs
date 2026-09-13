@@ -28,10 +28,19 @@ pub struct ScalarTicket {
 }
 
 #[cfg(feature = "stochastic")]
+/// One-use prepared Thompson issuance, including its portable random continuation.
+#[derive(Debug)]
+pub struct ThompsonIssue {
+    kernel: ThompsonSampling,
+    rng: TrialRng,
+}
+
+#[cfg(feature = "stochastic")]
 /// Beta-Bernoulli Thompson sampling with boolean feedback.
 #[derive(Debug, Clone)]
 pub struct BernoulliThompson {
     inner: ThompsonSampling,
+    rng: TrialRng,
 }
 
 #[cfg(feature = "stochastic")]
@@ -41,13 +50,19 @@ impl BernoulliThompson {
     pub fn new(config: ThompsonConfig) -> Self {
         Self {
             inner: ThompsonSampling::new(config),
+            rng: TrialRng::seeded(0),
         }
     }
-    /// Construct with a reproducible kernel seed.
+    /// Construct with a reproducible profile seed.
+    ///
+    /// The seed drives the profile's checkpointable issuance stream. This is
+    /// distinct from the legacy low-level kernel trace, which remains available
+    /// through [`ThompsonSampling::with_seed`].
     #[must_use]
     pub fn with_seed(config: ThompsonConfig, seed: u64) -> Self {
         Self {
             inner: ThompsonSampling::with_seed(config, seed),
+            rng: TrialRng::seeded(seed),
         }
     }
     /// Inspect the underlying Thompson kernel.
@@ -63,7 +78,7 @@ impl InteractionPolicy for BernoulliThompson {
     type Feedback = bool;
     type CanonicalFeedback = bool;
     type Ticket = ScalarTicket;
-    type PreparedIssue = ThompsonSampling;
+    type PreparedIssue = ThompsonIssue;
     type PreparedUpdate = ThompsonSampling;
 
     fn prepare_decision(
@@ -72,8 +87,9 @@ impl InteractionPolicy for BernoulliThompson {
         _: &mut TrialRng,
     ) -> Result<PolicyDecision<Self::Ticket, Self::PreparedIssue>, PolicyError> {
         let mut next = self.inner.clone();
+        let mut rng = self.rng.clone();
         let decision = next
-            .decide(request.eligible())
+            .decide_with_rng(request.eligible(), &mut rng)
             .ok_or_else(|| PolicyError::new("no eligible action"))?;
         let reason = reason_from_notes(&decision.notes);
         Ok(PolicyDecision {
@@ -83,14 +99,15 @@ impl InteractionPolicy for BernoulliThompson {
                 action: decision.chosen,
                 reason,
             }),
-            issue: next,
+            issue: ThompsonIssue { kernel: next, rng },
             expectation: FeedbackExpectation::FinalValue {
                 channel: Channel::reward(),
             },
         })
     }
     fn commit_issue(&mut self, issue: Self::PreparedIssue) {
-        self.inner = issue;
+        self.inner = issue.kernel;
+        self.rng = issue.rng;
     }
     fn normalize(&self, feedback: bool) -> Result<bool, PolicyError> {
         Ok(feedback)
@@ -117,6 +134,7 @@ impl InteractionPolicy for BernoulliThompson {
 #[derive(Debug, Clone)]
 pub struct FractionalThompson {
     inner: ThompsonSampling,
+    rng: TrialRng,
 }
 
 #[cfg(feature = "stochastic")]
@@ -126,13 +144,19 @@ impl FractionalThompson {
     pub fn new(config: ThompsonConfig) -> Self {
         Self {
             inner: ThompsonSampling::new(config),
+            rng: TrialRng::seeded(0),
         }
     }
-    /// Construct with a reproducible kernel seed.
+    /// Construct with a reproducible profile seed.
+    ///
+    /// The seed drives the profile's checkpointable issuance stream. This is
+    /// distinct from the legacy low-level kernel trace, which remains available
+    /// through [`ThompsonSampling::with_seed`].
     #[must_use]
     pub fn with_seed(config: ThompsonConfig, seed: u64) -> Self {
         Self {
             inner: ThompsonSampling::with_seed(config, seed),
+            rng: TrialRng::seeded(seed),
         }
     }
     /// Inspect the underlying Thompson kernel.
@@ -148,7 +172,7 @@ impl InteractionPolicy for FractionalThompson {
     type Feedback = BoundedReward;
     type CanonicalFeedback = BoundedReward;
     type Ticket = ScalarTicket;
-    type PreparedIssue = ThompsonSampling;
+    type PreparedIssue = ThompsonIssue;
     type PreparedUpdate = ThompsonSampling;
 
     fn prepare_decision(
@@ -157,8 +181,9 @@ impl InteractionPolicy for FractionalThompson {
         _: &mut TrialRng,
     ) -> Result<PolicyDecision<Self::Ticket, Self::PreparedIssue>, PolicyError> {
         let mut next = self.inner.clone();
+        let mut rng = self.rng.clone();
         let decision = next
-            .decide(request.eligible())
+            .decide_with_rng(request.eligible(), &mut rng)
             .ok_or_else(|| PolicyError::new("no eligible action"))?;
         let reason = reason_from_notes(&decision.notes);
         Ok(PolicyDecision {
@@ -168,14 +193,15 @@ impl InteractionPolicy for FractionalThompson {
                 action: decision.chosen,
                 reason,
             }),
-            issue: next,
+            issue: ThompsonIssue { kernel: next, rng },
             expectation: FeedbackExpectation::FinalValue {
                 channel: Channel::reward(),
             },
         })
     }
     fn commit_issue(&mut self, issue: Self::PreparedIssue) {
-        self.inner = issue;
+        self.inner = issue.kernel;
+        self.rng = issue.rng;
     }
     fn normalize(&self, feedback: BoundedReward) -> Result<BoundedReward, PolicyError> {
         Ok(feedback)
@@ -412,5 +438,70 @@ fn reason_from_notes(notes: &[DecisionNote]) -> DecisionReason {
         DecisionReason::PosteriorSample
     } else {
         DecisionReason::CategoricalSample
+    }
+}
+
+#[cfg(all(test, feature = "stochastic"))]
+mod rng_tests {
+    use super::*;
+
+    fn check_transactional_stream<P>(
+        mut profile: P,
+        reward: P::CanonicalFeedback,
+        state: impl Fn(&P) -> crate::TrialRngState,
+    ) where
+        P: InteractionPolicy<Context = (), Ticket = ScalarTicket, PreparedIssue = ThompsonIssue>,
+    {
+        let actions = vec!["a".to_owned(), "b".to_owned()];
+        let mut runtime_rng = TrialRng::seeded(99);
+        for _ in 0..actions.len() {
+            let decision = profile
+                .prepare_decision(PolicyRequest::new(&actions, &()), &mut runtime_rng)
+                .unwrap();
+            profile.commit_issue(decision.issue);
+            let update = profile.prepare(&decision.ticket.unwrap(), &reward).unwrap();
+            profile.apply(update);
+        }
+
+        let before = state(&profile);
+        let discarded = profile
+            .prepare_decision(PolicyRequest::new(&actions, &()), &mut runtime_rng)
+            .unwrap();
+        assert_eq!(state(&profile), before);
+        assert_ne!(discarded.issue.rng.state(), before);
+        let retried = profile
+            .prepare_decision(PolicyRequest::new(&actions, &()), &mut runtime_rng)
+            .unwrap();
+        assert_eq!(discarded.selection, retried.selection);
+        assert_eq!(discarded.issue.rng.state(), retried.issue.rng.state());
+        let delayed_ticket = retried.ticket.unwrap();
+        profile.commit_issue(retried.issue);
+
+        let next = profile
+            .prepare_decision(PolicyRequest::new(&actions, &()), &mut runtime_rng)
+            .unwrap();
+        profile.commit_issue(next.issue);
+        let before_feedback = state(&profile);
+        let update = profile.prepare(&delayed_ticket, &reward).unwrap();
+        profile.apply(update);
+        assert_eq!(state(&profile), before_feedback);
+    }
+
+    #[test]
+    fn bernoulli_preparation_and_delayed_feedback_preserve_stream_ownership() {
+        check_transactional_stream(
+            BernoulliThompson::with_seed(ThompsonConfig::default(), 17),
+            true,
+            |profile| profile.rng.state(),
+        );
+    }
+
+    #[test]
+    fn fractional_preparation_and_delayed_feedback_preserve_stream_ownership() {
+        check_transactional_stream(
+            FractionalThompson::with_seed(ThompsonConfig::default(), 17),
+            BoundedReward::new(0.6).unwrap(),
+            |profile| profile.rng.state(),
+        );
     }
 }

@@ -4,6 +4,8 @@
 
 ### Added
 
+- Versioned, optionally serde-encoded `TrialRngState` with strict version
+  restoration and pinned draw-consumption semantics, as a restart prerequisite.
 - Per-item batch cancellation with retained lifecycle status, idempotent
   cleanup in the issuing policy epoch, and sibling-preserving expiry.
 - Additive `Muxer<P>` lifecycle with immutable receipts, canonical eligibility,
@@ -43,6 +45,9 @@
 
 ### Changed
 
+- Unreleased Thompson profiles use their own transactionally committed trial
+  stream; `with_seed` remains meaningful but exact profile choice sequences
+  change. Legacy Thompson seeded selection retains its existing stream.
 - Quality feedback uses compact prepared updates shared with Router's mutation
   routines instead of cloning the Router and its score-tracking maps. The
   unreleased `QualityUpdate` is opaque and non-cloneable.

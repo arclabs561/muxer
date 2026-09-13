@@ -205,7 +205,7 @@ impl ThompsonSampling {
             let mut best_val = f64::NEG_INFINITY;
             let mut best_idx = 0;
             for (i, &(a, b)) in params.iter().enumerate() {
-                let sample = self.sample_beta(a, b);
+                let sample = Self::sample_beta_with_rng(&mut self.rng, a, b);
                 // Strict improvement only; ties go to the first arm (lower index).
                 if sample > best_val + 1e-15 {
                     best_val = sample;
@@ -264,36 +264,44 @@ impl ThompsonSampling {
     }
 
     fn get_or_create_stats(&mut self, arm: &str) -> &mut BetaStats {
-        // Avoid borrowing `self` inside the `entry` closure (borrowck footgun).
-        let (a, b) = self.prior_for(arm);
-        self.stats
-            .entry(arm.to_string())
-            .or_insert_with(|| BetaStats {
-                alpha: if a.is_finite() && a > 0.0 { a } else { 1.0 },
-                beta: if b.is_finite() && b > 0.0 { b } else { 1.0 },
-                uses: 0,
-            })
+        Self::get_or_create_stats_in(&self.cfg, &mut self.stats, arm)
     }
 
-    fn sample_beta(&mut self, alpha: f64, beta: f64) -> f64 {
+    fn get_or_create_stats_in<'a>(
+        cfg: &ThompsonConfig,
+        stats: &'a mut BTreeMap<String, BetaStats>,
+        arm: &str,
+    ) -> &'a mut BetaStats {
+        let (a, b) = cfg
+            .priors
+            .get(arm)
+            .copied()
+            .unwrap_or((cfg.alpha0, cfg.beta0));
+        stats.entry(arm.to_owned()).or_insert_with(|| BetaStats {
+            alpha: if a.is_finite() && a > 0.0 { a } else { 1.0 },
+            beta: if b.is_finite() && b > 0.0 { b } else { 1.0 },
+            uses: 0,
+        })
+    }
+
+    fn sample_beta_with_rng<R: Rng + ?Sized>(rng: &mut R, alpha: f64, beta: f64) -> f64 {
         if !(alpha.is_finite() && beta.is_finite()) || alpha <= 0.0 || beta <= 0.0 {
             return 0.5;
         }
         match Beta::new(alpha, beta) {
-            Ok(dist) => dist.sample(&mut self.rng),
+            Ok(dist) => dist.sample(rng),
             Err(_) => 0.5,
         }
     }
 
-    /// Select an arm.
-    ///
-    /// Policy:
-    /// - Explore: return the first arm (stable order) that has `uses == 0`.
-    /// - Otherwise: sample from each arm’s Beta posterior and choose the max.
-    /// - Tie-break: lexicographic arm name.
-    pub fn select<'a>(&mut self, arms_in_order: &'a [String]) -> Option<&'a String> {
+    fn select_with_rng<'a, R: Rng + ?Sized>(
+        cfg: &ThompsonConfig,
+        stats: &mut BTreeMap<String, BetaStats>,
+        arms_in_order: &'a [String],
+        rng: &mut R,
+    ) -> Option<&'a String> {
         for a in arms_in_order {
-            let s = *self.get_or_create_stats(a);
+            let s = *Self::get_or_create_stats_in(cfg, stats, a);
             if s.uses == 0 {
                 return Some(a);
             }
@@ -302,8 +310,8 @@ impl ThompsonSampling {
         let mut best: Option<&'a String> = None;
         let mut best_sample = f64::NEG_INFINITY;
         for a in arms_in_order {
-            let s = *self.get_or_create_stats(a);
-            let x = self.sample_beta(s.alpha, s.beta);
+            let s = *Self::get_or_create_stats_in(cfg, stats, a);
+            let x = Self::sample_beta_with_rng(rng, s.alpha, s.beta);
             if x > best_sample
                 || ((x - best_sample).abs() <= 1e-12 && best.map(|b| a < b).unwrap_or(true))
             {
@@ -312,6 +320,59 @@ impl ThompsonSampling {
             }
         }
         best
+    }
+
+    /// Select using an explicitly supplied random stream.
+    ///
+    /// This is crate-visible for correlated profiles that must checkpoint their
+    /// random continuation. Public [`Self::decide`] retains its historical
+    /// internal seeded stream.
+    pub(crate) fn decide_with_rng<R: Rng + ?Sized>(
+        &mut self,
+        arms_in_order: &[String],
+        rng: &mut R,
+    ) -> Option<Decision> {
+        Self::decide_from_parts(&self.cfg, &mut self.stats, arms_in_order, rng)
+    }
+
+    fn decide_from_parts<R: Rng + ?Sized>(
+        cfg: &ThompsonConfig,
+        stats: &mut BTreeMap<String, BetaStats>,
+        arms_in_order: &[String],
+        rng: &mut R,
+    ) -> Option<Decision> {
+        if arms_in_order.is_empty() {
+            return None;
+        }
+        for a in arms_in_order {
+            let s = *Self::get_or_create_stats_in(cfg, stats, a);
+            if s.uses == 0 {
+                return Some(Decision {
+                    policy: DecisionPolicy::Thompson,
+                    chosen: a.clone(),
+                    probs: None,
+                    notes: vec![DecisionNote::ExploreFirst],
+                });
+            }
+        }
+        let chosen = Self::select_with_rng(cfg, stats, arms_in_order, rng)?.clone();
+        Some(Decision {
+            policy: DecisionPolicy::Thompson,
+            chosen,
+            probs: None,
+            notes: vec![DecisionNote::SampledPosteriorMax],
+        })
+    }
+
+    /// Select an arm using the legacy internal seeded random stream.
+    ///
+    /// Policy:
+    /// - Explore: return the first arm (stable order) that has `uses == 0`.
+    /// - Otherwise: sample from each arm’s Beta posterior and choose the max.
+    /// - Tie-break: lexicographic arm name.
+    pub fn select<'a>(&mut self, arms_in_order: &'a [String]) -> Option<&'a String> {
+        let (cfg, stats, rng) = (&self.cfg, &mut self.stats, &mut self.rng);
+        Self::select_with_rng(cfg, stats, arms_in_order, rng)
     }
 
     /// Select via mean-softmax sampling and return a unified `Decision`.
@@ -384,29 +445,7 @@ impl ThompsonSampling {
     /// - Does not include `probs` (this method samples per-arm posteriors and chooses the max).
     /// - Records explore-first vs posterior sampling.
     pub fn decide(&mut self, arms_in_order: &[String]) -> Option<Decision> {
-        if arms_in_order.is_empty() {
-            return None;
-        }
-
-        for a in arms_in_order {
-            let s = *self.get_or_create_stats(a);
-            if s.uses == 0 {
-                return Some(Decision {
-                    policy: DecisionPolicy::Thompson,
-                    chosen: a.clone(),
-                    probs: None,
-                    notes: vec![DecisionNote::ExploreFirst],
-                });
-            }
-        }
-
-        let chosen = self.select(arms_in_order)?.clone();
-        Some(Decision {
-            policy: DecisionPolicy::Thompson,
-            chosen,
-            probs: None,
-            notes: vec![DecisionNote::SampledPosteriorMax],
-        })
+        Self::decide_from_parts(&self.cfg, &mut self.stats, arms_in_order, &mut self.rng)
     }
 
     /// Update the chosen arm with a bounded reward in `[0, 1]`.
@@ -482,6 +521,24 @@ impl Default for ThompsonSampling {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn injected_std_rng_preserves_legacy_seeded_decision_trace() {
+        let arms = vec!["a".to_owned(), "b".to_owned()];
+        let mut legacy = ThompsonSampling::with_seed(ThompsonConfig::default(), 41);
+        let mut injected = ThompsonSampling::with_seed(ThompsonConfig::default(), 999);
+        for arm in &arms {
+            legacy.update_reward(arm, 0.5);
+            injected.update_reward(arm, 0.5);
+        }
+        let mut rng = StdRng::seed_from_u64(41);
+        for _ in 0..20 {
+            assert_eq!(
+                legacy.decide(&arms).unwrap().chosen,
+                injected.decide_with_rng(&arms, &mut rng).unwrap().chosen
+            );
+        }
+    }
 
     #[test]
     fn explores_each_arm_once_in_order() {
