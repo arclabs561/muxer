@@ -93,9 +93,9 @@ diagnostics separately from probability availability.
 `into_checkpoint()` consumes the runtime and `Muxer::restore(checkpoint)` resumes
 its complete in-memory state, including RNG, pending tickets, retired policies,
 event ledgers and triage. It supports move-only external models without forking
-decision IDs. This release does **not** provide a serialized disk/restart format,
-automatic external model loading or durable exactly-once delivery. Legacy
-statistical snapshots are still warm starts, not complete runtime checkpoints.
+decision IDs. Automatic external model loading and durable exactly-once delivery
+remain application responsibilities. Legacy statistical snapshots are still
+warm starts, not complete runtime checkpoints.
 
 As a restart prerequisite, `TrialRng::state()` captures a versioned SplitMix64
 position, serializable with `serde`; `TrialRng::from_state` rejects unsupported
@@ -105,8 +105,43 @@ argument and committed only with accepted issuance. Their unreleased seeded
 choice sequences therefore change from the initial `StdRng`-backed adapter;
 legacy `ThompsonSampling` seeded behavior is unchanged. Restoring distribution
 choices additionally requires the same compatible build and policy state,
-not just matching RNG bits. This prerequisite does not serialize the runtime,
-pending tickets or complete profile state.
+not just matching RNG bits. RNG state alone is not a complete profile checkpoint.
+
+With `serde`, `Router::checkpoint(build_key)` and
+`Router::from_checkpoint(checkpoint, expected_build_key)` now preserve the
+underlying Router's complete windows, monitoring history, live triage detectors,
+sticky alarms and coverage cells. The opaque `RouterCheckpoint` is distinct
+from `RouterSnapshot`, which still deliberately resets triage on warm start.
+For the complete quality lifecycle, `Muxer<QualityProfile>::quality_checkpoint`
+captures an opaque, serde-enabled `QualityMuxerCheckpoint` and
+`Muxer::from_quality_checkpoint(checkpoint, expected_build_key)` restores it.
+This includes pending execution/score joins, retired policy epochs, immutable
+receipts, per-item cancellation/finality, retained event history, terminal
+eviction order and runtime RNG. Other profiles still use the consuming
+in-memory handoff; this is not a generic custom-policy serialization contract.
+
+Capture borrows the runtime and leaves it usable if validation or later encoding
+fails. The application must quiesce issuance/feedback at the capture boundary,
+persist the checkpoint, and transfer single-writer ownership before restoring.
+Restore reserves the saved engine namespace locally and rejects IDs already
+allocated in that process, even if the previous runtime was dropped. Prefer
+the move-only in-memory handoff for same-process continuation. Reservations
+prevent local ID collisions, not copied-file forks across processes.
+
+The checkpoint envelope checks its schema version, crate version and a nonempty
+application-supplied build key. Use a key identifying compatible application,
+dependency, feature and target builds. It is not authentication, integrity
+protection, or single-writer fencing. The application owns those boundaries,
+storage and input-size limits. Use a serializer that preserves floating-point
+bits; the process-boundary JSON test enables `serde_json/float_roundtrip` and
+uses finite JSON-compatible configuration. Formats that cannot represent a
+configured infinity cannot be used for that state.
+
+Complete checkpoint decoding rejects misaligned IDs and noncanonical outcomes
+instead of invoking legacy repair behavior. Restore validates configuration,
+arm membership, retained identities and detector/coverage/count consistency.
+It preserves independently seeded warm-start window histories rather than
+requiring primary and monitoring windows to share an identical suffix.
 
 ## Probability and evaluation
 

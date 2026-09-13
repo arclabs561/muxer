@@ -138,6 +138,8 @@ pub use interaction::{
 };
 
 mod runtime;
+#[cfg(feature = "serde")]
+pub use runtime::QualityMuxerCheckpoint;
 pub use runtime::{
     BatchInteractionPolicy, BatchSelection, DecisionReceipt, EventOutcome, FeedbackEvent,
     InteractionPolicy, ItemStatus, Muxer, MuxerCheckpoint, PolicyBatchDecision, PolicyDecision,
@@ -185,6 +187,8 @@ mod control;
 pub use control::{pick_control_arms, split_control_budget, ControlConfig};
 
 mod router;
+#[cfg(feature = "serde")]
+pub use router::RouterCheckpoint;
 pub use router::{Router, RouterConfig, RouterDecision, RouterMode, RouterSnapshot};
 
 mod guardrail;
@@ -419,6 +423,86 @@ pub struct Window {
     ids: VecDeque<Option<ObservationId>>,
 }
 
+// Complete checkpoints must not use the legacy Window/Outcome deserializers:
+// those intentionally align old IDs and normalize old outcome representations.
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(transparent)]
+pub(crate) struct WindowCheckpoint(Window);
+
+#[cfg(feature = "serde")]
+impl From<Window> for WindowCheckpoint {
+    fn from(window: Window) -> Self {
+        Self(window)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl WindowCheckpoint {
+    pub(crate) fn into_window(self) -> Window {
+        self.0
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for WindowCheckpoint {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawOutcome {
+            ok: bool,
+            junk: bool,
+            hard_junk: bool,
+            cost_units: u64,
+            elapsed_ms: u64,
+            quality_score: Option<f64>,
+        }
+
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw {
+            cap: usize,
+            buf: VecDeque<RawOutcome>,
+            ids: VecDeque<Option<ObservationId>>,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+        if raw.cap == 0 || raw.buf.len() > raw.cap || raw.ids.len() != raw.buf.len() {
+            return Err(serde::de::Error::custom(
+                "checkpoint window has invalid capacity or ID alignment",
+            ));
+        }
+        let mut buf = VecDeque::with_capacity(raw.buf.len());
+        for outcome in raw.buf {
+            if (outcome.hard_junk && !outcome.junk)
+                || outcome
+                    .quality_score
+                    .is_some_and(|score| !score.is_finite() || !(0.0..=1.0).contains(&score))
+            {
+                return Err(serde::de::Error::custom(
+                    "checkpoint outcome is not canonical",
+                ));
+            }
+            buf.push_back(Outcome {
+                ok: outcome.ok,
+                junk: outcome.junk,
+                hard_junk: outcome.hard_junk,
+                cost_units: outcome.cost_units,
+                elapsed_ms: outcome.elapsed_ms,
+                quality_score: outcome.quality_score,
+            });
+        }
+        Ok(Self(Window {
+            cap: raw.cap,
+            buf,
+            ids: raw.ids,
+        }))
+    }
+}
+
 #[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for Window {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -488,6 +572,11 @@ impl Window {
     /// Iterate over outcomes in the window (oldest to newest).
     pub fn iter(&self) -> impl Iterator<Item = &Outcome> + '_ {
         self.buf.iter()
+    }
+
+    #[cfg(feature = "serde")]
+    pub(crate) fn retained_ids(&self) -> impl Iterator<Item = ObservationId> + '_ {
+        self.ids.iter().filter_map(|id| *id)
     }
 
     /// Push a new outcome, evicting the oldest if at capacity.

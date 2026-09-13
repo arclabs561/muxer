@@ -18,6 +18,8 @@
 //! by the caller. A system-wide false-alarm claim requires simulation of the complete
 //! router, including all arms, allocation decisions, and reset episodes.
 
+#[cfg(feature = "serde")]
+use crate::WindowCheckpoint;
 use crate::{ObservationId, Outcome, Summary, Window};
 
 /// Categorical drift metric used for comparing two outcome distributions.
@@ -108,6 +110,38 @@ impl Default for DriftConfig {
 pub struct MonitoredWindow {
     baseline: Window,
     recent: Window,
+}
+
+/// Strict wire representation of a monitored window for complete checkpoints.
+///
+/// This is separate from the legacy serde form of [`MonitoredWindow`], whose
+/// nested `Window` deserialization remains intentionally repair-oriented.
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MonitoredWindowCheckpoint {
+    baseline: WindowCheckpoint,
+    recent: WindowCheckpoint,
+}
+
+#[cfg(feature = "serde")]
+impl From<MonitoredWindow> for MonitoredWindowCheckpoint {
+    fn from(window: MonitoredWindow) -> Self {
+        Self {
+            baseline: WindowCheckpoint::from(window.baseline),
+            recent: WindowCheckpoint::from(window.recent),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl MonitoredWindowCheckpoint {
+    pub(crate) fn into_monitored_window(self) -> MonitoredWindow {
+        MonitoredWindow {
+            baseline: self.baseline.into_window(),
+            recent: self.recent.into_window(),
+        }
+    }
 }
 
 impl MonitoredWindow {
@@ -777,6 +811,105 @@ impl CusumCatBank {
             n,
         }
     }
+
+    /// Validate retained detector state against the configuration that created it.
+    ///
+    /// This is deliberately crate-private checkpoint support: normal serde
+    /// deserialization remains backward-compatible and does not promise to
+    /// reject every cross-field inconsistency.
+    #[cfg(feature = "serde")]
+    pub(crate) fn validate_checkpoint(
+        &self,
+        p0: &[f64],
+        alts: &[Vec<f64>],
+        alpha: f64,
+        min_n: u64,
+        threshold: f64,
+        tol: f64,
+    ) -> Result<(), logp::Error> {
+        let expected = Self::new(p0, alts, alpha, min_n, threshold, tol)?;
+        if self.min_n != expected.min_n || self.dets.len() != expected.dets.len() {
+            return Err(logp::Error::Domain(
+                "CusumCatBank checkpoint does not match its configuration",
+            ));
+        }
+
+        let mut shared_n = None;
+        for (actual, configured) in self.dets.iter().zip(&expected.dets) {
+            if actual.k != configured.k
+                || actual.min_n != configured.min_n
+                || actual.threshold.to_bits() != configured.threshold.to_bits()
+                || !same_f64_slice(&actual.p0, &configured.p0)
+                || !same_f64_slice(&actual.p1, &configured.p1)
+            {
+                return Err(logp::Error::Domain(
+                    "CusumCatBank checkpoint detector does not match its configuration",
+                ));
+            }
+            if !actual.s.is_finite() || actual.s < 0.0 {
+                return Err(logp::Error::Domain(
+                    "CusumCatBank checkpoint score must be finite and non-negative",
+                ));
+            }
+            match shared_n {
+                Some(n) if n != actual.n => {
+                    return Err(logp::Error::Domain(
+                        "CusumCatBank checkpoint detector counts disagree",
+                    ));
+                }
+                None => shared_n = Some(actual.n),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate mutable detector-state invariants and return its shared count.
+    ///
+    /// The sticky `alarmed` bit belongs to [`crate::TriageSession`], so it is
+    /// supplied by that owner rather than stored in this bank.
+    #[cfg(feature = "serde")]
+    pub(crate) fn checkpoint_count(&self, alarmed: bool) -> Result<u64, logp::Error> {
+        let Some(first) = self.dets.first() else {
+            return Err(logp::Error::Domain(
+                "CusumCatBank checkpoint must contain a detector",
+            ));
+        };
+        let count = first.n;
+        if self.dets.iter().any(|detector| detector.n != count) {
+            return Err(logp::Error::Domain(
+                "CusumCatBank checkpoint detector counts disagree",
+            ));
+        }
+        if count == 0 {
+            if alarmed || self.dets.iter().any(|detector| detector.s != 0.0) {
+                return Err(logp::Error::Domain(
+                    "CusumCatBank checkpoint reset state is inconsistent",
+                ));
+            }
+            return Ok(0);
+        }
+        if !alarmed
+            && self
+                .dets
+                .iter()
+                .any(|detector| count >= detector.min_n && detector.s >= detector.threshold)
+        {
+            return Err(logp::Error::Domain(
+                "CusumCatBank checkpoint omits a qualifying sticky alarm",
+            ));
+        }
+        Ok(count)
+    }
+}
+
+#[cfg(feature = "serde")]
+fn same_f64_slice(left: &[f64], right: &[f64]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| left.to_bits() == right.to_bits())
 }
 
 /// Compute drift between two windows (returns `None` if either side is under-sampled).
@@ -1949,5 +2082,27 @@ mod tests {
             let err = ((ratio - expected) / expected).abs();
             assert!(err < 1e-12, "n={n}: ratio={ratio}, expected={expected}");
         }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn checkpoint_validation_rejects_corrupted_cusum_state() {
+        let p0 = vec![0.85, 0.05, 0.05, 0.05];
+        let alts = vec![vec![0.40, 0.10, 0.40, 0.10]];
+        let mut bank = CusumCatBank::new(&p0, &alts, 1e-3, 2, 5.0, 1e-6).unwrap();
+        bank.update(0);
+        bank.update(2);
+        assert!(bank
+            .validate_checkpoint(&p0, &alts, 1e-3, 2, 5.0, 1e-6)
+            .is_ok());
+
+        bank.dets[0].n = 0;
+        assert!(bank.checkpoint_count(false).is_err());
+        bank.dets[0].n = 2;
+
+        bank.dets[0].s = f64::NAN;
+        assert!(bank
+            .validate_checkpoint(&p0, &alts, 1e-3, 2, 5.0, 1e-6)
+            .is_err());
     }
 }

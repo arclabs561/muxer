@@ -11,8 +11,28 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[path = "runtime/events.rs"]
 mod events;
 pub use events::{EventOutcome, FeedbackEvent};
+#[cfg(feature = "serde")]
+#[path = "runtime/checkpoint.rs"]
+mod checkpoint;
+#[cfg(feature = "serde")]
+pub use checkpoint::QualityMuxerCheckpoint;
 
 static NEXT_ENGINE: AtomicU64 = AtomicU64::new(1);
+
+fn allocate_engine() -> Result<EngineId, RuntimeError> {
+    loop {
+        let current = NEXT_ENGINE.load(Ordering::Relaxed);
+        if current == 0 || current == u64::MAX {
+            return Err(RuntimeError::EngineNamespaceExhausted);
+        }
+        if NEXT_ENGINE
+            .compare_exchange_weak(current, current + 1, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            return Ok(EngineId(current));
+        }
+    }
+}
 
 /// Versioned complete state of the non-cryptographic trial random stream.
 ///
@@ -266,6 +286,8 @@ pub trait BatchInteractionPolicy: InteractionPolicy {
 
 /// Bounded retention configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct RuntimeConfig {
     /// Maximum open decisions.
     pub pending_capacity: usize,
@@ -464,6 +486,7 @@ impl<P: InteractionPolicy> Pending<P> {
 
 /// Lifecycle state of one selected item in a receipt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ItemStatus {
     /// Awaiting its declared channels.
     Open,
@@ -477,6 +500,7 @@ pub enum ItemStatus {
 
 /// Why a retained interaction record is terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TerminalStatus {
     /// Every item resolved its channels or was individually cancelled.
     Completed,
@@ -530,6 +554,8 @@ pub enum RuntimeError {
     PendingDecisions,
     /// Retained old policy epochs have reached their configured bound.
     EpochCapacity,
+    /// Process-local receipt namespace allocation cannot advance safely.
+    EngineNamespaceExhausted,
     /// Batch size must be nonzero and no larger than the eligible set.
     InvalidBatchSize,
     /// A policy rejected preparation or normalization.
@@ -586,8 +612,7 @@ impl<P: InteractionPolicy> Muxer<P> {
         {
             return Err(RuntimeError::FeedbackCapacity);
         }
-        let raw = NEXT_ENGINE.fetch_add(1, Ordering::Relaxed);
-        let engine = EngineId(raw);
+        let engine = allocate_engine()?;
         Ok(Self {
             actions,
             policy,

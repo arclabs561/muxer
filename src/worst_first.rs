@@ -456,10 +456,128 @@ pub struct ContextualCoverageTracker {
     cells: std::collections::BTreeMap<(String, u64), CellStats>,
 }
 
+/// Strict, JSON-compatible wire representation of contextual coverage cells.
+///
+/// A `BTreeMap<(String, u64), _>` cannot be represented as a JSON object key,
+/// so complete checkpoints use this ordered sequence while legacy tracker serde
+/// remains unchanged.
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ContextualCoverageCheckpoint {
+    cells: Vec<ContextualCoverageCellCheckpoint>,
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContextualCoverageCellCheckpoint {
+    arm: String,
+    context_bin: u64,
+    calls: u64,
+    hard_junk: u64,
+    soft_junk: u64,
+}
+
+#[cfg(feature = "serde")]
+impl From<&ContextualCoverageTracker> for ContextualCoverageCheckpoint {
+    fn from(tracker: &ContextualCoverageTracker) -> Self {
+        Self {
+            cells: tracker
+                .cells
+                .iter()
+                .map(
+                    |((arm, context_bin), stats)| ContextualCoverageCellCheckpoint {
+                        arm: arm.clone(),
+                        context_bin: *context_bin,
+                        calls: stats.calls,
+                        hard_junk: stats.hard_junk,
+                        soft_junk: stats.soft_junk,
+                    },
+                )
+                .collect(),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl ContextualCoverageCheckpoint {
+    pub(crate) fn into_tracker(self) -> Result<ContextualCoverageTracker, logp::Error> {
+        let mut cells = std::collections::BTreeMap::new();
+        for cell in self.cells {
+            let key = (cell.arm, cell.context_bin);
+            if cells
+                .insert(
+                    key,
+                    CellStats {
+                        calls: cell.calls,
+                        hard_junk: cell.hard_junk,
+                        soft_junk: cell.soft_junk,
+                    },
+                )
+                .is_some()
+            {
+                return Err(logp::Error::Domain(
+                    "ContextualCoverageTracker checkpoint contains duplicate cells",
+                ));
+            }
+        }
+        Ok(ContextualCoverageTracker { cells })
+    }
+}
+
 impl ContextualCoverageTracker {
     /// Create an empty tracker.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn remove_arm(&mut self, arm: &str) {
+        self.cells.retain(|(owner, _), _| owner != arm);
+    }
+
+    /// Validate checkpoint-only structural invariants for accumulated cells.
+    ///
+    /// The tracker cannot validate the hashed bin back to an input context, but
+    /// every reachable cell names a registered arm and records at most one
+    /// categorical degradation per call.
+    #[cfg(feature = "serde")]
+    pub(crate) fn validate_checkpoint(&self, arms: &[String]) -> Result<(), logp::Error> {
+        let known: std::collections::BTreeSet<&str> = arms.iter().map(String::as_str).collect();
+        for ((arm, _bin), stats) in &self.cells {
+            if !known.contains(arm.as_str()) {
+                return Err(logp::Error::Domain(
+                    "ContextualCoverageTracker checkpoint contains an unknown arm",
+                ));
+            }
+            if stats.calls == 0
+                || stats.hard_junk > stats.calls
+                || stats.soft_junk > stats.calls
+                || stats.hard_junk > stats.calls - stats.soft_junk
+            {
+                return Err(logp::Error::Domain(
+                    "ContextualCoverageTracker checkpoint has impossible cell counts",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Return checked per-arm retained counts after validating every cell.
+    #[cfg(feature = "serde")]
+    pub(crate) fn checkpoint_calls_by_arm(
+        &self,
+        arms: &[String],
+    ) -> Result<std::collections::BTreeMap<String, u64>, logp::Error> {
+        self.validate_checkpoint(arms)?;
+        let mut calls = std::collections::BTreeMap::new();
+        for ((arm, _bin), stats) in &self.cells {
+            let total = calls.entry(arm.clone()).or_insert(0_u64);
+            *total = total.checked_add(stats.calls).ok_or(logp::Error::Domain(
+                "ContextualCoverageTracker checkpoint call count overflow",
+            ))?;
+        }
+        Ok(calls)
     }
 
     /// Record one outcome for `(arm, bin)`.
@@ -757,5 +875,87 @@ mod tests {
             |_, _| (0, 0.0, 0.0),
         );
         assert_eq!(a, b);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn checkpoint_validation_rejects_impossible_cell_counts_and_unknown_arms() {
+        let known = arms();
+        let mut tracker = ContextualCoverageTracker::new();
+        tracker.record("a", 7, true, false);
+        assert!(tracker.validate_checkpoint(&known).is_ok());
+
+        tracker.cells.insert(
+            ("a".to_owned(), 9),
+            CellStats {
+                calls: 1,
+                hard_junk: 1,
+                soft_junk: 1,
+            },
+        );
+        assert!(tracker.validate_checkpoint(&known).is_err());
+
+        tracker.cells.clear();
+        tracker.record("unknown", 7, false, false);
+        assert!(tracker.validate_checkpoint(&known).is_err());
+
+        tracker.cells.clear();
+        tracker.cells.insert(
+            ("a".to_owned(), 1),
+            CellStats {
+                calls: 0,
+                hard_junk: 0,
+                soft_junk: 0,
+            },
+        );
+        assert!(tracker.validate_checkpoint(&known).is_err());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn coverage_checkpoint_rejects_duplicate_wire_cells() {
+        let checkpoint = ContextualCoverageCheckpoint {
+            cells: vec![
+                ContextualCoverageCellCheckpoint {
+                    arm: "a".to_owned(),
+                    context_bin: 7,
+                    calls: 1,
+                    hard_junk: 0,
+                    soft_junk: 0,
+                },
+                ContextualCoverageCellCheckpoint {
+                    arm: "a".to_owned(),
+                    context_bin: 7,
+                    calls: 1,
+                    hard_junk: 0,
+                    soft_junk: 0,
+                },
+            ],
+        };
+        assert!(checkpoint.into_tracker().is_err());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn checkpoint_call_aggregation_rejects_overflow() {
+        let known = arms();
+        let mut tracker = ContextualCoverageTracker::new();
+        tracker.cells.insert(
+            ("a".to_owned(), 1),
+            CellStats {
+                calls: u64::MAX,
+                hard_junk: 0,
+                soft_junk: 0,
+            },
+        );
+        tracker.cells.insert(
+            ("a".to_owned(), 2),
+            CellStats {
+                calls: 1,
+                hard_junk: 0,
+                soft_junk: 0,
+            },
+        );
+        assert!(tracker.checkpoint_calls_by_arm(&known).is_err());
     }
 }

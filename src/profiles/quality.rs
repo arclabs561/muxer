@@ -139,6 +139,101 @@ impl CanonicalQualityFeedback {
     }
 }
 
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum CanonicalQualityFeedbackWire {
+    Execution {
+        ok: bool,
+        junk: bool,
+        hard_junk: bool,
+        cost_units: u64,
+        elapsed_ms: u64,
+        quality_score: Option<u64>,
+    },
+    Score {
+        score: u64,
+    },
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for CanonicalQualityFeedback {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let wire = match &self.0 {
+            CanonicalQualityFeedbackKind::Execution {
+                ok,
+                junk,
+                hard_junk,
+                cost_units,
+                elapsed_ms,
+                quality_score,
+            } => CanonicalQualityFeedbackWire::Execution {
+                ok: *ok,
+                junk: *junk,
+                hard_junk: *hard_junk,
+                cost_units: *cost_units,
+                elapsed_ms: *elapsed_ms,
+                quality_score: *quality_score,
+            },
+            CanonicalQualityFeedbackKind::Score(score) => {
+                CanonicalQualityFeedbackWire::Score { score: *score }
+            }
+        };
+        wire.serialize(serializer)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for CanonicalQualityFeedback {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = CanonicalQualityFeedbackWire::deserialize(deserializer)?;
+        let canonical_score = |bits: u64| -> Result<u64, D::Error> {
+            let score =
+                QualityScore::new(f64::from_bits(bits)).map_err(serde::de::Error::custom)?;
+            if score.get().to_bits() != bits {
+                return Err(serde::de::Error::custom(
+                    "quality checkpoint feedback score is not canonical",
+                ));
+            }
+            Ok(bits)
+        };
+        match wire {
+            CanonicalQualityFeedbackWire::Execution {
+                ok,
+                junk,
+                hard_junk,
+                cost_units,
+                elapsed_ms,
+                quality_score,
+            } => {
+                if hard_junk && !junk {
+                    return Err(serde::de::Error::custom(
+                        "quality checkpoint execution is not canonical",
+                    ));
+                }
+                let quality_score = quality_score.map(canonical_score).transpose()?;
+                Ok(Self(CanonicalQualityFeedbackKind::Execution {
+                    ok,
+                    junk,
+                    hard_junk,
+                    cost_units,
+                    elapsed_ms,
+                    quality_score,
+                }))
+            }
+            CanonicalQualityFeedbackWire::Score { score } => Ok(Self(
+                CanonicalQualityFeedbackKind::Score(canonical_score(score)?),
+            )),
+        }
+    }
+}
+
 /// The immutable evidence retained for one issued quality decision.
 #[derive(Debug, Clone)]
 pub struct QualityTicket {
@@ -146,6 +241,82 @@ pub struct QualityTicket {
     observation: ObservationId,
     context: Arc<[f64]>,
     reason: DecisionReason,
+}
+
+/// Borrowed open-ticket evidence used to validate a quality runtime checkpoint.
+#[cfg(feature = "serde")]
+pub(crate) struct QualityTicketState<'a> {
+    pub(crate) ticket: &'a QualityTicket,
+    pub(crate) action: &'a str,
+    pub(crate) reason: DecisionReason,
+    pub(crate) values: &'a [(Channel, CanonicalQualityFeedback)],
+    pub(crate) missing: &'a [Channel],
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct QualityProfileCheckpoint {
+    router: crate::RouterCheckpoint,
+    next_observation: u64,
+    delayed_score: bool,
+    buffered_scores: Vec<(ObservationId, u64)>,
+    executed: Vec<ObservationId>,
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct QualityTicketCheckpoint {
+    action: String,
+    observation: ObservationId,
+    context: Vec<f64>,
+    reason: DecisionReason,
+}
+
+#[cfg(feature = "serde")]
+impl From<&QualityTicket> for QualityTicketCheckpoint {
+    fn from(ticket: &QualityTicket) -> Self {
+        Self {
+            action: ticket.action.to_string(),
+            observation: ticket.observation,
+            context: ticket.context.to_vec(),
+            reason: ticket.reason,
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl QualityTicketCheckpoint {
+    pub(crate) fn into_ticket(self) -> Result<QualityTicket, PolicyError> {
+        if self.action.is_empty() {
+            return Err(PolicyError::new(
+                "quality checkpoint ticket action must be non-empty",
+            ));
+        }
+        if self.context.iter().any(|value| !value.is_finite()) {
+            return Err(PolicyError::new(
+                "quality checkpoint ticket context must be finite",
+            ));
+        }
+        if !matches!(
+            self.reason,
+            DecisionReason::Control
+                | DecisionReason::Triage
+                | DecisionReason::NoveltyOrCoverage
+                | DecisionReason::Policy
+        ) {
+            return Err(PolicyError::new(
+                "quality checkpoint ticket reason is not a router reason",
+            ));
+        }
+        Ok(QualityTicket {
+            action: Arc::from(self.action),
+            observation: self.observation,
+            context: self.context.into(),
+            reason: self.reason,
+        })
+    }
 }
 
 /// Opaque prepared quality-router update.
@@ -333,7 +504,7 @@ impl QualityProfile {
         Channel::new("quality-score").expect("fixed channel is valid")
     }
 
-    fn expectation(&self) -> FeedbackExpectation {
+    pub(crate) fn checkpoint_expectation(&self) -> FeedbackExpectation {
         if self.delayed_score {
             FeedbackExpectation::FinalValues(vec![Self::execution_channel(), Self::score_channel()])
         } else {
@@ -341,6 +512,212 @@ impl QualityProfile {
                 channel: Self::execution_channel(),
             }
         }
+    }
+
+    fn expectation(&self) -> FeedbackExpectation {
+        self.checkpoint_expectation()
+    }
+
+    /// Capture profile state for the concrete quality runtime checkpoint.
+    #[cfg(feature = "serde")]
+    pub(crate) fn checkpoint_state(
+        &self,
+        build_key: &str,
+    ) -> Result<QualityProfileCheckpoint, PolicyError> {
+        let buffered_scores = self
+            .buffered_scores
+            .iter()
+            .map(|(observation, score)| (*observation, score.get().to_bits()))
+            .collect();
+        Ok(QualityProfileCheckpoint {
+            router: self
+                .router
+                .checkpoint(build_key)
+                .map_err(|error| PolicyError::new(error.to_string()))?,
+            next_observation: self.next_observation,
+            delayed_score: self.delayed_score,
+            buffered_scores,
+            executed: self.executed.iter().copied().collect(),
+        })
+    }
+
+    /// Restore profile state from the concrete quality runtime checkpoint.
+    #[cfg(feature = "serde")]
+    pub(crate) fn from_checkpoint_state(
+        state: QualityProfileCheckpoint,
+        build_key: &str,
+    ) -> Result<Self, PolicyError> {
+        let router = Router::from_checkpoint(state.router, build_key)
+            .map_err(|error| PolicyError::new(error.to_string()))?;
+        let mut buffered_scores = BTreeMap::new();
+        for (observation, bits) in state.buffered_scores {
+            if observation.get() > state.next_observation {
+                return Err(PolicyError::new(
+                    "quality checkpoint buffered observation exceeds profile sequence",
+                ));
+            }
+            let score = QualityScore::new(f64::from_bits(bits))?;
+            if score.get().to_bits() != bits {
+                return Err(PolicyError::new(
+                    "quality checkpoint buffered score is not canonical",
+                ));
+            }
+            if buffered_scores.insert(observation, score).is_some() {
+                return Err(PolicyError::new(
+                    "quality checkpoint repeats a buffered observation",
+                ));
+            }
+        }
+        let mut executed = BTreeSet::new();
+        for observation in state.executed {
+            if observation.get() > state.next_observation {
+                return Err(PolicyError::new(
+                    "quality checkpoint awaiting observation exceeds profile sequence",
+                ));
+            }
+            if !executed.insert(observation) {
+                return Err(PolicyError::new(
+                    "quality checkpoint repeats an awaiting observation",
+                ));
+            }
+        }
+        if !state.delayed_score && (!buffered_scores.is_empty() || !executed.is_empty()) {
+            return Err(PolicyError::new(
+                "quality checkpoint has delayed state without delayed score",
+            ));
+        }
+        if buffered_scores.keys().any(|id| executed.contains(id)) {
+            return Err(PolicyError::new(
+                "quality checkpoint observation cannot be both buffered and awaiting",
+            ));
+        }
+        Ok(Self {
+            router,
+            next_observation: state.next_observation,
+            delayed_score: state.delayed_score,
+            buffered_scores,
+            executed,
+        })
+    }
+
+    /// Validate open runtime tickets against profile-owned delayed-score state.
+    #[cfg(feature = "serde")]
+    pub(crate) fn validate_checkpoint_tickets(
+        &self,
+        tickets: &[QualityTicketState<'_>],
+    ) -> Result<(), PolicyError> {
+        let execution = Self::execution_channel();
+        let score = Self::score_channel();
+        let mut observations = BTreeSet::new();
+        let mut expected_buffered = BTreeMap::new();
+        let mut expected_executed = BTreeSet::new();
+
+        for state in tickets {
+            let ticket = state.ticket;
+            if ticket.action.as_ref() != state.action || ticket.reason != state.reason {
+                return Err(PolicyError::new(
+                    "quality checkpoint ticket disagrees with its receipt",
+                ));
+            }
+            if !self.router.arms().iter().any(|arm| arm == state.action) {
+                return Err(PolicyError::new(
+                    "quality checkpoint ticket action is not registered",
+                ));
+            }
+            if ticket.observation.get() > self.next_observation {
+                return Err(PolicyError::new(
+                    "quality checkpoint ticket observation exceeds profile sequence",
+                ));
+            }
+            if !observations.insert(ticket.observation) {
+                return Err(PolicyError::new(
+                    "quality checkpoint repeats an open observation",
+                ));
+            }
+
+            let mut final_execution = false;
+            let mut final_score = false;
+            let mut final_score_bits = None;
+            let mut missing_execution = false;
+            let mut missing_score = false;
+            let mut channels = BTreeSet::new();
+            for (channel, feedback) in state.values {
+                if !channels.insert(channel.clone()) {
+                    return Err(PolicyError::new(
+                        "quality checkpoint repeats a final feedback channel",
+                    ));
+                }
+                if channel == &execution && feedback.is_execution() {
+                    final_execution = true;
+                } else if channel == &score && feedback.score().is_some() && self.delayed_score {
+                    final_score = true;
+                    final_score_bits = Some(
+                        feedback
+                            .score()
+                            .expect("score feedback was checked")
+                            .to_bits(),
+                    );
+                } else {
+                    return Err(PolicyError::new(
+                        "quality checkpoint final feedback violates its channel contract",
+                    ));
+                }
+            }
+            for channel in state.missing {
+                if !channels.insert(channel.clone()) {
+                    return Err(PolicyError::new(
+                        "quality checkpoint channel is both final and missing",
+                    ));
+                }
+                if channel == &execution {
+                    missing_execution = true;
+                } else if channel == &score && self.delayed_score {
+                    missing_score = true;
+                } else {
+                    return Err(PolicyError::new(
+                        "quality checkpoint missing channel violates its contract",
+                    ));
+                }
+            }
+
+            if !final_execution
+                && !missing_execution
+                && self.router.contains_observation_id(ticket.observation)
+            {
+                return Err(PolicyError::new(
+                    "quality checkpoint open ticket collides with a retained observation",
+                ));
+            }
+            if !self.delayed_score {
+                if final_execution || missing_execution {
+                    return Err(PolicyError::new(
+                        "resolved immediate-quality ticket must not remain open",
+                    ));
+                }
+                continue;
+            }
+            if final_score && !final_execution && !missing_execution {
+                expected_buffered.insert(
+                    ticket.observation,
+                    final_score_bits.expect("final score carries score bits"),
+                );
+            }
+            if final_execution && !final_score && !missing_score {
+                expected_executed.insert(ticket.observation);
+            }
+        }
+
+        let buffered: BTreeMap<_, _> = self
+            .buffered_scores
+            .iter()
+            .map(|(observation, score)| (*observation, score.get().to_bits()))
+            .collect();
+        if buffered != expected_buffered || self.executed != expected_executed {
+            return Err(PolicyError::new(
+                "quality checkpoint delayed state does not match open ticket progress",
+            ));
+        }
+        Ok(())
     }
 
     fn snapshot_context(context: &[f64]) -> Arc<[f64]> {
@@ -652,5 +1029,98 @@ impl BatchInteractionPolicy for QualityProfile {
 
     fn commit_batch(&mut self, issue: Self::PreparedBatchIssue) {
         self.commit_issue(issue);
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod checkpoint_tests {
+    use super::*;
+
+    fn ticket(observation: u64) -> QualityTicket {
+        QualityTicket {
+            action: Arc::from("a"),
+            observation: ObservationId::new(observation),
+            context: Arc::from([0.25]),
+            reason: DecisionReason::Policy,
+        }
+    }
+
+    #[test]
+    fn profile_checkpoint_round_trips_router_and_delayed_state() {
+        let mut profile =
+            QualityProfile::new(vec!["a".to_owned()], RouterConfig::default()).unwrap();
+        assert!(profile.seed("a", Outcome::success(1, 1)));
+        profile.next_observation = 7;
+        profile.delayed_score = true;
+        profile
+            .buffered_scores
+            .insert(ObservationId::new(6), QualityScore::new(0.5).unwrap());
+        let state = profile.checkpoint_state("quality-build").unwrap();
+        let restored = QualityProfile::from_checkpoint_state(state, "quality-build").unwrap();
+        assert_eq!(restored.router.summary("a").calls, 1);
+        assert_eq!(restored.next_observation, 7);
+        assert_eq!(restored.buffered_score_len(), 1);
+    }
+
+    #[test]
+    fn strict_canonical_feedback_and_ticket_decode_reject_repairs() {
+        let canonical =
+            CanonicalQualityFeedback(CanonicalQualityFeedbackKind::Score(0.5f64.to_bits()));
+        let mut wire = serde_json::to_value(canonical).unwrap();
+        wire["score"] = serde_json::json!(f64::NAN.to_bits());
+        assert!(serde_json::from_value::<CanonicalQualityFeedback>(wire).is_err());
+
+        let checkpoint = QualityTicketCheckpoint {
+            action: "a".to_owned(),
+            observation: ObservationId::new(1),
+            context: vec![f64::NAN],
+            reason: DecisionReason::Policy,
+        };
+        assert!(checkpoint.into_ticket().is_err());
+    }
+
+    #[test]
+    fn ticket_progress_exactly_matches_delayed_maps() {
+        let mut profile = QualityProfile::new(vec!["a".to_owned()], RouterConfig::default())
+            .unwrap()
+            .with_delayed_score();
+        profile.next_observation = 1;
+        let ticket = ticket(1);
+        let values = vec![(
+            QualityProfile::score_channel(),
+            CanonicalQualityFeedback(CanonicalQualityFeedbackKind::Score(0.5f64.to_bits())),
+        )];
+        let state = QualityTicketState {
+            ticket: &ticket,
+            action: "a",
+            reason: DecisionReason::Policy,
+            values: &values,
+            missing: &[],
+        };
+        profile
+            .buffered_scores
+            .insert(ObservationId::new(1), QualityScore::new(0.5).unwrap());
+        assert!(profile
+            .validate_checkpoint_tickets(std::slice::from_ref(&state))
+            .is_ok());
+        profile
+            .buffered_scores
+            .insert(ObservationId::new(1), QualityScore::new(0.4).unwrap());
+        assert!(profile
+            .validate_checkpoint_tickets(std::slice::from_ref(&state))
+            .is_err());
+        profile
+            .buffered_scores
+            .insert(ObservationId::new(1), QualityScore::new(0.5).unwrap());
+        assert!(profile
+            .router
+            .observe_with_id(ObservationId::new(1), "a", Outcome::success(1, 1)));
+        assert!(profile
+            .validate_checkpoint_tickets(std::slice::from_ref(&state))
+            .is_err());
+        profile.buffered_scores.clear();
+        assert!(profile
+            .validate_checkpoint_tickets(std::slice::from_ref(&state))
+            .is_err());
     }
 }

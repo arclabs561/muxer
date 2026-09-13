@@ -1,6 +1,6 @@
 # Unified muxer architecture
 
-status: additive core implemented and locally validated; restart/release gates remain
+status: additive core and complete quality restart implemented; broader restart/release gates remain
 
 date: 2026-09-13
 

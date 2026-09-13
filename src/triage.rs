@@ -64,6 +64,8 @@
 //! ```
 
 use crate::monitor::CusumCatBank;
+#[cfg(feature = "serde")]
+use crate::worst_first::ContextualCoverageCheckpoint;
 use crate::{ContextBinConfig, ContextualCell, ContextualCoverageTracker, WorstFirstConfig};
 use std::collections::BTreeMap;
 
@@ -179,6 +181,50 @@ pub struct TriageSession {
     seed: u64,
 }
 
+/// Strict, complete wire representation of live triage state.
+///
+/// This keeps CUSUM scores, sticky alarms, and coverage cells instead of
+/// rebuilding them as the legacy Router warm-start snapshot does.
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TriageCheckpoint {
+    banks: BTreeMap<String, (CusumCatBank, bool)>,
+    tracker: ContextualCoverageCheckpoint,
+    bank_cfg: TriageSessionConfig,
+    bin_cfg: ContextBinConfig,
+    wf_cfg: WorstFirstConfig,
+    seed: u64,
+}
+
+#[cfg(feature = "serde")]
+impl From<&TriageSession> for TriageCheckpoint {
+    fn from(session: &TriageSession) -> Self {
+        Self {
+            banks: session.banks.clone(),
+            tracker: ContextualCoverageCheckpoint::from(&session.tracker),
+            bank_cfg: session.bank_cfg.clone(),
+            bin_cfg: session.bin_cfg,
+            wf_cfg: session.wf_cfg,
+            seed: session.seed,
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl TriageCheckpoint {
+    pub(crate) fn into_session(self) -> Result<TriageSession, logp::Error> {
+        Ok(TriageSession {
+            banks: self.banks,
+            tracker: self.tracker.into_tracker()?,
+            bank_cfg: self.bank_cfg,
+            bin_cfg: self.bin_cfg,
+            wf_cfg: self.wf_cfg,
+            seed: self.seed,
+        })
+    }
+}
+
 impl TriageSession {
     /// Create a new session for the given `arms` with config `cfg`.
     ///
@@ -207,6 +253,73 @@ impl TriageSession {
             bin_cfg: cfg.bin_cfg,
             wf_cfg: cfg.wf_cfg,
             seed: cfg.seed,
+        })
+    }
+
+    /// Validate a complete retained triage session before checkpoint restore.
+    ///
+    /// This preserves detector and coverage history, unlike construction from
+    /// configuration alone. It is crate-private so legacy serde payloads keep
+    /// their existing permissive deserialization behavior.
+    #[cfg(feature = "serde")]
+    pub(crate) fn validate_checkpoint(
+        &self,
+        arms: &[String],
+        expected: &TriageSessionConfig,
+    ) -> Result<(), logp::Error> {
+        let expected_arms: BTreeMap<&str, ()> = arms.iter().map(|arm| (arm.as_str(), ())).collect();
+        if expected_arms.len() != arms.len()
+            || self.banks.len() != expected_arms.len()
+            || self
+                .banks
+                .keys()
+                .any(|arm| !expected_arms.contains_key(arm.as_str()))
+        {
+            return Err(logp::Error::Domain(
+                "TriageSession checkpoint bank arms must exactly match Router arms",
+            ));
+        }
+        if !same_config(&self.bank_cfg, expected)
+            || !same_bin_config(self.bin_cfg, expected.bin_cfg)
+            || !same_worst_first_config(self.wf_cfg, expected.wf_cfg)
+            || self.seed != expected.seed
+        {
+            return Err(logp::Error::Domain(
+                "TriageSession checkpoint configuration does not match Router configuration",
+            ));
+        }
+
+        let alternatives: Vec<Vec<f64>> = expected.alts.iter().map(|alt| alt.to_vec()).collect();
+        let tracker_calls = self.tracker.checkpoint_calls_by_arm(arms)?;
+        for (arm, (bank, alarmed)) in &self.banks {
+            bank.validate_checkpoint(
+                &expected.p0,
+                &alternatives,
+                expected.cusum_alpha,
+                expected.min_n,
+                expected.threshold,
+                expected.tol,
+            )?;
+            if bank.checkpoint_count(*alarmed)?
+                > tracker_calls.get(arm).copied().unwrap_or_default()
+            {
+                return Err(logp::Error::Domain(
+                    "TriageSession checkpoint detector count exceeds retained tracker calls",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Return a checked total of retained coverage calls for checkpoint bounds.
+    #[cfg(feature = "serde")]
+    pub(crate) fn checkpoint_calls(&self) -> Result<u64, logp::Error> {
+        let arms: Vec<String> = self.banks.keys().cloned().collect();
+        let calls = self.tracker.checkpoint_calls_by_arm(&arms)?;
+        calls.values().try_fold(0_u64, |total, calls| {
+            total.checked_add(*calls).ok_or(logp::Error::Domain(
+                "TriageSession checkpoint call count overflow",
+            ))
         })
     }
 
@@ -324,6 +437,7 @@ impl TriageSession {
     /// Remove an arm while preserving detector and cell history for all other arms.
     pub fn remove_arm(&mut self, arm: &str) {
         self.banks.remove(arm);
+        self.tracker.remove_arm(arm);
     }
 
     /// Read-only access to the coverage tracker.
@@ -332,9 +446,61 @@ impl TriageSession {
     }
 }
 
+#[cfg(feature = "serde")]
+fn same_config(left: &TriageSessionConfig, right: &TriageSessionConfig) -> bool {
+    same_f64_array(left.p0, right.p0)
+        && left.alts.len() == right.alts.len()
+        && left
+            .alts
+            .iter()
+            .zip(&right.alts)
+            .all(|(left, right)| same_f64_array(*left, *right))
+        && left.cusum_alpha.to_bits() == right.cusum_alpha.to_bits()
+        && left.min_n == right.min_n
+        && left.threshold.to_bits() == right.threshold.to_bits()
+        && left.tol.to_bits() == right.tol.to_bits()
+        && same_bin_config(left.bin_cfg, right.bin_cfg)
+        && same_worst_first_config(left.wf_cfg, right.wf_cfg)
+        && left.seed == right.seed
+}
+
+#[cfg(feature = "serde")]
+fn same_f64_array(left: [f64; 4], right: [f64; 4]) -> bool {
+    left.iter()
+        .zip(right.iter())
+        .all(|(left, right)| left.to_bits() == right.to_bits())
+}
+
+#[cfg(feature = "serde")]
+fn same_bin_config(left: ContextBinConfig, right: ContextBinConfig) -> bool {
+    left.levels == right.levels && left.seed == right.seed
+}
+
+#[cfg(feature = "serde")]
+fn same_worst_first_config(left: WorstFirstConfig, right: WorstFirstConfig) -> bool {
+    left.exploration_c.to_bits() == right.exploration_c.to_bits()
+        && left.hard_weight.to_bits() == right.hard_weight.to_bits()
+        && left.soft_weight.to_bits() == right.soft_weight.to_bits()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removing_observed_arm_discards_its_cells_but_preserves_other_arms() {
+        let mut session = TriageSession::new(&two_arms(), TriageSessionConfig::default()).unwrap();
+        session.observe("arm_a", OutcomeIdx::OK, &[0.2]);
+        session.observe("arm_b", OutcomeIdx::HARD_JUNK, &[0.8]);
+        let b_before = session.arm_state("arm_b").unwrap();
+        session.remove_arm("arm_a");
+        assert_eq!(session.tracker().total_calls(), 1);
+        assert_eq!(session.arm_state("arm_b").unwrap().n, b_before.n);
+        session.add_arm("arm_a").unwrap();
+        for bin in session.tracker().active_bins() {
+            assert_eq!(session.tracker().cell_calls("arm_a", bin), 0);
+        }
+    }
 
     fn two_arms() -> Vec<String> {
         vec!["arm_a".to_string(), "arm_b".to_string()]
@@ -485,5 +651,60 @@ mod tests {
             before.score_max
         );
         assert!(session.arm_state("arm_c").is_some());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn checkpoint_validation_retains_live_detector_and_coverage_history() {
+        let cfg = TriageSessionConfig {
+            min_n: 2,
+            threshold: 0.0,
+            ..TriageSessionConfig::default()
+        };
+        let arms = two_arms();
+        let mut session = TriageSession::new(&arms, cfg.clone()).unwrap();
+        session.observe("arm_a", OutcomeIdx::OK, &[0.1, 0.2]);
+        session.observe("arm_b", OutcomeIdx::HARD_JUNK, &[0.8, 0.9]);
+        session.observe("arm_b", OutcomeIdx::HARD_JUNK, &[0.8, 0.9]);
+
+        assert!(session.any_alarmed());
+        assert!(session.tracker().total_calls() > 0);
+        assert!(session.validate_checkpoint(&arms, &cfg).is_ok());
+
+        session.banks.get_mut("arm_b").unwrap().1 = false;
+        assert!(session.validate_checkpoint(&arms, &cfg).is_err());
+        session.banks.get_mut("arm_b").unwrap().1 = true;
+
+        session.reset_arm("arm_b");
+        assert!(session.validate_checkpoint(&arms, &cfg).is_ok());
+
+        session.banks.remove("arm_a");
+        assert!(session.validate_checkpoint(&arms, &cfg).is_err());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn checkpoint_validation_rejects_detector_history_beyond_coverage_history() {
+        let arms = two_arms();
+        let cfg = TriageSessionConfig::default();
+        let mut session = TriageSession::new(&arms, cfg.clone()).unwrap();
+        session.observe("arm_a", OutcomeIdx::OK, &[0.1]);
+        session.tracker = ContextualCoverageTracker::new();
+        assert!(session.validate_checkpoint(&arms, &cfg).is_err());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn complete_checkpoint_json_round_trips_nonempty_coverage_cells() {
+        let arms = two_arms();
+        let cfg = TriageSessionConfig::default();
+        let mut session = TriageSession::new(&arms, cfg.clone()).unwrap();
+        session.observe("arm_a", OutcomeIdx::SOFT_JUNK, &[0.1, 0.2]);
+
+        let encoded = serde_json::to_string(&TriageCheckpoint::from(&session)).unwrap();
+        let restored: TriageCheckpoint = serde_json::from_str(&encoded).unwrap();
+        let restored = restored.into_session().unwrap();
+        assert!(restored.validate_checkpoint(&arms, &cfg).is_ok());
+        assert_eq!(restored.tracker.total_calls(), 1);
     }
 }

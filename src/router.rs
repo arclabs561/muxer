@@ -1188,6 +1188,147 @@ pub struct RouterSnapshot {
     pub total_observations: u64,
 }
 
+/// Strict, complete persistence format for a [`Router`].
+///
+/// Unlike [`RouterSnapshot`], this preserves live triage detector and coverage
+/// state. It is intended only for handoff between compatible builds: callers
+/// must supply the same non-empty `build_key` to restore it. The key is a
+/// compatibility label, not authentication or an integrity check.
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RouterCheckpoint {
+    format_version: u32,
+    crate_version: String,
+    build_key: String,
+    arms: Vec<String>,
+    windows: BTreeMap<String, crate::WindowCheckpoint>,
+    monitored: Option<BTreeMap<String, crate::monitor::MonitoredWindowCheckpoint>>,
+    cfg: RouterConfig,
+    total_observations: u64,
+    triage: Option<crate::triage::TriageCheckpoint>,
+}
+
+#[cfg(feature = "serde")]
+const ROUTER_CHECKPOINT_FORMAT_VERSION: u32 = 1;
+
+#[cfg(feature = "serde")]
+fn validate_checkpoint_build_key(build_key: &str, label: &str) -> Result<(), logp::Error> {
+    if build_key.is_empty() {
+        return Err(logp::Error::Domain(match label {
+            "expected" => "RouterCheckpoint: expected build key must be non-empty",
+            _ => "RouterCheckpoint: build key must be non-empty",
+        }));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "serde")]
+fn validate_checkpoint_ids(
+    windows: &BTreeMap<String, Window>,
+    monitored: Option<&BTreeMap<String, MonitoredWindow>>,
+) -> Result<(), logp::Error> {
+    let mut owners = BTreeMap::<ObservationId, String>::new();
+
+    for (arm, window) in windows {
+        validate_checkpoint_window_ids(arm, window.retained_ids(), &mut owners)?;
+    }
+    if let Some(monitored) = monitored {
+        for (arm, monitored_window) in monitored {
+            validate_checkpoint_window_ids(
+                arm,
+                monitored_window.baseline().retained_ids(),
+                &mut owners,
+            )?;
+            validate_checkpoint_window_ids(
+                arm,
+                monitored_window.recent().retained_ids(),
+                &mut owners,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "serde")]
+fn validate_checkpoint_window_ids(
+    arm: &str,
+    ids: impl Iterator<Item = ObservationId>,
+    owners: &mut BTreeMap<ObservationId, String>,
+) -> Result<(), logp::Error> {
+    let mut window_ids = BTreeSet::new();
+    for id in ids {
+        if !window_ids.insert(id) {
+            return Err(logp::Error::Domain(
+                "RouterCheckpoint: observation ID repeats within a retained window",
+            ));
+        }
+        if let Some(owner) = owners.get(&id) {
+            if owner != arm {
+                return Err(logp::Error::Domain(
+                    "RouterCheckpoint: retained observation ID belongs to multiple arms",
+                ));
+            }
+        } else {
+            owners.insert(id, arm.to_owned());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "serde")]
+fn validate_checkpoint_state(
+    snapshot: &RouterSnapshot,
+    triage: Option<&TriageSession>,
+) -> Result<(), logp::Error> {
+    snapshot.cfg.validate()?;
+    validate_snapshot(snapshot)?;
+
+    let retained = snapshot
+        .windows
+        .iter()
+        .try_fold(0_u64, |count, (arm, window)| {
+            let monitored_retained = snapshot
+                .monitored
+                .as_ref()
+                .and_then(|monitored| monitored.get(arm))
+                .map_or(0, |monitored| {
+                    monitored.baseline_len().max(monitored.recent_len())
+                });
+            let arm_retained = window.len().max(monitored_retained);
+            count
+                .checked_add(cap_as_u64(arm_retained))
+                .ok_or(logp::Error::Domain(
+                    "RouterCheckpoint: retained row count overflows",
+                ))
+        })?;
+    if snapshot.total_observations < retained {
+        return Err(logp::Error::Domain(
+            "RouterCheckpoint: total observations is below retained rows",
+        ));
+    }
+    validate_checkpoint_ids(&snapshot.windows, snapshot.monitored.as_ref())?;
+
+    match (&snapshot.cfg.triage_cfg, triage) {
+        (None, None) => Ok(()),
+        (Some(_), None) => Err(logp::Error::Domain(
+            "RouterCheckpoint: triage config requires retained triage state",
+        )),
+        (None, Some(_)) => Err(logp::Error::Domain(
+            "RouterCheckpoint: retained triage state requires triage config",
+        )),
+        (Some(config), Some(triage)) => {
+            triage.validate_checkpoint(&snapshot.arms, config)?;
+            if triage.checkpoint_calls()? > snapshot.total_observations {
+                return Err(logp::Error::Domain(
+                    "RouterCheckpoint: triage history exceeds total observations",
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
 impl Router {
     /// Capture a serializable snapshot of the current state.
     ///
@@ -1223,6 +1364,109 @@ impl Router {
             triage,
             cfg: snap.cfg,
             total_observations: snap.total_observations,
+        })
+    }
+
+    /// Capture a strict complete-state checkpoint for a compatible build.
+    ///
+    /// The supplied `build_key` must be non-empty and is checked exactly by
+    /// [`Router::from_checkpoint`]. It identifies a compatible caller build;
+    /// it does not authenticate the checkpoint or protect its integrity.
+    #[cfg(feature = "serde")]
+    pub fn checkpoint(
+        &self,
+        build_key: impl Into<String>,
+    ) -> Result<RouterCheckpoint, logp::Error> {
+        let build_key = build_key.into();
+        validate_checkpoint_build_key(&build_key, "checkpoint")?;
+        let snapshot = self.snapshot();
+        validate_checkpoint_state(&snapshot, self.triage.as_ref())?;
+        Ok(RouterCheckpoint {
+            format_version: ROUTER_CHECKPOINT_FORMAT_VERSION,
+            crate_version: env!("CARGO_PKG_VERSION").to_string(),
+            build_key,
+            arms: snapshot.arms,
+            windows: snapshot
+                .windows
+                .into_iter()
+                .map(|(arm, window)| (arm, crate::WindowCheckpoint::from(window)))
+                .collect(),
+            monitored: snapshot.monitored.map(|monitored| {
+                monitored
+                    .into_iter()
+                    .map(|(arm, window)| {
+                        (arm, crate::monitor::MonitoredWindowCheckpoint::from(window))
+                    })
+                    .collect()
+            }),
+            cfg: snapshot.cfg,
+            total_observations: snapshot.total_observations,
+            triage: self
+                .triage
+                .as_ref()
+                .map(crate::triage::TriageCheckpoint::from),
+        })
+    }
+
+    /// Restore a strict complete-state checkpoint from a compatible build.
+    ///
+    /// `expected_build_key` must be non-empty and exactly match the key used
+    /// to create the checkpoint. This is a compatibility guard only, not an
+    /// authentication or integrity mechanism.
+    #[cfg(feature = "serde")]
+    pub fn from_checkpoint(
+        checkpoint: RouterCheckpoint,
+        expected_build_key: &str,
+    ) -> Result<Self, logp::Error> {
+        validate_checkpoint_build_key(expected_build_key, "expected")?;
+        if checkpoint.format_version != ROUTER_CHECKPOINT_FORMAT_VERSION {
+            return Err(logp::Error::Domain(
+                "RouterCheckpoint: unsupported format version",
+            ));
+        }
+        if checkpoint.crate_version != env!("CARGO_PKG_VERSION") {
+            return Err(logp::Error::Domain(
+                "RouterCheckpoint: crate version does not match this build",
+            ));
+        }
+        validate_checkpoint_build_key(&checkpoint.build_key, "checkpoint")?;
+        if checkpoint.build_key != expected_build_key {
+            return Err(logp::Error::Domain(
+                "RouterCheckpoint: build key does not match",
+            ));
+        }
+
+        let windows = checkpoint
+            .windows
+            .into_iter()
+            .map(|(arm, window)| (arm, window.into_window()))
+            .collect();
+        let monitored = checkpoint.monitored.map(|monitored| {
+            monitored
+                .into_iter()
+                .map(|(arm, window)| (arm, window.into_monitored_window()))
+                .collect()
+        });
+        let triage = checkpoint
+            .triage
+            .map(crate::triage::TriageCheckpoint::into_session)
+            .transpose()?;
+        let snapshot = RouterSnapshot {
+            arms: checkpoint.arms,
+            windows,
+            monitored,
+            cfg: checkpoint.cfg,
+            total_observations: checkpoint.total_observations,
+        };
+        validate_checkpoint_state(&snapshot, triage.as_ref())?;
+
+        Ok(Self {
+            arms: snapshot.arms,
+            windows: snapshot.windows,
+            monitored: snapshot.monitored,
+            triage,
+            cfg: snapshot.cfg,
+            total_observations: snapshot.total_observations,
         })
     }
 }
@@ -1357,6 +1601,79 @@ mod tests {
             Router::from_snapshot(blind_monitor),
             Err(logp::Error::Domain(msg)) if msg.contains("smaller than baseline")
         ));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn checkpoint_round_trip_preserves_live_triage_state() {
+        let cfg = RouterConfig::default()
+            .with_monitoring(500, 50)
+            .with_triage();
+        let mut router = Router::new(vec!["a".to_string()], cfg).unwrap();
+        for _ in 0..4 {
+            assert!(router.observe_with_context("a", clean(), &[0.25]));
+        }
+        let before_summary = router.summary("a");
+        let before_triage = router.triage_session().unwrap().arm_state("a").unwrap();
+
+        let checkpoint = router.checkpoint("compatible-build").unwrap();
+        let direct = Router::from_checkpoint(checkpoint.clone(), "compatible-build").unwrap();
+        assert_eq!(direct.summary("a").calls, before_summary.calls);
+        let wire = serde_json::to_string(&checkpoint).unwrap();
+        let decoded: RouterCheckpoint = serde_json::from_str(&wire).unwrap();
+        let restored = Router::from_checkpoint(decoded, "compatible-build").unwrap();
+
+        let after_summary = restored.summary("a");
+        assert_eq!(after_summary.calls, before_summary.calls);
+        assert_eq!(after_summary.ok, before_summary.ok);
+        let after_triage = restored.triage_session().unwrap().arm_state("a").unwrap();
+        assert_eq!(after_triage.n, before_triage.n);
+        assert_eq!(after_triage.score_max, before_triage.score_max);
+        assert_eq!(after_triage.alarmed, before_triage.alarmed);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn checkpoint_rejects_incompatible_metadata_and_malformed_state() {
+        let mut router = Router::new(
+            vec!["a".to_string(), "b".to_string()],
+            RouterConfig::default(),
+        )
+        .unwrap();
+        assert!(router.observe_with_id(ObservationId::new(9), "a", clean()));
+
+        assert!(router.checkpoint("").is_err());
+        let checkpoint = router.checkpoint("compatible-build").unwrap();
+        assert!(Router::from_checkpoint(checkpoint.clone(), "").is_err());
+        assert!(Router::from_checkpoint(checkpoint.clone(), "other-build").is_err());
+
+        let mut unknown_field = serde_json::to_value(&checkpoint).unwrap();
+        unknown_field
+            .as_object_mut()
+            .unwrap()
+            .insert("unexpected".to_string(), serde_json::Value::Null);
+        assert!(serde_json::from_value::<RouterCheckpoint>(unknown_field).is_err());
+
+        let mut impossible_total = checkpoint.clone();
+        impossible_total.total_observations = 0;
+        assert!(Router::from_checkpoint(impossible_total, "compatible-build").is_err());
+
+        router.total_observations = 0;
+        assert!(router.checkpoint("compatible-build").is_err());
+        router.total_observations = 1;
+
+        let mut cross_arm_id = checkpoint;
+        let retained = cross_arm_id.windows.get("a").unwrap().clone();
+        cross_arm_id.windows.insert("b".to_string(), retained);
+        assert!(Router::from_checkpoint(cross_arm_id, "compatible-build").is_err());
+
+        assert!(router.observe_with_id(ObservationId::new(10), "a", clean()));
+        let mut duplicate_ids =
+            serde_json::to_value(router.checkpoint("compatible-build").unwrap()).unwrap();
+        let ids = duplicate_ids["windows"]["a"]["ids"].as_array_mut().unwrap();
+        ids[1] = ids[0].clone();
+        let duplicate_ids: RouterCheckpoint = serde_json::from_value(duplicate_ids).unwrap();
+        assert!(Router::from_checkpoint(duplicate_ids, "compatible-build").is_err());
     }
 
     #[test]

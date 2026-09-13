@@ -4,6 +4,13 @@
 
 ### Added
 
+- Optional serde `QualityMuxerCheckpoint` for complete same-build quality
+  runtime restart, including pending feedback, retired epochs, RNG and retained
+  event history. Applications own quiescence, storage and single-writer fencing;
+  restore rejects engine namespaces already allocated in the receiving process.
+- Optional serde `RouterCheckpoint` with complete triage/monitoring history,
+  strict state validation and a schema/crate/application-build compatibility
+  envelope. Legacy `RouterSnapshot` remains a triage-resetting warm start.
 - Versioned, optionally serde-encoded `TrialRngState` with strict version
   restoration and pinned draw-consumption semantics, as a restart prerequisite.
 - Per-item batch cancellation with retained lifecycle status, idempotent
@@ -15,7 +22,7 @@
   Boltzmann, external assessment/score/distribution and quality profiles.
 - Provisional/final/missing event envelopes, canonical idempotency, revision
   conflicts, explicit expiry, retained policy epochs and consuming in-memory
-  checkpoint handoff. No serialized restart format is implied.
+  checkpoint handoff for arbitrary profiles.
 - Checked retained-feedback projection into scalar OPE, exclusion counts,
   unified lifecycle examples and lifecycle benchmarks.
 - Domain-neutral `CandidateAssessment` metric vectors with Pareto filtering,
@@ -45,6 +52,8 @@
 
 ### Changed
 
+- Removing a triage arm discards that arm's coverage cells as documented,
+  preserving other arms' history and preventing stale state after re-addition.
 - Unreleased Thompson profiles use their own transactionally committed trial
   stream; `with_seed` remains meaningful but exact profile choice sequences
   change. Legacy Thompson seeded selection retains its existing stream.

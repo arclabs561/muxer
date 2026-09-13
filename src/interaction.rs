@@ -2,7 +2,10 @@
 
 use std::fmt;
 
-/// Identity of one in-memory muxer instance.
+/// Identity of one muxer namespace, retained across checkpoint continuation.
+///
+/// Automatic allocation is process-local. Serialized restart requires
+/// application-owned single-writer fencing across processes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EngineId(pub(crate) u64);
@@ -41,6 +44,7 @@ impl DecisionId {
 
 /// Identity of one selected item in a receipt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExecutionKey {
     decision: DecisionId,
     position: usize,
@@ -66,7 +70,17 @@ impl ExecutionKey {
 
 /// A validated finite probability in the closed unit interval.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Probability(f64);
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Probability {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(<f64 as serde::Deserialize>::deserialize(deserializer)?)
+            .map_err(serde::de::Error::custom)
+    }
+}
 
 impl Probability {
     /// Validate a probability.
@@ -86,6 +100,7 @@ impl Probability {
 
 /// Whether a policy can state an action propensity.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ProbabilityAvailability {
     /// Exact categorical probability.
     Exact(Probability),
@@ -95,6 +110,7 @@ pub enum ProbabilityAvailability {
 
 /// The actual selection mechanism, independent of propensity availability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum DecisionReason {
     /// A policy's initial untried-action rule.
@@ -119,7 +135,17 @@ pub enum DecisionReason {
 
 /// A finite channel name, including its units/source semantics.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Channel(String);
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Channel {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(<String as serde::Deserialize>::deserialize(deserializer)?)
+            .map_err(serde::de::Error::custom)
+    }
+}
 
 impl Channel {
     /// Construct a nonempty channel name.
@@ -145,6 +171,7 @@ impl Channel {
 
 /// Expected feedback for a selected item.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FeedbackExpectation {
     /// No feedback is retained.
     None,
@@ -171,6 +198,7 @@ impl FeedbackExpectation {
 
 /// Finality of an advanced feedback event.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Disposition<T> {
     /// Retained but not learned from.
     Provisional(T),
@@ -182,7 +210,17 @@ pub enum Disposition<T> {
 
 /// An application-supplied event identifier.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct EventId(String);
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for EventId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(<String as serde::Deserialize>::deserialize(deserializer)?)
+            .map_err(serde::de::Error::custom)
+    }
+}
 
 impl EventId {
     /// Construct a nonempty event identifier.
@@ -230,3 +268,31 @@ impl fmt::Display for InteractionError {
     }
 }
 impl std::error::Error for InteractionError {}
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn deserialization_preserves_ingress_validation() {
+        for raw in ["-0.1", "1.1", "null"] {
+            assert!(serde_json::from_str::<Probability>(raw).is_err());
+        }
+        for raw in [r#""""#, r#""   ""#] {
+            assert!(serde_json::from_str::<Channel>(raw).is_err());
+        }
+        assert!(serde_json::from_str::<EventId>(r#""""#).is_err());
+        let probability: Probability = serde_json::from_str("-0.0").unwrap();
+        assert_eq!(probability.get().to_bits(), 0.0_f64.to_bits());
+        let channel = Channel::reward();
+        assert_eq!(
+            serde_json::from_str::<Channel>(&serde_json::to_string(&channel).unwrap()).unwrap(),
+            channel
+        );
+        let id = EventId::new("score:42").unwrap();
+        assert_eq!(
+            serde_json::from_str::<EventId>(&serde_json::to_string(&id).unwrap()).unwrap(),
+            id
+        );
+    }
+}

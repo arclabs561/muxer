@@ -1,6 +1,6 @@
 # Unified muxer technical roadmap
 
-status: additive core pushed with passing CI; serialized restart and release remain
+status: additive core pushed; complete quality restart passes process-boundary acceptance; release remains
 
 date: 2026-09-13
 
@@ -29,9 +29,13 @@ The pull-request-only semver check was not run on this main-branch push.
 
 Remaining gates and deliberate boundaries:
 
-- Checkpoints preserve complete state through a consuming in-memory handoff.
-  Serialized process restart, model-reference resolution and versioned disk
-  compatibility remain implementation work; phase 4 is not fully complete.
+- All profiles preserve complete state through a consuming in-memory handoff.
+  `QualityMuxerCheckpoint` additionally supports versioned, same-build serialized
+  restart with pending feedback. The real subprocess test matches an
+  uninterrupted runtime through delayed joins, retired epochs, mixed batch
+  finality, retained events, triage, RNG and later retention eviction.
+  Other profiles' portable adapters and external model-reference resolution
+  remain implementation work; phase 4 is not universally complete.
 - Quality and legacy Router methods share validated observation/score reducers.
   Compact prepared updates replace whole-Router and score-map clones; one
   consuming terminal conversion replaces repeated close-path bookkeeping.
@@ -203,15 +207,29 @@ resets triage. Reusing those formats as complete checkpoints would lose state.
 2. Add strict, complete policy and ticket state adapters, including Router
    triage, quality score buffers and retired epochs. Reject malformed state
    instead of using warm-start methods that silently skip invalid rows.
+   `RouterCheckpoint` now preserves complete Router state under an explicit
+   schema/crate/application-build envelope. A real child-process JSON round
+   trip preserves subsequent choices, delayed row correction, acknowledged
+   monitoring state, active triage alarms and coverage cells. Strict window
+   decoding is separate from legacy repair-oriented serde. The concrete quality
+   adapter now includes outstanding score joins and observation tickets in each
+   active or retired policy epoch.
 3. Encode runtime receipts, pending items, cancellation/finality, event ledgers,
    sequences and terminal eviction order under an explicit same-build format
    and policy-schema compatibility envelope. Corruption and wrong-version
    tests must fail before a runtime is constructed.
+   The quality runtime format is implemented; its subprocess acceptance test
+   compares complete final state and subsequent choices with an uninterrupted
+   runtime, including terminal eviction and retired-epoch pruning.
 4. Resolve cross-process identity and model ownership before exposing portable
    resume. Copied checkpoint files can fork a namespace: durable single-writer
    fencing belongs to the application/store and cannot be proved by an opaque
    token alone. Model references require an explicit caller-owned resolver;
    no credentials, model loader or network service belongs in the core.
+   Quality restore reserves its saved namespace with checked atomic allocation
+   and rejects IDs already allocated in the receiving process. This deliberately
+   conservative local check is not cross-process fencing. Capture borrows the
+   runtime; callers own quiescence and single-writer transfer.
 
 Acceptance requires an actual process-boundary round trip with pending delayed
 quality feedback, triage and a retired policy epoch, followed by the same

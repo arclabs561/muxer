@@ -8,9 +8,10 @@ governing-design: [architecture](unified-muxer-architecture.md)
 
 This document specifies the accepted runtime contract. Names below are
 interface notation; use the [migration guide](../UNIFIED_MUXER.md) and runnable
-examples for exact Rust types. The delivered checkpoint is a consuming in-memory
-handoff, not a serialized restart format. This document's durable restoration
-requirements remain a future gate, not a delivered persistence guarantee.
+examples for exact Rust types. All profiles support a consuming in-memory
+checkpoint handoff. The optional serialized checkpoint is concrete to
+`QualityProfile`; it does not provide external-model loading or durable
+single-writer coordination.
 Requirements apply to the new API; existing low-level APIs keep their contracts.
 
 ## 1. Requests, identities and receipts
@@ -340,12 +341,20 @@ does not make an unbiased cohort. Keep IPS/SNIPS unchanged as low-level helpers.
 Do not label today's `RouterSnapshot` a complete continuation checkpoint: its
 restore rebuilds triage. Preserve that legacy behavior.
 
-A future runtime checkpoint includes catalogue and revisions, sequence state,
+A complete runtime checkpoint includes catalogue and revisions, sequence state,
 pending tickets, terminal deduplication records, every supported learner and
 monitor, and RNG continuation or documented deterministic draw state.
 Checkpoint support is an optional capability; an external model may supply
 an immutable reference rather than serialize itself. Incomplete restorations
 are named statistical warm starts and invalidate pending handles.
+
+The quality checkpoint uses a versioned schema, crate version and caller build
+key. Capture borrows a quiesced runtime; the application owns persistence and
+single-writer transfer. Restore validates before reserving the stored engine ID.
+Local namespace allocation is monotone, so restore rejects an ID previously
+allocated in that process; it does not prevent a copied checkpoint from being
+resumed by two different processes. Use the consuming in-memory checkpoint for
+same-process continuation.
 
 Replaying accepted events in recorded received order against a compatible
 checkpoint must reproduce state and subsequent decisions. This is a same-build
