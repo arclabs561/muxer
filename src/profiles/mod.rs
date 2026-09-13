@@ -77,7 +77,7 @@ mod contextual;
 mod external;
 pub mod quality;
 #[cfg(any(feature = "stochastic", feature = "boltzmann"))]
-mod scalar;
+pub(crate) mod scalar;
 
 #[cfg(feature = "contextual")]
 pub use contextual::{ContextualMode, ContextualProfile};

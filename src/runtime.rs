@@ -14,6 +14,8 @@ pub use events::{EventOutcome, FeedbackEvent};
 #[cfg(feature = "serde")]
 #[path = "runtime/checkpoint.rs"]
 mod checkpoint;
+#[cfg(all(feature = "serde", feature = "stochastic"))]
+pub use checkpoint::BernoulliMuxerCheckpoint;
 #[cfg(feature = "serde")]
 pub use checkpoint::QualityMuxerCheckpoint;
 

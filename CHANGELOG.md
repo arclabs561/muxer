@@ -4,6 +4,10 @@
 
 ### Added
 
+- Optional serde `BernoulliMuxerCheckpoint` for complete same-build runtime
+  restart, preserving posterior/configuration, both RNG continuation paths,
+  pending feedback and retained policy epochs. Quality and Bernoulli share one
+  private checkpoint validator; the quality v1 wire format is unchanged.
 - Optional serde `QualityMuxerCheckpoint` for complete same-build quality
   runtime restart, including pending feedback, retired epochs, RNG and retained
   event history. Applications own quiescence, storage and single-writer fencing;

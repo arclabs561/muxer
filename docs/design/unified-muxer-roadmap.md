@@ -1,6 +1,6 @@
 # Unified muxer technical roadmap
 
-status: additive core pushed; complete quality restart passes process-boundary acceptance; release remains
+status: quality and Bernoulli restart pass process-boundary acceptance; broader adapters and release remain
 
 date: 2026-09-13
 
@@ -34,7 +34,12 @@ Remaining gates and deliberate boundaries:
   restart with pending feedback. The real subprocess test matches an
   uninterrupted runtime through delayed joins, retired epochs, mixed batch
   finality, retained events, triage, RNG and later retention eviction.
-  Other profiles' portable adapters and external model-reference resolution
+  `BernoulliMuxerCheckpoint` now preserves both RNG continuation paths,
+  posterior/configuration, delayed reward events and retained epochs; its
+  fresh-process test matches 32 subsequent receipts and complete final state.
+  Both concrete formats use one private runtime checkpoint core, with an
+  immutable pre-refactor quality-v1 fixture guarding compatibility.
+  Remaining profiles' portable adapters and external model-reference resolution
   remain implementation work; phase 4 is not universally complete.
 - Quality and legacy Router methods share validated observation/score reducers.
   Compact prepared updates replace whole-Router and score-map clones; one
@@ -214,6 +219,9 @@ resets triage. Reusing those formats as complete checkpoints would lose state.
    decoding is separate from legacy repair-oriented serde. The concrete quality
    adapter now includes outstanding score joins and observation tickets in each
    active or retired policy epoch.
+   The Bernoulli adapter now preserves exact configuration/posterior bits,
+   profile RNG and original kernel seed, rejecting invalid posterior rows
+   before the legacy warm-start restore can repair or drop them.
 3. Encode runtime receipts, pending items, cancellation/finality, event ledgers,
    sequences and terminal eviction order under an explicit same-build format
    and policy-schema compatibility envelope. Corruption and wrong-version
@@ -221,12 +229,14 @@ resets triage. Reusing those formats as complete checkpoints would lose state.
    The quality runtime format is implemented; its subprocess acceptance test
    compares complete final state and subsequent choices with an uninterrupted
    runtime, including terminal eviction and retired-epoch pruning.
+   Bernoulli now uses the same private envelope and validator rather than a
+   second lifecycle implementation. See [checkpoint core](builtin-checkpoint-core.md).
 4. Resolve cross-process identity and model ownership before exposing portable
    resume. Copied checkpoint files can fork a namespace: durable single-writer
    fencing belongs to the application/store and cannot be proved by an opaque
    token alone. Model references require an explicit caller-owned resolver;
    no credentials, model loader or network service belongs in the core.
-   Quality restore reserves its saved namespace with checked atomic allocation
+   Quality and Bernoulli restore reserve their saved namespace with checked atomic allocation
    and rejects IDs already allocated in the receiving process. This deliberately
    conservative local check is not cross-process fencing. Capture borrows the
    runtime; callers own quiescence and single-writer transfer.

@@ -112,12 +112,25 @@ With `serde`, `Router::checkpoint(build_key)` and
 underlying Router's complete windows, monitoring history, live triage detectors,
 sticky alarms and coverage cells. The opaque `RouterCheckpoint` is distinct
 from `RouterSnapshot`, which still deliberately resets triage on warm start.
+
+With `serde` and `stochastic`, `Muxer<BernoulliThompson>::bernoulli_checkpoint`
+captures `BernoulliMuxerCheckpoint`; `Muxer::from_bernoulli_checkpoint` restores
+it. This includes configuration, posterior, profile RNG, the original legacy
+kernel seed, pending feedback and retained epochs. It shares the runtime graph
+validator with quality; it does not enable serialization for other profiles.
+The same build compatibility and external writer-fencing requirements below
+apply to both concrete checkpoint types.
+If a caller uses the low-level policy trait to inject an advanced or
+differently seeded Thompson kernel, Bernoulli capture rejects that unsupported
+kernel RNG state explicitly. Ordinary `Muxer` issuance leaves the kernel-owned
+RNG untouched; its separate profile RNG advances and is captured in full.
+
 For the complete quality lifecycle, `Muxer<QualityProfile>::quality_checkpoint`
 captures an opaque, serde-enabled `QualityMuxerCheckpoint` and
 `Muxer::from_quality_checkpoint(checkpoint, expected_build_key)` restores it.
 This includes pending execution/score joins, retired policy epochs, immutable
 receipts, per-item cancellation/finality, retained event history, terminal
-eviction order and runtime RNG. Other profiles still use the consuming
+eviction order and runtime RNG. Profiles other than quality and Bernoulli use the consuming
 in-memory handoff; this is not a generic custom-policy serialization contract.
 
 Capture borrows the runtime and leaves it usable if validation or later encoding
@@ -135,9 +148,12 @@ protection, or single-writer fencing. The application owns those boundaries,
 storage and input-size limits. Use a serializer that preserves floating-point
 bits; the process-boundary JSON test enables `serde_json/float_roundtrip` and
 uses finite JSON-compatible configuration. Formats that cannot represent a
-configured infinity cannot be used for that state.
+configured infinity cannot be used for that quality state. Bernoulli encodes
+configuration and posterior floating-point values as integer bit patterns;
+its strict checkpoint path rejects nonpositive or nonfinite posterior values
+rather than silently dropping them like the legacy warm-start restore.
 
-Complete checkpoint decoding rejects misaligned IDs and noncanonical outcomes
+Complete quality checkpoint decoding rejects misaligned IDs and noncanonical outcomes
 instead of invoking legacy repair behavior. Restore validates configuration,
 arm membership, retained identities and detector/coverage/count consistency.
 It preserves independently seeded warm-start window histories rather than

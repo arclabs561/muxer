@@ -119,6 +119,16 @@ impl ThompsonSampling {
         &self.stats
     }
 
+    #[cfg(feature = "serde")]
+    pub(crate) fn config(&self) -> &ThompsonConfig {
+        &self.cfg
+    }
+
+    #[cfg(feature = "serde")]
+    pub(crate) fn has_initial_rng(&self, seed: u64) -> bool {
+        self.rng == StdRng::seed_from_u64(seed)
+    }
+
     /// Deterministic allocation over arms based on posterior means (softmax).
     ///
     /// This is often useful for traffic-splitting systems that want probabilities

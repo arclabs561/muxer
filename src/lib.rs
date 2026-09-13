@@ -138,6 +138,8 @@ pub use interaction::{
 };
 
 mod runtime;
+#[cfg(all(feature = "serde", feature = "stochastic"))]
+pub use runtime::BernoulliMuxerCheckpoint;
 #[cfg(feature = "serde")]
 pub use runtime::QualityMuxerCheckpoint;
 pub use runtime::{

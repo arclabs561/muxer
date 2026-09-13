@@ -366,6 +366,48 @@ fn quality_checkpoint_rejects_cloned_orphaned_delayed_profile_state() {
 }
 
 #[test]
+fn quality_checkpoint_v1_fixture_restores_in_a_fresh_process() {
+    // Generated with the pre-extraction implementation at commit 93395d5.
+    // Keep these historical bytes fixed; regenerating with current code would
+    // no longer check backward compatibility of the quality-v1 wire shape.
+    let output = run_child(
+        "quality_checkpoint_v1_fixture_child",
+        include_bytes!("fixtures/quality_checkpoint_v1.json"),
+    );
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[ignore = "invoked by quality_checkpoint_v1_fixture_restores_in_a_fresh_process"]
+fn quality_checkpoint_v1_fixture_child() {
+    let mut encoded = Vec::new();
+    std::io::stdin().read_to_end(&mut encoded).unwrap();
+    let checkpoint: QualityMuxerCheckpoint = serde_json::from_slice(&encoded).unwrap();
+    let mut muxer = Muxer::from_quality_checkpoint(checkpoint, "quality-v1-fixture").unwrap();
+    let pending: DecisionId = serde_json::from_value(json!({"engine": 1, "sequence": 1})).unwrap();
+    muxer.tell(pending, execution()).unwrap();
+    assert_eq!(muxer.pending_len(), 0);
+    assert_eq!(
+        muxer.terminal_status(pending),
+        Some(TerminalStatus::Completed)
+    );
+
+    let next = muxer.decide(&[]).unwrap();
+    assert_eq!(next.action(), "a");
+    muxer.tell(next.id(), execution()).unwrap();
+    muxer
+        .tell(next.id(), QualityFeedback::score(0.63).unwrap())
+        .unwrap();
+    assert_eq!(muxer.pending_len(), 0);
+    assert!(muxer.quality_checkpoint("quality-v1-fixture").is_ok());
+}
+
+#[test]
 #[ignore = "invoked by quality_muxer_checkpoint_rejects_tampering_without_reserving_namespace"]
 fn quality_muxer_checkpoint_corrupt_then_valid_child() {
     let mut encoded = Vec::new();

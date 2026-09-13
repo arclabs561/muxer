@@ -1,0 +1,210 @@
+{
+  "version": 1,
+  "engine": 1,
+  "actions": [
+    "a"
+  ],
+  "policy": {
+    "router": {
+      "format_version": 1,
+      "crate_version": "0.5.3",
+      "build_key": "quality-v1-fixture",
+      "arms": [
+        "a"
+      ],
+      "windows": {
+        "a": {
+          "cap": 2,
+          "buf": [],
+          "ids": []
+        }
+      },
+      "monitored": null,
+      "cfg": {
+        "mab": {
+          "base": {
+            "exploration_c": 0.7,
+            "objectives": [
+              {
+                "extract": "OkRateUcb",
+                "direction": "Maximize",
+                "weight": 1.0
+              },
+              {
+                "extract": "MeanCost",
+                "direction": "Minimize",
+                "weight": 0.0
+              },
+              {
+                "extract": "MeanLatency",
+                "direction": "Minimize",
+                "weight": 0.0
+              },
+              {
+                "extract": "HardJunkRate",
+                "direction": "Minimize",
+                "weight": 0.0
+              },
+              {
+                "extract": "SoftJunkRate",
+                "direction": "Minimize",
+                "weight": 0.0
+              },
+              {
+                "extract": "MeanQuality",
+                "direction": "Maximize",
+                "weight": 0.0
+              }
+            ],
+            "max_junk_rate": null,
+            "max_hard_junk_rate": null,
+            "max_mean_cost_units": null
+          },
+          "max_drift": null,
+          "drift_metric": "Rao",
+          "drift_weight": 0.0,
+          "uncertainty": {
+            "z": 1.96,
+            "ok_mode": "None",
+            "junk_mode": "Upper",
+            "hard_junk_mode": "Upper"
+          },
+          "max_catkl": null,
+          "catkl_alpha": 0.001,
+          "catkl_min_baseline": 40,
+          "catkl_min_recent": 20,
+          "catkl_weight": 0.0,
+          "max_cusum": null,
+          "cusum_alpha": 0.001,
+          "cusum_min_baseline": 40,
+          "cusum_min_recent": 20,
+          "cusum_alt_p": null,
+          "cusum_weight": 0.0
+        },
+        "drift": {
+          "metric": "Hellinger",
+          "tol": 1e-9,
+          "min_baseline": 20,
+          "min_recent": 10
+        },
+        "window_cap": 2,
+        "enable_monitoring": false,
+        "baseline_cap": 500,
+        "recent_cap": 50,
+        "triage_cfg": null,
+        "triage_wf": {
+          "exploration_c": 1.0,
+          "hard_weight": 3.0,
+          "soft_weight": 1.0
+        },
+        "triage_fraction": 0.5,
+        "coverage": {
+          "enabled": false,
+          "min_fraction": 0.0,
+          "min_calls_floor": 0
+        },
+        "guardrail": {
+          "max_mean_ms": null,
+          "require_measured": false,
+          "allow_fewer": false
+        },
+        "pipeline_order": "NoveltyFirst",
+        "novelty_enabled": true,
+        "control": {
+          "enabled": false,
+          "control_k": 0
+        }
+      },
+      "total_observations": 0,
+      "triage": null
+    },
+    "next_observation": 1,
+    "delayed_score": true,
+    "buffered_scores": [
+      [
+        1,
+        4600336947366414254
+      ]
+    ],
+    "executed": []
+  },
+  "retired": [],
+  "next_sequence": 1,
+  "next_received_sequence": 0,
+  "policy_revision": 0,
+  "model_revision": 0,
+  "representation_revision": 0,
+  "config_revision": 0,
+  "catalogue_revision": 0,
+  "rng": {
+    "version": 1,
+    "state": 11400714819323198485
+  },
+  "config": {
+    "pending_capacity": 1024,
+    "terminal_capacity": 1024,
+    "event_capacity": 32,
+    "retired_epoch_capacity": 4,
+    "seed": 0
+  },
+  "pending": [
+    {
+      "receipt": {
+        "id": {
+          "engine": 1,
+          "sequence": 1
+        },
+        "eligible": [
+          "a"
+        ],
+        "selected": [
+          {
+            "action": "a",
+            "probability": "Unavailable",
+            "reason": "NoveltyOrCoverage"
+          }
+        ],
+        "batch": false,
+        "sequence": 1,
+        "policy_revision": 0,
+        "model_revision": 0,
+        "representation_revision": 0,
+        "config_revision": 0,
+        "catalogue_revision": 0
+      },
+      "items": [
+        {
+          "ticket": {
+            "action": "a",
+            "observation": 1,
+            "context": [],
+            "reason": "NoveltyOrCoverage"
+          },
+          "expectation": {
+            "FinalValues": [
+              "execution",
+              "quality-score"
+            ]
+          },
+          "values": [
+            [
+              "quality-score",
+              {
+                "kind": "score",
+                "score": 4600336947366414254
+              }
+            ]
+          ],
+          "missing": [],
+          "missing_reasons": {},
+          "status": "Open"
+        }
+      ],
+      "ledger": {
+        "events": []
+      }
+    }
+  ],
+  "terminal": [],
+  "terminal_order": []
+}

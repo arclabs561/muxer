@@ -1,6 +1,6 @@
 # Unified muxer architecture
 
-status: additive core and complete quality restart implemented; broader restart/release gates remain
+status: additive core and quality/Bernoulli restart implemented; broader restart/release gates remain
 
 date: 2026-09-13
 
