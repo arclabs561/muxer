@@ -13,6 +13,7 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::Arc;
 
 /// A finite quality score in the closed unit interval.
 ///
@@ -141,30 +142,33 @@ impl CanonicalQualityFeedback {
 /// The immutable evidence retained for one issued quality decision.
 #[derive(Debug, Clone)]
 pub struct QualityTicket {
-    action: String,
+    action: Arc<str>,
     observation: ObservationId,
-    context: Vec<f64>,
+    context: Arc<[f64]>,
     reason: DecisionReason,
 }
 
-/// A prepared quality-router update.
-#[derive(Debug, Clone)]
-pub enum QualityUpdate {
-    /// A complete, transactionally prepared quality-state replacement.
-    Commit {
-        /// Router state after the accepted channel update.
-        router: Box<Router>,
-        /// Scores received before their execution rows.
-        buffered_scores: BTreeMap<ObservationId, QualityScore>,
-        /// Execution rows still awaiting their delayed scores.
-        executed: BTreeSet<ObservationId>,
+/// Opaque prepared quality-router update.
+#[derive(Debug)]
+pub struct QualityUpdate(QualityUpdateInner);
+
+#[derive(Debug)]
+enum QualityUpdateInner {
+    Execution {
+        ticket: QualityTicket,
+        outcome: Outcome,
+        mark_awaiting_score: bool,
     },
-    /// The execution row has fallen out of every quality window.
+    Score {
+        observation: ObservationId,
+        score: f64,
+    },
+    BufferScore {
+        observation: ObservationId,
+        score: QualityScore,
+    },
     OutsideHorizon {
-        /// Scores received before their execution rows.
-        buffered_scores: BTreeMap<ObservationId, QualityScore>,
-        /// Execution rows still awaiting their delayed scores.
-        executed: BTreeSet<ObservationId>,
+        observation: ObservationId,
     },
 }
 
@@ -172,7 +176,7 @@ pub enum QualityUpdate {
 ///
 /// `QualityProfile` preserves the existing [`Router`] kernels.  It selects
 /// only from the runtime's authoritative eligible set and applies feedback to
-/// a cloned candidate Router before committing it, so a rejected update leaves
+/// a Router-prepared update only after validation, so a rejected update leaves
 /// control, monitoring, and triage state untouched.
 #[derive(Debug, Clone)]
 pub struct QualityProfile {
@@ -339,11 +343,12 @@ impl QualityProfile {
         }
     }
 
-    fn snapshot_context(context: &[f64]) -> Vec<f64> {
+    fn snapshot_context(context: &[f64]) -> Arc<[f64]> {
         context
             .iter()
             .map(|value| if value.is_finite() { *value } else { 0.0 })
-            .collect()
+            .collect::<Vec<_>>()
+            .into()
     }
 
     fn reason_for(decision: &RouterDecision, action: &str) -> DecisionReason {
@@ -409,7 +414,7 @@ impl InteractionPolicy for QualityProfile {
             selection: selection.clone(),
             probability: ProbabilityAvailability::Unavailable,
             ticket: Some(QualityTicket {
-                action: selection,
+                action: Arc::from(selection.as_str()),
                 observation: ObservationId::new(observation),
                 context,
                 reason,
@@ -469,10 +474,8 @@ impl InteractionPolicy for QualityProfile {
         feedback: &Self::CanonicalFeedback,
     ) -> Result<Self::PreparedUpdate, PolicyError> {
         if let Some(outcome) = feedback.execution_outcome() {
-            let mut router = self.router.clone();
-            let mut buffered_scores = self.buffered_scores.clone();
-            let mut executed = self.executed.clone();
-            let outcome = if let Some(score) = buffered_scores.remove(&ticket.observation) {
+            let buffered_score = self.buffered_scores.get(&ticket.observation).copied();
+            let outcome = if let Some(score) = buffered_score {
                 Outcome::with_quality(
                     outcome.ok,
                     outcome.junk,
@@ -484,28 +487,19 @@ impl InteractionPolicy for QualityProfile {
             } else {
                 outcome
             };
-            if !router.observe_with_id_and_context(
-                ticket.observation,
-                &ticket.action,
-                outcome,
-                &ticket.context,
-            ) {
+            if !self
+                .router
+                .prepare_observation(Some(ticket.observation), ticket.action.as_ref())
+            {
                 return Err(PolicyError::new(
                     "quality execution could not be correlated",
                 ));
             }
-            if self.delayed_score && !buffered_scores.contains_key(&ticket.observation) {
-                // A score delivered before execution was joined into the row,
-                // so it does not need a second awaiting marker.
-                if !self.buffered_scores.contains_key(&ticket.observation) {
-                    executed.insert(ticket.observation);
-                }
-            }
-            return Ok(QualityUpdate::Commit {
-                router: Box::new(router),
-                buffered_scores,
-                executed,
-            });
+            return Ok(QualityUpdate(QualityUpdateInner::Execution {
+                ticket: ticket.clone(),
+                outcome,
+                mark_awaiting_score: self.delayed_score && buffered_score.is_none(),
+            }));
         }
 
         let Some(score) = feedback.score() else {
@@ -516,53 +510,52 @@ impl InteractionPolicy for QualityProfile {
                 "quality score requires QualityProfile::with_delayed_score",
             ));
         }
-        let mut router = self.router.clone();
-        let mut buffered_scores = self.buffered_scores.clone();
-        let mut executed = self.executed.clone();
-        if executed.contains(&ticket.observation) {
-            executed.remove(&ticket.observation);
-            if router.set_quality_score_for_id(ticket.observation, score) {
-                Ok(QualityUpdate::Commit {
-                    router: Box::new(router),
-                    buffered_scores,
-                    executed,
-                })
+        if self.executed.contains(&ticket.observation) {
+            if self.router.prepare_quality_score(ticket.observation) {
+                Ok(QualityUpdate(QualityUpdateInner::Score {
+                    observation: ticket.observation,
+                    score,
+                }))
             } else {
-                Ok(QualityUpdate::OutsideHorizon {
-                    buffered_scores,
-                    executed,
-                })
+                Ok(QualityUpdate(QualityUpdateInner::OutsideHorizon {
+                    observation: ticket.observation,
+                }))
             }
         } else {
-            buffered_scores.insert(
-                ticket.observation,
-                QualityScore::new(score).expect("canonical score remains valid"),
-            );
-            Ok(QualityUpdate::Commit {
-                router: Box::new(router),
-                buffered_scores,
-                executed,
-            })
+            Ok(QualityUpdate(QualityUpdateInner::BufferScore {
+                observation: ticket.observation,
+                score: QualityScore::new(score).expect("canonical score remains valid"),
+            }))
         }
     }
 
     fn apply(&mut self, update: Self::PreparedUpdate) {
-        match update {
-            QualityUpdate::Commit {
-                router,
-                buffered_scores,
-                executed,
+        match update.0 {
+            QualityUpdateInner::Execution {
+                ticket,
+                outcome,
+                mark_awaiting_score,
             } => {
-                self.router = *router;
-                self.buffered_scores = buffered_scores;
-                self.executed = executed;
+                self.router.apply_observation(
+                    Some(ticket.observation),
+                    ticket.action.as_ref(),
+                    outcome,
+                    ticket.context.as_ref(),
+                );
+                self.buffered_scores.remove(&ticket.observation);
+                if mark_awaiting_score {
+                    self.executed.insert(ticket.observation);
+                }
             }
-            QualityUpdate::OutsideHorizon {
-                buffered_scores,
-                executed,
-            } => {
-                self.buffered_scores = buffered_scores;
-                self.executed = executed;
+            QualityUpdateInner::Score { observation, score } => {
+                self.router.apply_quality_score(observation, score);
+                self.executed.remove(&observation);
+            }
+            QualityUpdateInner::BufferScore { observation, score } => {
+                self.buffered_scores.insert(observation, score);
+            }
+            QualityUpdateInner::OutsideHorizon { observation } => {
+                self.executed.remove(&observation);
             }
         }
     }
@@ -591,9 +584,9 @@ impl InteractionPolicy for QualityProfile {
     }
 
     fn update_disposition(&self, update: &Self::PreparedUpdate) -> crate::EventDisposition {
-        match update {
-            QualityUpdate::OutsideHorizon { .. } => crate::EventDisposition::OutsideHorizon,
-            QualityUpdate::Commit { .. } => crate::EventDisposition::Accepted,
+        match &update.0 {
+            QualityUpdateInner::OutsideHorizon { .. } => crate::EventDisposition::OutsideHorizon,
+            _ => crate::EventDisposition::Accepted,
         }
     }
 }
@@ -640,9 +633,9 @@ impl BatchInteractionPolicy for QualityProfile {
                 selection: action.clone(),
                 probability: ProbabilityAvailability::Unavailable,
                 ticket: Some(QualityTicket {
-                    action: action.clone(),
+                    action: Arc::from(action.as_str()),
                     observation: ObservationId::new(observation),
-                    context: context.clone(),
+                    context: Arc::clone(&context),
                     reason,
                 }),
                 expectation: self.expectation(),

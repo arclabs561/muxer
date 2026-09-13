@@ -55,6 +55,13 @@ The application still owns execution, retries, scheduling, locks, feature
 generation and external model storage. No network or training dependency is
 needed to adapt an externally trained scorer.
 
+The quality profile and legacy Router share the same observation and score
+mutation routines. Quality feedback prepares an opaque, single-use update;
+it does not clone the Router or its score-tracking maps. Direct trait users must
+apply a prepared update to the same unchanged policy state. Runtime calls
+enforce that sequence internally. Terminal promotion moves each item's retained
+evidence through one shared conversion, rather than copying parallel records.
+
 ## Revisions, advanced feedback and continuation
 
 `replace_policy_with_revisions(new_policy, model_revision, representation_revision)`

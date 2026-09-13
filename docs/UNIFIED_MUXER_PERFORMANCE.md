@@ -5,7 +5,11 @@ Measured 2026-09-13 on an Apple M3 Max (16 CPU cores, 128 GiB),
 not throughput guarantees. The runtime adds identity, retained evidence,
 transactional updates and finality; direct kernels do not provide those services.
 
-## Quality lifecycle
+## Initial additive runtime
+
+These measurements describe the clone-prepared implementation before the
+shared-reducer consolidation. They remain a historical baseline, not a claim
+about the optimized quality update path.
 
 The benchmark source is [runtime_lifecycle.rs](../benches/runtime_lifecycle.rs).
 Reproduce with default features:
@@ -31,6 +35,31 @@ receipts adds approximately 1–4% over the delayed path without that backlog.
 No retention scaling cliff appeared at the tested sizes; this does not establish
 behavior at arbitrary capacities or payload sizes.
 
+## Shared-reducer consolidation
+
+Compared an immutable archive of `fdb1864` with the consolidated implementation
+using six isolated interleaved runs: baseline/candidate repeated three times.
+The benchmark source, feature set and sampling settings above were unchanged.
+Ranges are Criterion timing point estimates across repetitions, not confidence
+intervals or a claim about production latency percentiles.
+
+| Workload | 5 actions before → after | 25 actions before → after |
+| --- | ---: | ---: |
+| Direct Router control | 5.936–6.005 → 5.895–6.146 µs | 23.950–24.640 → 23.714–24.339 µs |
+| Runtime immediate | 8.797–9.311 → 7.703–8.039 µs | 33.238–33.613 → 30.987–31.785 µs |
+| Runtime delayed score | 10.302–11.034 → 8.151–8.663 µs | 36.075–36.769 → 31.891–32.388 µs |
+| Runtime delayed, pooled 1/100/1,000 pending | 10.824–11.143 → 8.153–8.686 µs | 35.830–38.090 → 31.534–33.480 µs |
+
+The direct Router control ranges overlap, while all runtime workload ranges
+separate in the favorable direction. This supports retaining the compact
+quality updates and consuming terminal conversion. Immediate runtime overhead
+still exceeds the provisional 20% threshold; consolidation improves it without
+making the lifecycle free. Scalar workloads were not remeasured in this pass.
+
+The release benchmark build reported a local `rust-objcopy` debug-info stripping
+warning (missing `libLLVM.dylib`); the optimized benchmark executable ran all
+timed workloads successfully. No toolchain repair was attempted.
+
 ## Scalar lifecycle and compatibility baseline
 
 Three 30-sample repetitions of the `runtime_scalar` group measured:
@@ -54,12 +83,12 @@ host noise. Earlier quality repetitions overlapping CI builds were excluded.
 
 ## Interpretation and next optimization gate
 
-The added lifecycle exceeds the provisional 20% overhead review threshold.
+The initial lifecycle exceeded the provisional 20% overhead review threshold.
 The implementation keeps it additive and opt-in: direct kernels remain available
 when an application does not need correlated delayed feedback. It makes no
-zero-overhead claim. Prepare/apply atomicity currently uses cloned policy state;
-optimizing that boundary must preserve rejection atomicity and delayed-evidence
-tests, not merely improve a microbenchmark.
+zero-overhead claim. Its quality prepare/apply boundary used cloned Router and
+score-map state. The consolidation replaces those copies with validated deltas
+while preserving rejection atomicity and delayed-evidence tests.
 
 A symbolicated, headless pre-freeze sample of the real delayed-quality workload
 found leaf samples in `Window::summary` (8.1%), outcome-window cloning (6.6%)
@@ -77,3 +106,11 @@ Raw baseline, benchmark and profiling artifacts remain at
 `bench-runtime-quality-quiet-{1,2,3}.log`. Final local validation logs remain at
 `/tmp/muxer-final-qa.WuNKKd/`. These session-owned artifacts are retained for the
 operator to inspect, not portable dependencies or published benchmark data.
+
+Consolidation QA and six timed logs are retained at
+`/private/tmp/muxer-consolidation-qa.PIsknX/`: baseline logs are
+`baseline-1-real.log`, `baseline-2.log`, `baseline-3.log`; candidate logs are
+`candidate-{1,2,3}.log`. The separate `baseline-1.log` test-mode probe is not a
+timing result. Immutable baseline source and target are retained at
+`/private/tmp/muxer-fdb1864.tG9SsN/` and
+`/private/tmp/muxer-fdb1864-target.YAq52e/` respectively.

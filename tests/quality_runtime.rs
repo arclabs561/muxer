@@ -126,6 +126,8 @@ fn delayed_score_rejects_embedded_execution_score() {
     ));
     assert_eq!(muxer.pending_len(), 1);
     assert_eq!(muxer.policy().router().summary(receipt.action()).calls, 0);
+    assert_eq!(muxer.policy().buffered_score_len(), 0);
+    assert_eq!(muxer.policy().awaiting_score_len(), 0);
 }
 
 #[test]

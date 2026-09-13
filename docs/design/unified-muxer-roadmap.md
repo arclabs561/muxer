@@ -32,15 +32,19 @@ Remaining gates and deliberate boundaries:
 - Checkpoints preserve complete state through a consuming in-memory handoff.
   Serialized process restart, model-reference resolution and versioned disk
   compatibility remain implementation work; phase 4 is not fully complete.
-- Quality reuses the existing Router kernels under the shared lifecycle.
-  Further reducer extraction needs parity and performance evidence; it is not
-  required to remove the legacy public Router API.
+- Quality and legacy Router methods share validated observation/score reducers.
+  Compact prepared updates replace whole-Router and score-map clones; one
+  consuming terminal conversion replaces repeated close-path bookkeeping.
+  Further extraction needs a concrete reuse case, not removal of the legacy
+  public Router API for its own sake.
 - Item-local missing-channel resolution and cancellation are implemented,
   including retained per-item status, sibling isolation and original-epoch
   cleanup. The cancellation suite covers checkpoint handoff, event-ID
   precedence and rejection after provisional/final feedback.
-- Runtime lifecycle overhead exceeds the provisional 20% review threshold.
-  It remains opt-in, with the measured tradeoff recorded rather than hidden.
+- Isolated before/after measurements show lower quality lifecycle costs after
+  consolidation with overlapping direct Router controls. Immediate runtime
+  overhead still exceeds the provisional 20% review threshold. It remains
+  opt-in; scalar costs were not remeasured in this consolidation pass.
 - No legacy deprecation or package publication was performed. The release owner
   must run compatibility and package release gates before publishing.
 

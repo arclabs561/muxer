@@ -155,6 +155,13 @@ after scalar and quality profiles exercise them. Preserve `Outcome` as a
 convenient typed schema and `Summary` as its view. An external-assessment
 profile may own no estimator at all.
 
+The first consolidation shares Router's validated observation and identified
+score reducers between legacy methods and the quality profile. Prepared quality
+updates are opaque single-use deltas, not whole-Router replacements. Batch
+tickets share immutable context; pending-to-terminal conversion moves grouped
+per-item evidence through one common path. This preserves the legacy public
+surface without maintaining separate observation mutation implementations.
+
 Monitoring consumes finalized channel values. Allocation consumes monitoring
 evidence; a detector does not implicitly reset all learners. Preserve the
 existing control, triage, novelty, coverage and guardrail ordering first as a

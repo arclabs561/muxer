@@ -827,27 +827,50 @@ impl Router {
         outcome: Outcome,
         context: &[f64],
     ) -> bool {
-        let known = self.windows.contains_key(arm);
-        if !known {
+        if !self.prepare_observation(id, arm) {
+            return false;
+        }
+        self.apply_observation(id, arm, outcome, context);
+        true
+    }
+
+    /// Validate an observation before applying it through the shared reducer.
+    pub(crate) fn prepare_observation(&self, id: Option<ObservationId>, arm: &str) -> bool {
+        if !self.windows.contains_key(arm) {
             return false;
         }
         if let Some(id) = id {
-            let in_primary = self.windows.values().any(|w| w.contains_id(id));
-            let in_monitored = self
-                .monitored
-                .as_ref()
-                .is_some_and(|windows| windows.values().any(|w| w.contains_id(id)));
-            if in_primary || in_monitored {
+            if self.contains_observation_id(id) {
                 return false;
             }
         }
+        true
+    }
+
+    /// Apply a previously validated observation without further recovery checks.
+    ///
+    /// Call this exactly once without an intervening Router mutation after
+    /// [`Router::prepare_observation`] succeeds.
+    pub(crate) fn apply_observation(
+        &mut self,
+        id: Option<ObservationId>,
+        arm: &str,
+        outcome: Outcome,
+        context: &[f64],
+    ) {
+        debug_assert!(
+            self.prepare_observation(id, arm),
+            "Router::apply_observation requires a prepared observation"
+        );
         let outcome = outcome.normalized();
-        if let Some(w) = self.windows.get_mut(arm) {
-            if let Some(id) = id {
-                w.push_with_id(id, outcome);
-            } else {
-                w.push(outcome);
-            }
+        let window = self
+            .windows
+            .get_mut(arm)
+            .expect("prepared observation names a registered arm");
+        if let Some(id) = id {
+            window.push_with_id(id, outcome);
+        } else {
+            window.push(outcome);
         }
         if let Some(ref mut m) = self.monitored {
             if let Some(mw) = m.get_mut(arm) {
@@ -863,7 +886,6 @@ impl Router {
             t.observe(arm, idx, context);
         }
         self.total_observations += 1;
-        true
     }
 
     /// Update the most recent outcome's continuous quality score (delayed assessment).
@@ -892,6 +914,27 @@ impl Router {
     /// replay triage detector or cell-tracker state.
     #[must_use]
     pub fn set_quality_score_for_id(&mut self, id: ObservationId, score: f64) -> bool {
+        if !self.prepare_quality_score(id) {
+            return false;
+        }
+        self.apply_quality_score(id, score);
+        true
+    }
+
+    /// Check whether an identified retained row can receive a score update.
+    pub(crate) fn prepare_quality_score(&self, id: ObservationId) -> bool {
+        self.contains_observation_id(id)
+    }
+
+    /// Apply a previously validated identified score update.
+    ///
+    /// Call this exactly once without an intervening Router mutation after
+    /// [`Router::prepare_quality_score`] succeeds.
+    pub(crate) fn apply_quality_score(&mut self, id: ObservationId, score: f64) {
+        debug_assert!(
+            self.prepare_quality_score(id),
+            "Router::apply_quality_score requires a retained observation"
+        );
         let mut found = false;
         for window in self.windows.values_mut() {
             found |= window.set_quality_score_for_id(id, score);
@@ -901,7 +944,7 @@ impl Router {
                 found |= window.set_quality_score_for_id(id, score);
             }
         }
-        found
+        assert!(found, "prepared score update must affect a retained row");
     }
 
     /// Update the most recent outcome's junk label (delayed quality assessment).
@@ -1323,6 +1366,51 @@ mod tests {
         let _ = r.observe("arm0", clean());
         let _ = r.observe("arm1", clean());
         assert_eq!(r.total_observations(), 2);
+    }
+
+    #[test]
+    fn rejected_prepared_updates_do_not_mutate_monitoring_or_triage() {
+        let cfg = RouterConfig::default()
+            .with_monitoring(500, 50)
+            .with_triage();
+        let mut r = Router::new(vec!["a".to_string()], cfg).unwrap();
+        let retained = ObservationId::new(1);
+        assert!(r.observe_with_id_and_context(retained, "a", clean(), &[0.25]));
+
+        let before_summary = r.summary("a");
+        let before_total = r.total_observations();
+        let before_baseline = r.monitored_window("a").unwrap().baseline().summary();
+        let before_recent = r.monitored_window("a").unwrap().recent().summary();
+        let before_triage = r.triage_session().unwrap().arm_state("a").unwrap();
+
+        assert!(!r.prepare_observation(Some(retained), "a"));
+        assert!(!r.prepare_observation(Some(ObservationId::new(2)), "missing"));
+        assert!(!r.prepare_quality_score(ObservationId::new(2)));
+        assert!(!r.observe_with_id_and_context(retained, "a", bad(), &[0.75]));
+        assert!(!r.set_quality_score_for_id(ObservationId::new(2), 0.8));
+
+        let after_summary = r.summary("a");
+        assert_eq!(after_summary.calls, before_summary.calls);
+        assert_eq!(after_summary.ok, before_summary.ok);
+        assert_eq!(after_summary.junk, before_summary.junk);
+        assert_eq!(after_summary.hard_junk, before_summary.hard_junk);
+        assert_eq!(after_summary.cost_units, before_summary.cost_units);
+        assert_eq!(after_summary.elapsed_ms_sum, before_summary.elapsed_ms_sum);
+        assert_eq!(
+            after_summary.mean_quality_score,
+            before_summary.mean_quality_score
+        );
+        assert_eq!(r.total_observations(), before_total);
+
+        let after_baseline = r.monitored_window("a").unwrap().baseline().summary();
+        let after_recent = r.monitored_window("a").unwrap().recent().summary();
+        assert_eq!(after_baseline.calls, before_baseline.calls);
+        assert_eq!(after_recent.calls, before_recent.calls);
+
+        let after_triage = r.triage_session().unwrap().arm_state("a").unwrap();
+        assert_eq!(after_triage.n, before_triage.n);
+        assert_eq!(after_triage.score_max, before_triage.score_max);
+        assert_eq!(after_triage.alarmed, before_triage.alarmed);
     }
 
     #[test]

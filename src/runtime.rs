@@ -173,6 +173,10 @@ pub trait InteractionPolicy {
         EventDisposition::Accepted
     }
     /// Apply a previously validated update without fallible work or I/O.
+    ///
+    /// The runtime applies each prepared update once, to the same policy state
+    /// it was prepared against, with no intervening policy mutation. Callers
+    /// using this trait directly must preserve that ordering too.
     fn apply(&mut self, update: Self::PreparedUpdate);
     /// Discard policy-owned state for an expired, still-open learning ticket.
     fn expire_ticket(&mut self, _ticket: &Self::Ticket) {}
@@ -351,11 +355,48 @@ struct Pending<P: InteractionPolicy> {
 }
 struct Terminal<P: InteractionPolicy> {
     receipt: DecisionReceipt,
-    values: Vec<Vec<(Channel, P::CanonicalFeedback)>>,
-    missing_reasons: Vec<BTreeMap<Channel, String>>,
+    items: Vec<TerminalItem<P::CanonicalFeedback>>,
     status: TerminalStatus,
-    item_statuses: Vec<ItemStatus>,
     ledger: events::EventLedger<P::CanonicalFeedback>,
+}
+
+struct TerminalItem<C> {
+    values: Vec<(Channel, C)>,
+    missing_reasons: BTreeMap<Channel, String>,
+    status: ItemStatus,
+}
+impl<C> TerminalItem<C> {
+    fn feedbackless() -> Self {
+        Self {
+            values: Vec::new(),
+            missing_reasons: BTreeMap::new(),
+            status: ItemStatus::Completed,
+        }
+    }
+}
+
+impl<P: InteractionPolicy> Pending<P> {
+    /// Move retained evidence through one promotion path for every close reason.
+    fn into_terminal(self, status: TerminalStatus) -> Terminal<P> {
+        Terminal {
+            receipt: self.receipt,
+            items: self
+                .items
+                .into_iter()
+                .map(|item| TerminalItem {
+                    values: item.events,
+                    missing_reasons: item.missing_reasons,
+                    status: match (item.status, status) {
+                        (ItemStatus::Open, TerminalStatus::Cancelled) => ItemStatus::Cancelled,
+                        (ItemStatus::Open, TerminalStatus::Expired) => ItemStatus::Expired,
+                        (item_status, _) => item_status,
+                    },
+                })
+                .collect(),
+            status,
+            ledger: self.ledger,
+        }
+    }
 }
 
 /// Lifecycle state of one selected item in a receipt.
@@ -680,10 +721,8 @@ impl<P: InteractionPolicy> Muxer<P> {
                 id,
                 Terminal {
                     receipt: receipt.clone(),
-                    values: vec![Vec::new()],
-                    missing_reasons: vec![BTreeMap::new()],
+                    items: vec![TerminalItem::feedbackless()],
                     status: TerminalStatus::Completed,
-                    item_statuses: vec![ItemStatus::Completed],
                     ledger: events::EventLedger::default(),
                 },
             );
@@ -820,10 +859,8 @@ impl<P: InteractionPolicy> Muxer<P> {
                 id,
                 Terminal {
                     receipt: receipt.clone(),
-                    values: vec![Vec::new(); count],
-                    missing_reasons: vec![BTreeMap::new(); count],
+                    items: (0..count).map(|_| TerminalItem::feedbackless()).collect(),
                     status: TerminalStatus::Completed,
-                    item_statuses: vec![ItemStatus::Completed; count],
                     ledger: events::EventLedger::default(),
                 },
             );
@@ -883,13 +920,15 @@ impl<P: InteractionPolicy> Muxer<P> {
             .ok_or(RuntimeError::PendingDecisions)?;
         let channel = origin.feedback_channel(&canonical);
         if let Some(done) = self.terminal.get(&id) {
-            if done.item_statuses.get(position) == Some(&ItemStatus::Cancelled) {
+            let item = done
+                .items
+                .get(position)
+                .ok_or(RuntimeError::WrongPosition)?;
+            if item.status == ItemStatus::Cancelled {
                 return Err(RuntimeError::Cancelled);
             }
-            let Some(values) = done.values.get(position) else {
-                return Err(RuntimeError::WrongPosition);
-            };
-            return if values
+            return if item
+                .values
                 .iter()
                 .any(|(seen, value)| seen == &channel && value == &canonical)
             {
@@ -962,25 +1001,7 @@ impl<P: InteractionPolicy> Muxer<P> {
         }
         if complete {
             let pending = self.pending.remove(&id).expect("pending checked above");
-            self.insert_terminal(
-                id,
-                Terminal {
-                    receipt: pending.receipt,
-                    values: pending
-                        .items
-                        .iter()
-                        .map(|item| item.events.clone())
-                        .collect(),
-                    missing_reasons: pending
-                        .items
-                        .iter()
-                        .map(|item| item.missing_reasons.clone())
-                        .collect(),
-                    status: TerminalStatus::Completed,
-                    item_statuses: pending.items.iter().map(|item| item.status).collect(),
-                    ledger: pending.ledger,
-                },
-            );
+            self.insert_terminal(id, pending.into_terminal(TerminalStatus::Completed));
         }
         Ok(disposition)
     }
@@ -1000,14 +1021,14 @@ impl<P: InteractionPolicy> Muxer<P> {
             return Err(error);
         }
         if let Some(terminal) = self.terminal.get(&id) {
-            if terminal.item_statuses.get(position) == Some(&ItemStatus::Cancelled) {
-                return Err(RuntimeError::Cancelled);
-            }
-            let reasons = terminal
-                .missing_reasons
+            let item = terminal
+                .items
                 .get(position)
                 .ok_or(RuntimeError::WrongPosition)?;
-            return match reasons.get(&channel) {
+            if item.status == ItemStatus::Cancelled {
+                return Err(RuntimeError::Cancelled);
+            }
+            return match item.missing_reasons.get(&channel) {
                 Some(previous) if previous == &reason => Ok(EventDisposition::Duplicate),
                 Some(_) => Err(RuntimeError::ConflictingEvent),
                 None => Err(RuntimeError::AlreadyFinalized),
@@ -1071,25 +1092,7 @@ impl<P: InteractionPolicy> Muxer<P> {
                 .finish_ticket(ticket);
         }
         if complete {
-            self.insert_terminal(
-                id,
-                Terminal {
-                    receipt: pending.receipt,
-                    values: pending
-                        .items
-                        .iter()
-                        .map(|item| item.events.clone())
-                        .collect(),
-                    missing_reasons: pending
-                        .items
-                        .iter()
-                        .map(|item| item.missing_reasons.clone())
-                        .collect(),
-                    status: TerminalStatus::Completed,
-                    item_statuses: pending.items.iter().map(|item| item.status).collect(),
-                    ledger: pending.ledger,
-                },
-            );
+            self.insert_terminal(id, pending.into_terminal(TerminalStatus::Completed));
         } else {
             self.pending.insert(id, pending);
         }
@@ -1118,8 +1121,8 @@ impl<P: InteractionPolicy> Muxer<P> {
             return Err(RuntimeError::WrongEngine);
         }
         if let Some(terminal) = self.terminal.get(&id) {
-            return match terminal.item_statuses.get(position) {
-                Some(ItemStatus::Cancelled) => Ok(()),
+            return match terminal.items.get(position) {
+                Some(item) if item.status == ItemStatus::Cancelled => Ok(()),
                 Some(_) => Err(RuntimeError::AlreadyFinalized),
                 None => Err(RuntimeError::WrongPosition),
             };
@@ -1163,25 +1166,7 @@ impl<P: InteractionPolicy> Muxer<P> {
             .iter()
             .all(|item| item.status != ItemStatus::Open);
         if complete {
-            self.insert_terminal(
-                id,
-                Terminal {
-                    receipt: pending.receipt,
-                    values: pending
-                        .items
-                        .iter()
-                        .map(|item| item.events.clone())
-                        .collect(),
-                    missing_reasons: pending
-                        .items
-                        .iter()
-                        .map(|item| item.missing_reasons.clone())
-                        .collect(),
-                    status: TerminalStatus::Completed,
-                    item_statuses: pending.items.iter().map(|item| item.status).collect(),
-                    ledger: pending.ledger,
-                },
-            );
+            self.insert_terminal(id, pending.into_terminal(TerminalStatus::Completed));
         } else {
             self.pending.insert(id, pending);
         }
@@ -1233,37 +1218,7 @@ impl<P: InteractionPolicy> Muxer<P> {
         } else {
             TerminalStatus::Cancelled
         };
-        self.insert_terminal(
-            id,
-            Terminal {
-                receipt: pending.receipt,
-                values: pending
-                    .items
-                    .iter()
-                    .map(|item| item.events.clone())
-                    .collect(),
-                missing_reasons: pending
-                    .items
-                    .iter()
-                    .map(|item| item.missing_reasons.clone())
-                    .collect(),
-                status,
-                item_statuses: pending
-                    .items
-                    .iter()
-                    .map(|item| {
-                        if expire && item.status == ItemStatus::Open {
-                            ItemStatus::Expired
-                        } else if !expire && item.status == ItemStatus::Open {
-                            ItemStatus::Cancelled
-                        } else {
-                            item.status
-                        }
-                    })
-                    .collect(),
-                ledger: pending.ledger,
-            },
-        );
+        self.insert_terminal(id, pending.into_terminal(status));
         Ok(())
     }
     fn insert_terminal(&mut self, id: DecisionId, terminal: Terminal<P>) {
@@ -1332,9 +1287,9 @@ impl<P: InteractionPolicy> Muxer<P> {
             .or_else(|| {
                 self.terminal
                     .get(&id)
-                    .and_then(|record| record.values.get(position))
-                    .and_then(|values| {
-                        values
+                    .and_then(|record| record.items.get(position))
+                    .and_then(|item| {
+                        item.values
                             .iter()
                             .find(|(seen, _)| seen == channel)
                             .map(|(_, value)| value)
@@ -1356,8 +1311,8 @@ impl<P: InteractionPolicy> Muxer<P> {
             .or_else(|| {
                 self.terminal
                     .get(&id)
-                    .and_then(|terminal| terminal.missing_reasons.get(position))
-                    .and_then(|reasons| reasons.get(channel))
+                    .and_then(|terminal| terminal.items.get(position))
+                    .and_then(|item| item.missing_reasons.get(channel))
             })
             .map(String::as_str)
     }
@@ -1376,7 +1331,8 @@ impl<P: InteractionPolicy> Muxer<P> {
             .or_else(|| {
                 self.terminal
                     .get(&id)
-                    .and_then(|terminal| terminal.item_statuses.get(position).copied())
+                    .and_then(|terminal| terminal.items.get(position))
+                    .map(|item| item.status)
             })
     }
 

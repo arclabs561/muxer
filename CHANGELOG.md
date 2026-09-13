@@ -43,6 +43,11 @@
 
 ### Changed
 
+- Quality feedback uses compact prepared updates shared with Router's mutation
+  routines instead of cloning the Router and its score-tracking maps. The
+  unreleased `QualityUpdate` is opaque and non-cloneable.
+- Terminal promotion moves grouped per-item evidence through one shared path
+  for final feedback, missing channels, cancellation and expiry.
 - Require drawset 0.1.2 for the optional `boltzmann` policy.
 - Cached monitoring scores once per router selection instead of recomputing
   them during each multi-pick round.
