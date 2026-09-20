@@ -7,8 +7,9 @@ use muxer::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use std::io::Read;
+
+mod support;
 
 const BUILD_KEY: &str = "quality-muxer-checkpoint-test-v1";
 
@@ -281,13 +282,8 @@ fn serialized_quality_muxer_checkpoint_matches_uninterrupted_execution() {
     let encoded = serde_json::to_vec(&handoff).unwrap();
     let expected = continue_after_restore(muxer, handoff);
 
-    let output = run_child("quality_muxer_checkpoint_child", &encoded);
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let output = support::run_checkpoint_child("quality_muxer_checkpoint_child", &encoded);
+    support::assert_child_success(&output);
     let stdout = String::from_utf8(output.stdout).unwrap();
     let result = stdout
         .lines()
@@ -295,18 +291,6 @@ fn serialized_quality_muxer_checkpoint_matches_uninterrupted_execution() {
         .unwrap();
     let actual: Value = serde_json::from_str(result).unwrap();
     assert_eq!(actual, expected);
-}
-
-fn run_child(name: &str, encoded: &[u8]) -> std::process::Output {
-    let mut child = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", name, "--ignored", "--nocapture"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child.stdin.take().unwrap().write_all(encoded).unwrap();
-    child.wait_with_output().unwrap()
 }
 
 #[test]
@@ -335,16 +319,11 @@ fn quality_muxer_checkpoint_rejects_tampering_without_reserving_namespace() {
         .insert("unexpected".to_owned(), Value::Null);
     assert!(serde_json::from_value::<Handoff>(malformed).is_err());
 
-    let output = run_child(
+    let output = support::run_checkpoint_child(
         "quality_muxer_checkpoint_corrupt_then_valid_child",
         &encoded,
     );
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    support::assert_child_success(&output);
 }
 
 #[test]
@@ -370,16 +349,11 @@ fn quality_checkpoint_v1_fixture_restores_in_a_fresh_process() {
     // Generated with the pre-extraction implementation at commit 93395d5.
     // Keep these historical bytes fixed; regenerating with current code would
     // no longer check backward compatibility of the quality-v1 wire shape.
-    let output = run_child(
+    let output = support::run_checkpoint_child(
         "quality_checkpoint_v1_fixture_child",
         include_bytes!("fixtures/quality_checkpoint_v1.json"),
     );
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    support::assert_child_success(&output);
 }
 
 #[test]

@@ -10,18 +10,54 @@ use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::marker::PhantomData;
 
+#[cfg(feature = "serde")]
+#[path = "external_checkpoint.rs"]
+mod external_checkpoint;
+#[cfg(feature = "serde")]
+pub(crate) use external_checkpoint::{ExternalAssessmentsCheckpoint, ExternalReferenceCheckpoint};
+
+/// A stable, caller-defined identifier for an externally owned model artifact.
+///
+/// This is an opaque identifier, not a URI, credential, loader, or storage
+/// handle. A serialized external-profile checkpoint records it so the caller
+/// can resolve the same artifact before resuming the runtime.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ModelReference(String);
+
+impl ModelReference {
+    /// Construct a non-empty external model artifact identifier.
+    pub fn new(value: impl Into<String>) -> Result<Self, PolicyError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(PolicyError::new("model reference must not be empty"));
+        }
+        Ok(Self(value))
+    }
+
+    /// Borrow the caller-defined artifact identifier.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Deterministic selection from caller-supplied scores.
 ///
 /// The closure receives canonical eligible actions and must return one finite score
 /// for each action. The highest score wins; canonical action order breaks ties.
 pub struct ExternalScores<C: ?Sized, F> {
     score: F,
+    reference: Option<ModelReference>,
     marker: PhantomData<fn(&C)>,
 }
 
 impl<C: ?Sized, F: Clone> Clone for ExternalScores<C, F> {
     fn clone(&self) -> Self {
-        Self::new(self.score.clone())
+        Self {
+            score: self.score.clone(),
+            reference: self.reference.clone(),
+            marker: PhantomData,
+        }
     }
 }
 
@@ -31,8 +67,23 @@ impl<C: ?Sized, F> ExternalScores<C, F> {
     pub fn new(score: F) -> Self {
         Self {
             score,
+            reference: None,
             marker: PhantomData,
         }
+    }
+
+    /// Associate this closure with the externally owned artifact needed to
+    /// recreate it after serialized continuation.
+    #[must_use]
+    pub fn with_model_reference(mut self, reference: ModelReference) -> Self {
+        self.reference = Some(reference);
+        self
+    }
+
+    /// Return the artifact identifier supplied for serialized continuation.
+    #[must_use]
+    pub fn model_reference(&self) -> Option<&ModelReference> {
+        self.reference.as_ref()
     }
 }
 
@@ -101,12 +152,17 @@ where
 /// recorded on the receipt.
 pub struct ExternalDistribution<C: ?Sized, F> {
     distribution: F,
+    reference: Option<ModelReference>,
     marker: PhantomData<fn(&C)>,
 }
 
 impl<C: ?Sized, F: Clone> Clone for ExternalDistribution<C, F> {
     fn clone(&self) -> Self {
-        Self::new(self.distribution.clone())
+        Self {
+            distribution: self.distribution.clone(),
+            reference: self.reference.clone(),
+            marker: PhantomData,
+        }
     }
 }
 
@@ -116,8 +172,23 @@ impl<C: ?Sized, F> ExternalDistribution<C, F> {
     pub fn new(distribution: F) -> Self {
         Self {
             distribution,
+            reference: None,
             marker: PhantomData,
         }
+    }
+
+    /// Associate this closure with the externally owned artifact needed to
+    /// recreate it after serialized continuation.
+    #[must_use]
+    pub fn with_model_reference(mut self, reference: ModelReference) -> Self {
+        self.reference = Some(reference);
+        self
+    }
+
+    /// Return the artifact identifier supplied for serialized continuation.
+    #[must_use]
+    pub fn model_reference(&self) -> Option<&ModelReference> {
+        self.reference.as_ref()
     }
 }
 

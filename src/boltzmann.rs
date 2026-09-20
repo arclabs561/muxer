@@ -91,7 +91,81 @@ pub struct BoltzmannPolicy {
     stats: BTreeMap<String, (f64, u64)>,
 }
 
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BoltzmannCheckpoint {
+    pub(crate) temperature: u64,
+    pub(crate) initial_reward: u64,
+    pub(crate) reward_clip: Option<u64>,
+    pub(crate) stats: Vec<(String, u64, u64)>,
+}
+
 impl BoltzmannPolicy {
+    #[cfg(feature = "serde")]
+    pub(crate) fn checkpoint_state(&self) -> Result<BoltzmannCheckpoint, crate::PolicyError> {
+        if !self.config.temperature.is_finite()
+            || self.config.temperature <= 0.0
+            || !self.config.initial_reward.is_finite()
+            || self
+                .config
+                .reward_clip
+                .is_some_and(|clip| !clip.is_finite() || clip <= 0.0)
+            || self
+                .stats
+                .iter()
+                .any(|(arm, (sum, count))| arm.is_empty() || !sum.is_finite() || *count == 0)
+        {
+            return Err(crate::PolicyError::new(
+                "Boltzmann checkpoint state is invalid",
+            ));
+        }
+        Ok(BoltzmannCheckpoint {
+            temperature: self.config.temperature.to_bits(),
+            initial_reward: self.config.initial_reward.to_bits(),
+            reward_clip: self.config.reward_clip.map(f64::to_bits),
+            stats: self
+                .stats
+                .iter()
+                .map(|(arm, (sum, count))| (arm.clone(), sum.to_bits(), *count))
+                .collect(),
+        })
+    }
+    #[cfg(feature = "serde")]
+    pub(crate) fn from_checkpoint_state(
+        state: BoltzmannCheckpoint,
+    ) -> Result<Self, crate::PolicyError> {
+        let config = BoltzmannConfig {
+            temperature: f64::from_bits(state.temperature),
+            initial_reward: f64::from_bits(state.initial_reward),
+            reward_clip: state.reward_clip.map(f64::from_bits),
+        };
+        if !config.temperature.is_finite()
+            || config.temperature <= 0.0
+            || !config.initial_reward.is_finite()
+            || config
+                .reward_clip
+                .is_some_and(|clip| !clip.is_finite() || clip <= 0.0)
+        {
+            return Err(crate::PolicyError::new(
+                "Boltzmann checkpoint config is invalid",
+            ));
+        }
+        let mut stats = BTreeMap::new();
+        for (arm, sum, count) in state.stats {
+            let sum = f64::from_bits(sum);
+            if arm.is_empty()
+                || !sum.is_finite()
+                || count == 0
+                || stats.insert(arm, (sum, count)).is_some()
+            {
+                return Err(crate::PolicyError::new(
+                    "Boltzmann checkpoint stats are invalid",
+                ));
+            }
+        }
+        Ok(Self { config, stats })
+    }
     /// Construct with explicit config.
     pub fn new(config: BoltzmannConfig) -> Self {
         config.validate();
@@ -283,6 +357,37 @@ mod tests {
         assert_eq!(d.policy, DecisionPolicy::Boltzmann);
         assert!(d.probs.is_some());
         assert!(d.notes.contains(&DecisionNote::SampledFromDistribution));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn checkpoint_round_trip_preserves_config_bits_and_rejects_invalid_stats() {
+        let mut policy = BoltzmannPolicy::new(BoltzmannConfig {
+            temperature: 0.125,
+            initial_reward: -0.25,
+            reward_clip: Some(2.5),
+        });
+        policy.update_reward("a", 1.0);
+        let state = policy.checkpoint_state().unwrap();
+        let restored = BoltzmannPolicy::from_checkpoint_state(state.clone()).unwrap();
+        assert_eq!(restored.config.temperature.to_bits(), 0.125f64.to_bits());
+        assert_eq!(
+            restored.config.initial_reward.to_bits(),
+            (-0.25f64).to_bits()
+        );
+        assert_eq!(
+            restored.config.reward_clip.map(f64::to_bits),
+            Some(2.5f64.to_bits())
+        );
+        assert_eq!(restored.stats, policy.stats);
+
+        let mut zero_count = state.clone();
+        zero_count.stats[0].2 = 0;
+        assert!(BoltzmannPolicy::from_checkpoint_state(zero_count).is_err());
+
+        let mut invalid_temperature = state;
+        invalid_temperature.temperature = f64::NAN.to_bits();
+        assert!(BoltzmannPolicy::from_checkpoint_state(invalid_temperature).is_err());
     }
 
     #[test]

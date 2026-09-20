@@ -19,6 +19,16 @@ use crate::{
 #[cfg(feature = "stochastic")]
 use crate::{Exp3Ix, Exp3IxConfig, ThompsonConfig, ThompsonSampling};
 
+#[cfg(feature = "serde")]
+#[path = "scalar_checkpoint.rs"]
+mod scalar_checkpoint;
+#[cfg(all(feature = "serde", feature = "boltzmann"))]
+pub(crate) use scalar_checkpoint::BoltzmannProfileCheckpoint;
+#[cfg(all(feature = "serde", feature = "stochastic"))]
+pub(crate) use scalar_checkpoint::Exp3ProfileCheckpoint;
+#[cfg(all(feature = "serde", any(feature = "stochastic", feature = "boltzmann")))]
+pub(crate) use scalar_checkpoint::{ScalarProfileTicketCheckpoint, ScalarProfileTicketState};
+
 #[cfg(any(feature = "stochastic", feature = "boltzmann"))]
 /// Retained scalar decision identity used to attribute delayed feedback.
 #[derive(Debug, Clone)]
@@ -35,10 +45,74 @@ pub struct ThompsonIssue {
     rng: TrialRng,
 }
 
+#[cfg(feature = "stochastic")]
+#[derive(Debug, Clone)]
+struct ThompsonProfileCore {
+    inner: ThompsonSampling,
+    rng: TrialRng,
+    #[cfg(all(feature = "serde", feature = "stochastic"))]
+    legacy_seed: u64,
+}
+
+#[cfg(feature = "stochastic")]
+struct ThompsonPreparedDecision {
+    selection: String,
+    reason: DecisionReason,
+    issue: ThompsonIssue,
+}
+
+#[cfg(feature = "stochastic")]
+impl ThompsonProfileCore {
+    fn initialize(config: ThompsonConfig) -> Self {
+        Self {
+            inner: ThompsonSampling::new(config),
+            rng: TrialRng::seeded(0),
+            #[cfg(all(feature = "serde", feature = "stochastic"))]
+            legacy_seed: 0,
+        }
+    }
+
+    fn seeded(config: ThompsonConfig, seed: u64) -> Self {
+        Self {
+            inner: ThompsonSampling::with_seed(config, seed),
+            rng: TrialRng::seeded(seed),
+            #[cfg(all(feature = "serde", feature = "stochastic"))]
+            legacy_seed: seed,
+        }
+    }
+
+    fn prepare(&self, eligible: &[String]) -> Result<ThompsonPreparedDecision, PolicyError> {
+        let mut kernel = self.inner.clone();
+        let mut stream = self.rng.clone();
+        let decision = kernel
+            .decide_with_rng(eligible, &mut stream)
+            .ok_or_else(|| PolicyError::new("no eligible action"))?;
+        Ok(ThompsonPreparedDecision {
+            selection: decision.chosen,
+            reason: reason_from_notes(&decision.notes),
+            issue: ThompsonIssue {
+                kernel,
+                rng: stream,
+            },
+        })
+    }
+
+    fn commit(&mut self, issue: ThompsonIssue) {
+        self.inner = issue.kernel;
+        self.rng = issue.rng;
+    }
+
+    fn update(&self, ticket: &ScalarTicket, reward: f64) -> ThompsonSampling {
+        let mut next = self.inner.clone();
+        next.update_reward(&ticket.action, reward);
+        next
+    }
+}
+
 #[cfg(all(feature = "serde", feature = "stochastic"))]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct BernoulliThompsonCheckpoint {
+pub(crate) struct ThompsonProfileCheckpoint {
     schema: u32,
     kind: String,
     crate_version: String,
@@ -48,6 +122,12 @@ pub(crate) struct BernoulliThompsonCheckpoint {
     legacy_seed: u64,
     rng: crate::TrialRngState,
 }
+
+#[cfg(all(feature = "serde", feature = "stochastic"))]
+pub(crate) type BernoulliThompsonCheckpoint = ThompsonProfileCheckpoint;
+
+#[cfg(all(feature = "serde", feature = "stochastic"))]
+pub(crate) type FractionalThompsonCheckpoint = ThompsonProfileCheckpoint;
 
 #[cfg(all(feature = "serde", feature = "stochastic"))]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -78,11 +158,11 @@ pub(crate) struct ScalarTicketCheckpoint {
 }
 
 #[cfg(all(feature = "serde", feature = "stochastic"))]
-pub(crate) struct ScalarTicketState<'a> {
+pub(crate) struct ScalarTicketState<'a, Canonical> {
     pub(crate) ticket: &'a ScalarTicket,
     pub(crate) action: &'a str,
     pub(crate) reason: DecisionReason,
-    pub(crate) values: &'a [(Channel, bool)],
+    pub(crate) values: &'a [(Channel, Canonical)],
     pub(crate) missing: &'a [Channel],
 }
 
@@ -123,10 +203,7 @@ impl ScalarTicketCheckpoint {
 /// Beta-Bernoulli Thompson sampling with boolean feedback.
 #[derive(Debug, Clone)]
 pub struct BernoulliThompson {
-    inner: ThompsonSampling,
-    #[cfg(all(feature = "serde", feature = "stochastic"))]
-    legacy_seed: u64,
-    rng: TrialRng,
+    core: ThompsonProfileCore,
 }
 
 #[cfg(feature = "stochastic")]
@@ -135,10 +212,7 @@ impl BernoulliThompson {
     #[must_use]
     pub fn new(config: ThompsonConfig) -> Self {
         Self {
-            inner: ThompsonSampling::new(config),
-            #[cfg(all(feature = "serde", feature = "stochastic"))]
-            legacy_seed: 0,
-            rng: TrialRng::seeded(0),
+            core: ThompsonProfileCore::initialize(config),
         }
     }
     /// Construct with a reproducible profile seed.
@@ -149,23 +223,18 @@ impl BernoulliThompson {
     #[must_use]
     pub fn with_seed(config: ThompsonConfig, seed: u64) -> Self {
         Self {
-            inner: ThompsonSampling::with_seed(config, seed),
-            #[cfg(all(feature = "serde", feature = "stochastic"))]
-            legacy_seed: seed,
-            rng: TrialRng::seeded(seed),
+            core: ThompsonProfileCore::seeded(config, seed),
         }
     }
     /// Inspect the underlying Thompson kernel.
     #[must_use]
     pub fn inner(&self) -> &ThompsonSampling {
-        &self.inner
+        &self.core.inner
     }
 
     #[cfg(all(feature = "serde", feature = "stochastic"))]
     pub(crate) fn checkpoint_expectation(&self) -> FeedbackExpectation {
-        FeedbackExpectation::FinalValue {
-            channel: Channel::reward(),
-        }
+        thompson_checkpoint_expectation()
     }
 
     #[cfg(all(feature = "serde", feature = "stochastic"))]
@@ -173,44 +242,14 @@ impl BernoulliThompson {
         &self,
         build_key: &str,
     ) -> Result<BernoulliThompsonCheckpoint, PolicyError> {
-        if build_key.is_empty() {
-            return Err(PolicyError::new("Bernoulli checkpoint build key is empty"));
-        }
-        if !self.inner.has_initial_rng(self.legacy_seed) {
-            return Err(PolicyError::new(
-                "Bernoulli checkpoint legacy RNG does not match its recorded seed",
-            ));
-        }
-        let config = checkpoint_config(self.inner.config());
-        let mut posterior = Vec::with_capacity(self.inner.stats().len());
-        for (action, stats) in self.inner.stats() {
-            if action.is_empty()
-                || !stats.alpha.is_finite()
-                || stats.alpha <= 0.0
-                || !stats.beta.is_finite()
-                || stats.beta <= 0.0
-            {
-                return Err(PolicyError::new(
-                    "Bernoulli checkpoint cannot capture an invalid posterior",
-                ));
-            }
-            posterior.push(ThompsonArmCheckpoint {
-                action: action.clone(),
-                alpha: stats.alpha.to_bits(),
-                beta: stats.beta.to_bits(),
-                uses: stats.uses,
-            });
-        }
-        Ok(BernoulliThompsonCheckpoint {
-            schema: 1,
-            kind: "bernoulli-thompson".to_owned(),
-            crate_version: env!("CARGO_PKG_VERSION").to_owned(),
-            build_key: build_key.to_owned(),
-            config,
-            posterior,
-            legacy_seed: self.legacy_seed,
-            rng: self.rng.state(),
-        })
+        checkpoint_thompson_profile(
+            &self.core.inner,
+            &self.core.rng,
+            self.core.legacy_seed,
+            "bernoulli-thompson",
+            "Bernoulli",
+            build_key,
+        )
     }
 
     #[cfg(all(feature = "serde", feature = "stochastic"))]
@@ -218,88 +257,23 @@ impl BernoulliThompson {
         state: BernoulliThompsonCheckpoint,
         build_key: &str,
     ) -> Result<Self, PolicyError> {
-        if state.schema != 1 {
-            return Err(PolicyError::new("unsupported Bernoulli checkpoint schema"));
-        }
-        if state.kind != "bernoulli-thompson" {
-            return Err(PolicyError::new("Bernoulli checkpoint kind mismatch"));
-        }
-        if state.crate_version != env!("CARGO_PKG_VERSION") {
-            return Err(PolicyError::new(
-                "Bernoulli checkpoint crate version mismatch",
-            ));
-        }
-        if build_key.is_empty() || state.build_key != build_key {
-            return Err(PolicyError::new("Bernoulli checkpoint build key mismatch"));
-        }
-        let config = restore_config(state.config)?;
-        let mut arms = std::collections::BTreeMap::new();
-        for arm in state.posterior {
-            if arm.action.is_empty() || arms.contains_key(&arm.action) {
-                return Err(PolicyError::new(
-                    "Bernoulli checkpoint repeats or empties a posterior action",
-                ));
-            }
-            let alpha = f64::from_bits(arm.alpha);
-            let beta = f64::from_bits(arm.beta);
-            if !alpha.is_finite() || alpha <= 0.0 || !beta.is_finite() || beta <= 0.0 {
-                return Err(PolicyError::new(
-                    "Bernoulli checkpoint posterior is invalid",
-                ));
-            }
-            arms.insert(
-                arm.action,
-                crate::BetaStats {
-                    alpha,
-                    beta,
-                    uses: arm.uses,
-                },
-            );
-        }
-        let rng = TrialRng::from_state(state.rng)?;
-        let mut inner = ThompsonSampling::with_seed(config, state.legacy_seed);
-        inner.restore(crate::ThompsonState { arms });
+        let (inner, rng, legacy_seed) =
+            restore_thompson_profile(state, "bernoulli-thompson", "Bernoulli", build_key)?;
         Ok(Self {
-            inner,
-            legacy_seed: state.legacy_seed,
-            rng,
+            core: ThompsonProfileCore {
+                inner,
+                rng,
+                legacy_seed,
+            },
         })
     }
 
     #[cfg(all(feature = "serde", feature = "stochastic"))]
     pub(crate) fn validate_checkpoint_tickets(
         &self,
-        tickets: &[ScalarTicketState<'_>],
+        tickets: &[ScalarTicketState<'_, bool>],
     ) -> Result<(), PolicyError> {
-        let reward = Channel::reward();
-        for state in tickets {
-            if state.ticket.action != state.action || state.ticket.reason != state.reason {
-                return Err(PolicyError::new(
-                    "Bernoulli checkpoint ticket disagrees with receipt",
-                ));
-            }
-            if !matches!(
-                state.reason,
-                DecisionReason::ExploreFirst | DecisionReason::PosteriorSample
-            ) {
-                return Err(PolicyError::new(
-                    "Bernoulli checkpoint receipt reason is invalid",
-                ));
-            }
-            if !self.inner.stats().contains_key(state.action) {
-                return Err(PolicyError::new(
-                    "Bernoulli checkpoint ticket action lacks issued kernel state",
-                ));
-            }
-            if state.values.iter().any(|(channel, _)| channel != &reward)
-                || state.missing.iter().any(|channel| channel != &reward)
-            {
-                return Err(PolicyError::new(
-                    "Bernoulli checkpoint ticket has an unexpected channel",
-                ));
-            }
-        }
-        Ok(())
+        validate_thompson_checkpoint_tickets(&self.core.inner, tickets, "Bernoulli")
     }
 }
 
@@ -338,6 +312,159 @@ fn restore_config(state: ThompsonConfigCheckpoint) -> Result<ThompsonConfig, Pol
     })
 }
 
+#[cfg(all(feature = "serde", feature = "stochastic"))]
+fn thompson_checkpoint_expectation() -> FeedbackExpectation {
+    FeedbackExpectation::FinalValue {
+        channel: Channel::reward(),
+    }
+}
+
+#[cfg(all(feature = "serde", feature = "stochastic"))]
+fn checkpoint_thompson_profile(
+    inner: &ThompsonSampling,
+    rng: &TrialRng,
+    legacy_seed: u64,
+    kind: &str,
+    label: &str,
+    build_key: &str,
+) -> Result<ThompsonProfileCheckpoint, PolicyError> {
+    if build_key.is_empty() {
+        return Err(PolicyError::new(format!(
+            "{label} checkpoint build key is empty"
+        )));
+    }
+    if !inner.has_initial_rng(legacy_seed) {
+        return Err(PolicyError::new(format!(
+            "{label} checkpoint legacy RNG does not match its recorded seed"
+        )));
+    }
+    let config = checkpoint_config(inner.config());
+    let mut posterior = Vec::with_capacity(inner.stats().len());
+    for (action, stats) in inner.stats() {
+        if action.is_empty()
+            || !stats.alpha.is_finite()
+            || stats.alpha <= 0.0
+            || !stats.beta.is_finite()
+            || stats.beta <= 0.0
+        {
+            return Err(PolicyError::new(format!(
+                "{label} checkpoint cannot capture an invalid posterior"
+            )));
+        }
+        posterior.push(ThompsonArmCheckpoint {
+            action: action.clone(),
+            alpha: stats.alpha.to_bits(),
+            beta: stats.beta.to_bits(),
+            uses: stats.uses,
+        });
+    }
+    Ok(ThompsonProfileCheckpoint {
+        schema: 1,
+        kind: kind.to_owned(),
+        crate_version: env!("CARGO_PKG_VERSION").to_owned(),
+        build_key: build_key.to_owned(),
+        config,
+        posterior,
+        legacy_seed,
+        rng: rng.state(),
+    })
+}
+
+#[cfg(all(feature = "serde", feature = "stochastic"))]
+fn restore_thompson_profile(
+    state: ThompsonProfileCheckpoint,
+    kind: &str,
+    label: &str,
+    build_key: &str,
+) -> Result<(ThompsonSampling, TrialRng, u64), PolicyError> {
+    if state.schema != 1 {
+        return Err(PolicyError::new(format!(
+            "unsupported {label} checkpoint schema"
+        )));
+    }
+    if state.kind != kind {
+        return Err(PolicyError::new(format!(
+            "{label} checkpoint kind mismatch"
+        )));
+    }
+    if state.crate_version != env!("CARGO_PKG_VERSION") {
+        return Err(PolicyError::new(format!(
+            "{label} checkpoint crate version mismatch"
+        )));
+    }
+    if build_key.is_empty() || state.build_key != build_key {
+        return Err(PolicyError::new(format!(
+            "{label} checkpoint build key mismatch"
+        )));
+    }
+    let config = restore_config(state.config)?;
+    let mut arms = std::collections::BTreeMap::new();
+    for arm in state.posterior {
+        if arm.action.is_empty() || arms.contains_key(&arm.action) {
+            return Err(PolicyError::new(format!(
+                "{label} checkpoint repeats or empties a posterior action"
+            )));
+        }
+        let alpha = f64::from_bits(arm.alpha);
+        let beta = f64::from_bits(arm.beta);
+        if !alpha.is_finite() || alpha <= 0.0 || !beta.is_finite() || beta <= 0.0 {
+            return Err(PolicyError::new(format!(
+                "{label} checkpoint posterior is invalid"
+            )));
+        }
+        arms.insert(
+            arm.action,
+            crate::BetaStats {
+                alpha,
+                beta,
+                uses: arm.uses,
+            },
+        );
+    }
+    let rng = TrialRng::from_state(state.rng)?;
+    let legacy_seed = state.legacy_seed;
+    let mut inner = ThompsonSampling::with_seed(config, legacy_seed);
+    inner.restore(crate::ThompsonState { arms });
+    Ok((inner, rng, legacy_seed))
+}
+
+#[cfg(all(feature = "serde", feature = "stochastic"))]
+fn validate_thompson_checkpoint_tickets<Canonical>(
+    inner: &ThompsonSampling,
+    tickets: &[ScalarTicketState<'_, Canonical>],
+    label: &str,
+) -> Result<(), PolicyError> {
+    let reward = Channel::reward();
+    for state in tickets {
+        if state.ticket.action != state.action || state.ticket.reason != state.reason {
+            return Err(PolicyError::new(format!(
+                "{label} checkpoint ticket disagrees with receipt"
+            )));
+        }
+        if !matches!(
+            state.reason,
+            DecisionReason::ExploreFirst | DecisionReason::PosteriorSample
+        ) {
+            return Err(PolicyError::new(format!(
+                "{label} checkpoint receipt reason is invalid"
+            )));
+        }
+        if !inner.stats().contains_key(state.action) {
+            return Err(PolicyError::new(format!(
+                "{label} checkpoint ticket action lacks issued kernel state"
+            )));
+        }
+        if state.values.iter().any(|(channel, _)| channel != &reward)
+            || state.missing.iter().any(|channel| channel != &reward)
+        {
+            return Err(PolicyError::new(format!(
+                "{label} checkpoint ticket has an unexpected channel"
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(feature = "stochastic")]
 impl InteractionPolicy for BernoulliThompson {
     type Context = ();
@@ -352,28 +479,22 @@ impl InteractionPolicy for BernoulliThompson {
         request: PolicyRequest<'_, ()>,
         _: &mut TrialRng,
     ) -> Result<PolicyDecision<Self::Ticket, Self::PreparedIssue>, PolicyError> {
-        let mut next = self.inner.clone();
-        let mut rng = self.rng.clone();
-        let decision = next
-            .decide_with_rng(request.eligible(), &mut rng)
-            .ok_or_else(|| PolicyError::new("no eligible action"))?;
-        let reason = reason_from_notes(&decision.notes);
+        let decision = self.core.prepare(request.eligible())?;
         Ok(PolicyDecision {
-            selection: decision.chosen.clone(),
+            selection: decision.selection.clone(),
             probability: ProbabilityAvailability::Unavailable,
             ticket: Some(ScalarTicket {
-                action: decision.chosen,
-                reason,
+                action: decision.selection,
+                reason: decision.reason,
             }),
-            issue: ThompsonIssue { kernel: next, rng },
+            issue: decision.issue,
             expectation: FeedbackExpectation::FinalValue {
                 channel: Channel::reward(),
             },
         })
     }
     fn commit_issue(&mut self, issue: Self::PreparedIssue) {
-        self.inner = issue.kernel;
-        self.rng = issue.rng;
+        self.core.commit(issue);
     }
     fn normalize(&self, feedback: bool) -> Result<bool, PolicyError> {
         Ok(feedback)
@@ -386,12 +507,10 @@ impl InteractionPolicy for BernoulliThompson {
         ticket: &Self::Ticket,
         feedback: &bool,
     ) -> Result<Self::PreparedUpdate, PolicyError> {
-        let mut next = self.inner.clone();
-        next.update_reward(&ticket.action, f64::from(*feedback));
-        Ok(next)
+        Ok(self.core.update(ticket, f64::from(*feedback)))
     }
     fn apply(&mut self, update: Self::PreparedUpdate) {
-        self.inner = update;
+        self.core.inner = update;
     }
 }
 
@@ -399,8 +518,7 @@ impl InteractionPolicy for BernoulliThompson {
 /// Thompson sampling with explicit bounded fractional feedback.
 #[derive(Debug, Clone)]
 pub struct FractionalThompson {
-    inner: ThompsonSampling,
-    rng: TrialRng,
+    core: ThompsonProfileCore,
 }
 
 #[cfg(feature = "stochastic")]
@@ -409,8 +527,7 @@ impl FractionalThompson {
     #[must_use]
     pub fn new(config: ThompsonConfig) -> Self {
         Self {
-            inner: ThompsonSampling::new(config),
-            rng: TrialRng::seeded(0),
+            core: ThompsonProfileCore::initialize(config),
         }
     }
     /// Construct with a reproducible profile seed.
@@ -421,14 +538,57 @@ impl FractionalThompson {
     #[must_use]
     pub fn with_seed(config: ThompsonConfig, seed: u64) -> Self {
         Self {
-            inner: ThompsonSampling::with_seed(config, seed),
-            rng: TrialRng::seeded(seed),
+            core: ThompsonProfileCore::seeded(config, seed),
         }
     }
     /// Inspect the underlying Thompson kernel.
     #[must_use]
     pub fn inner(&self) -> &ThompsonSampling {
-        &self.inner
+        &self.core.inner
+    }
+
+    #[cfg(all(feature = "serde", feature = "stochastic"))]
+    pub(crate) fn checkpoint_expectation(&self) -> FeedbackExpectation {
+        thompson_checkpoint_expectation()
+    }
+
+    #[cfg(all(feature = "serde", feature = "stochastic"))]
+    pub(crate) fn checkpoint_state(
+        &self,
+        build_key: &str,
+    ) -> Result<FractionalThompsonCheckpoint, PolicyError> {
+        checkpoint_thompson_profile(
+            &self.core.inner,
+            &self.core.rng,
+            self.core.legacy_seed,
+            "fractional-thompson",
+            "Fractional",
+            build_key,
+        )
+    }
+
+    #[cfg(all(feature = "serde", feature = "stochastic"))]
+    pub(crate) fn from_checkpoint_state(
+        state: FractionalThompsonCheckpoint,
+        build_key: &str,
+    ) -> Result<Self, PolicyError> {
+        let (inner, rng, legacy_seed) =
+            restore_thompson_profile(state, "fractional-thompson", "Fractional", build_key)?;
+        Ok(Self {
+            core: ThompsonProfileCore {
+                inner,
+                rng,
+                legacy_seed,
+            },
+        })
+    }
+
+    #[cfg(all(feature = "serde", feature = "stochastic"))]
+    pub(crate) fn validate_checkpoint_tickets(
+        &self,
+        tickets: &[ScalarTicketState<'_, BoundedReward>],
+    ) -> Result<(), PolicyError> {
+        validate_thompson_checkpoint_tickets(&self.core.inner, tickets, "Fractional")
     }
 }
 
@@ -446,28 +606,22 @@ impl InteractionPolicy for FractionalThompson {
         request: PolicyRequest<'_, ()>,
         _: &mut TrialRng,
     ) -> Result<PolicyDecision<Self::Ticket, Self::PreparedIssue>, PolicyError> {
-        let mut next = self.inner.clone();
-        let mut rng = self.rng.clone();
-        let decision = next
-            .decide_with_rng(request.eligible(), &mut rng)
-            .ok_or_else(|| PolicyError::new("no eligible action"))?;
-        let reason = reason_from_notes(&decision.notes);
+        let decision = self.core.prepare(request.eligible())?;
         Ok(PolicyDecision {
-            selection: decision.chosen.clone(),
+            selection: decision.selection.clone(),
             probability: ProbabilityAvailability::Unavailable,
             ticket: Some(ScalarTicket {
-                action: decision.chosen,
-                reason,
+                action: decision.selection,
+                reason: decision.reason,
             }),
-            issue: ThompsonIssue { kernel: next, rng },
+            issue: decision.issue,
             expectation: FeedbackExpectation::FinalValue {
                 channel: Channel::reward(),
             },
         })
     }
     fn commit_issue(&mut self, issue: Self::PreparedIssue) {
-        self.inner = issue.kernel;
-        self.rng = issue.rng;
+        self.core.commit(issue);
     }
     fn normalize(&self, feedback: BoundedReward) -> Result<BoundedReward, PolicyError> {
         Ok(feedback)
@@ -480,12 +634,10 @@ impl InteractionPolicy for FractionalThompson {
         ticket: &Self::Ticket,
         feedback: &BoundedReward,
     ) -> Result<Self::PreparedUpdate, PolicyError> {
-        let mut next = self.inner.clone();
-        next.update_reward(&ticket.action, feedback.get());
-        Ok(next)
+        Ok(self.core.update(ticket, feedback.get()))
     }
     fn apply(&mut self, update: Self::PreparedUpdate) {
-        self.inner = update;
+        self.core.inner = update;
     }
 }
 
@@ -758,7 +910,7 @@ mod rng_tests {
         check_transactional_stream(
             BernoulliThompson::with_seed(ThompsonConfig::default(), 17),
             true,
-            |profile| profile.rng.state(),
+            |profile| profile.core.rng.state(),
         );
     }
 
@@ -767,7 +919,7 @@ mod rng_tests {
         check_transactional_stream(
             FractionalThompson::with_seed(ThompsonConfig::default(), 17),
             BoundedReward::new(0.6).unwrap(),
-            |profile| profile.rng.state(),
+            |profile| profile.core.rng.state(),
         );
     }
 
@@ -793,6 +945,55 @@ mod rng_tests {
             "same-build",
         )
         .unwrap();
+        let mut original_legacy = original.inner().clone();
+        let mut restored_legacy = restored.inner().clone();
+        for _ in 0..12 {
+            assert_eq!(
+                original_legacy.decide(&actions).unwrap().chosen,
+                restored_legacy.decide(&actions).unwrap().chosen
+            );
+        }
+        let mut restored = restored;
+        for _ in 0..12 {
+            let left = original
+                .prepare_decision(PolicyRequest::new(&actions, &()), &mut runtime_rng)
+                .unwrap();
+            let right = restored
+                .prepare_decision(PolicyRequest::new(&actions, &()), &mut runtime_rng)
+                .unwrap();
+            assert_eq!(left.selection, right.selection);
+            original.commit_issue(left.issue);
+            restored.commit_issue(right.issue);
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn fractional_checkpoint_preserves_profile_and_legacy_seeded_streams() {
+        let actions = vec!["a".to_owned(), "b".to_owned()];
+        let mut original = FractionalThompson::with_seed(ThompsonConfig::default(), 73);
+        let mut runtime_rng = TrialRng::seeded(5);
+        for reward in [0.25, 0.75] {
+            let decision = original
+                .prepare_decision(PolicyRequest::new(&actions, &()), &mut runtime_rng)
+                .unwrap();
+            original.commit_issue(decision.issue);
+            original.apply(
+                original
+                    .prepare(
+                        &decision.ticket.unwrap(),
+                        &BoundedReward::new(reward).unwrap(),
+                    )
+                    .unwrap(),
+            );
+        }
+        assert!(matches!(
+            original.checkpoint_expectation(),
+            FeedbackExpectation::FinalValue { channel } if channel == Channel::reward()
+        ));
+        let saved = original.checkpoint_state("same-build").unwrap();
+        assert_eq!(saved.kind, "fractional-thompson");
+        let restored = FractionalThompson::from_checkpoint_state(saved, "same-build").unwrap();
         let mut original_legacy = original.inner().clone();
         let mut restored_legacy = restored.inner().clone();
         for _ in 0..12 {
@@ -889,13 +1090,13 @@ mod rng_tests {
         profile.apply(update);
 
         let before_posterior = profile.inner().stats()["poison"].alpha.to_bits();
-        let before_rng = profile.rng.state();
+        let before_rng = profile.core.rng.state();
         assert!(profile.checkpoint_state("same-build").is_err());
         assert_eq!(
             profile.inner().stats()["poison"].alpha.to_bits(),
             before_posterior
         );
-        assert_eq!(profile.rng.state(), before_rng);
+        assert_eq!(profile.core.rng.state(), before_rng);
     }
 
     #[cfg(feature = "serde")]

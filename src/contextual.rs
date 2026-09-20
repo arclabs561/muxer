@@ -141,6 +141,11 @@ impl LinUcb {
         self.cfg.dim.max(1)
     }
 
+    #[cfg(feature = "serde")]
+    pub(crate) fn checkpoint_dimension(&self) -> usize {
+        self.dim()
+    }
+
     fn ensure_arms(&mut self, arms_in_order: &[String]) {
         if self.arms == arms_in_order {
             return;
@@ -500,6 +505,57 @@ impl LinUcb {
         out
     }
 
+    /// Capture strict complete state for the contextual runtime checkpoint.
+    #[cfg(feature = "serde")]
+    pub(crate) fn checkpoint_state(&self) -> Result<LinUcbCheckpoint, crate::PolicyError> {
+        if self.rng != StdRng::seed_from_u64(self.cfg.seed) {
+            return Err(crate::PolicyError::new(
+                "LinUcb checkpoint cannot preserve an advanced hidden RNG",
+            ));
+        }
+        Ok(LinUcbCheckpoint {
+            config: LinUcbConfigCheckpoint::from(self.cfg),
+            arms: self.arms.clone(),
+            stats: self
+                .state
+                .iter()
+                .map(|(arm, state)| LinUcbArmCheckpoint::from_state(arm, state))
+                .collect(),
+        })
+    }
+
+    /// Restore strict complete state without legacy snapshot repair behavior.
+    #[cfg(feature = "serde")]
+    pub(crate) fn from_checkpoint_state(
+        checkpoint: LinUcbCheckpoint,
+    ) -> Result<Self, crate::PolicyError> {
+        let cfg = checkpoint.config.into_config();
+        let dimension = cfg.dim.max(1);
+        dimension.checked_mul(dimension).ok_or_else(|| {
+            crate::PolicyError::new("LinUcb checkpoint matrix dimension overflows")
+        })?;
+        let mut state = BTreeMap::new();
+        for stat in checkpoint.stats {
+            let (arm, arm_state) = stat.into_state(dimension)?;
+            if state.insert(arm, arm_state).is_some() {
+                return Err(crate::PolicyError::new(
+                    "LinUcb checkpoint repeats an arm state",
+                ));
+            }
+        }
+        if checkpoint.arms.iter().any(|arm| !state.contains_key(arm)) {
+            return Err(crate::PolicyError::new(
+                "LinUcb checkpoint ordered arm is missing state",
+            ));
+        }
+        Ok(Self {
+            cfg,
+            rng: StdRng::seed_from_u64(cfg.seed),
+            arms: checkpoint.arms,
+            state,
+        })
+    }
+
     /// Capture a persistence snapshot of the current LinUCB state.
     ///
     /// This includes per-arm sufficient statistics (A_inv, b, uses) so that
@@ -521,6 +577,11 @@ impl LinUcb {
             dim: self.dim(),
             arms,
         }
+    }
+
+    #[cfg(feature = "serde")]
+    pub(crate) fn contains_state_arm(&self, arm: &str) -> bool {
+        self.state.contains_key(arm)
     }
 
     /// Restore a previously snapshotted LinUCB state.
@@ -548,6 +609,100 @@ impl LinUcb {
                 },
             );
         }
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LinUcbCheckpoint {
+    config: LinUcbConfigCheckpoint,
+    arms: Vec<String>,
+    stats: Vec<LinUcbArmCheckpoint>,
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LinUcbConfigCheckpoint {
+    dim: usize,
+    lambda: u64,
+    alpha: u64,
+    seed: u64,
+    decay: u64,
+}
+
+#[cfg(feature = "serde")]
+impl From<LinUcbConfig> for LinUcbConfigCheckpoint {
+    fn from(config: LinUcbConfig) -> Self {
+        Self {
+            dim: config.dim,
+            lambda: config.lambda.to_bits(),
+            alpha: config.alpha.to_bits(),
+            seed: config.seed,
+            decay: config.decay.to_bits(),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl LinUcbConfigCheckpoint {
+    fn into_config(self) -> LinUcbConfig {
+        LinUcbConfig {
+            dim: self.dim,
+            lambda: f64::from_bits(self.lambda),
+            alpha: f64::from_bits(self.alpha),
+            seed: self.seed,
+            decay: f64::from_bits(self.decay),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LinUcbArmCheckpoint {
+    arm: String,
+    a_inv: Vec<u64>,
+    b: Vec<u64>,
+    uses: u64,
+}
+
+#[cfg(feature = "serde")]
+impl LinUcbArmCheckpoint {
+    fn from_state(arm: &str, state: &ArmState) -> Self {
+        Self {
+            arm: arm.to_owned(),
+            a_inv: state.a_inv.iter().map(|value| value.to_bits()).collect(),
+            b: state.b.iter().map(|value| value.to_bits()).collect(),
+            uses: state.uses,
+        }
+    }
+
+    fn into_state(self, dimension: usize) -> Result<(String, ArmState), crate::PolicyError> {
+        let matrix_len = dimension.checked_mul(dimension).ok_or_else(|| {
+            crate::PolicyError::new("LinUcb checkpoint matrix dimension overflows")
+        })?;
+        if self.a_inv.len() != matrix_len || self.b.len() != dimension {
+            return Err(crate::PolicyError::new(
+                "LinUcb checkpoint arm state has the wrong dimension",
+            ));
+        }
+        let a_inv: Vec<f64> = self.a_inv.into_iter().map(f64::from_bits).collect();
+        let b: Vec<f64> = self.b.into_iter().map(f64::from_bits).collect();
+        if !a_inv.iter().chain(b.iter()).all(|value| value.is_finite()) {
+            return Err(crate::PolicyError::new(
+                "LinUcb checkpoint arm state must be finite",
+            ));
+        }
+        Ok((
+            self.arm,
+            ArmState {
+                a_inv,
+                b,
+                uses: self.uses,
+            },
+        ))
     }
 }
 
@@ -581,6 +736,57 @@ pub struct LinUcbState {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn strict_checkpoint_preserves_extra_arm_state_and_rejects_poisoned_stats() {
+        let cfg = LinUcbConfig {
+            dim: 2,
+            ..LinUcbConfig::default()
+        };
+        let mut policy = LinUcb::new(cfg);
+        let all = vec!["a".to_owned(), "historical".to_owned()];
+        policy.ensure_arms(&all);
+        policy.update_reward("historical", &[0.2, 0.8], 0.7);
+        policy.ensure_arms(&["a".to_owned()]);
+
+        let checkpoint = policy.checkpoint_state().unwrap();
+        let restored = LinUcb::from_checkpoint_state(checkpoint.clone()).unwrap();
+        assert_eq!(restored.arms, vec!["a"]);
+        assert!(restored.state.contains_key("historical"));
+
+        let mut poisoned = checkpoint.clone();
+        poisoned.stats[0].a_inv[0] = f64::NAN.to_bits();
+        assert!(LinUcb::from_checkpoint_state(poisoned).is_err());
+        let mut wrong_dimension = checkpoint;
+        wrong_dimension.stats[0].b.pop();
+        assert!(LinUcb::from_checkpoint_state(wrong_dimension).is_err());
+
+        let mut missing_current_arm = policy.checkpoint_state().unwrap();
+        missing_current_arm.stats.retain(|stat| stat.arm != "a");
+        assert!(LinUcb::from_checkpoint_state(missing_current_arm).is_err());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn high_level_contextual_operations_leave_hidden_rng_seeded() {
+        let cfg = LinUcbConfig {
+            dim: 2,
+            seed: 9,
+            ..LinUcbConfig::default()
+        };
+        let mut policy = LinUcb::new(cfg);
+        let arms = vec!["a".to_owned(), "b".to_owned()];
+        let _ = policy.decide(&arms, &[0.1, 0.2]);
+        let _ = policy.probabilities(&arms, &[0.1, 0.2], 0.4);
+        assert!(policy.checkpoint_state().is_ok());
+
+        let _ = policy.select_softmax_ucb_with_probs(&arms, &[0.1, 0.2], 0.4);
+        policy.update_reward("a", &[0.1, 0.2], 0.5);
+        policy.update_reward("b", &[0.1, 0.2], 0.5);
+        let _ = policy.select_softmax_ucb_with_probs(&arms, &[0.1, 0.2], 0.4);
+        assert!(policy.checkpoint_state().is_err());
+    }
 
     #[test]
     fn linucb_explores_each_arm_once_in_order() {

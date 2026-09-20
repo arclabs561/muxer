@@ -72,16 +72,39 @@ impl TryFrom<f64> for FiniteReward {
     }
 }
 
+// Checkpoint feedback preserves numeric bits without allowing serde to bypass
+// the reward constructors' finite/range invariants.
+#[cfg(feature = "serde")]
+macro_rules! reward_serde {
+    ($reward:ty) => {
+        impl serde::Serialize for $reward {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_u64(self.0)
+            }
+        }
+        impl<'de> serde::Deserialize<'de> for $reward {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let bits = <u64 as serde::Deserialize>::deserialize(deserializer)?;
+                Self::new(f64::from_bits(bits)).map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+#[cfg(feature = "serde")]
+reward_serde!(BoundedReward);
+#[cfg(feature = "serde")]
+reward_serde!(FiniteReward);
+
 #[cfg(feature = "contextual")]
-mod contextual;
-mod external;
+pub(crate) mod contextual;
+pub(crate) mod external;
 pub mod quality;
 #[cfg(any(feature = "stochastic", feature = "boltzmann"))]
 pub(crate) mod scalar;
 
 #[cfg(feature = "contextual")]
 pub use contextual::{ContextualMode, ContextualProfile};
-pub use external::{ExternalAssessments, ExternalDistribution, ExternalScores};
+pub use external::{ExternalAssessments, ExternalDistribution, ExternalScores, ModelReference};
 pub use quality::{
     QualityBuildError, QualityFeedback, QualityProfile, QualityProfileBuilder, QualityScore,
 };

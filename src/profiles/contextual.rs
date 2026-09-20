@@ -6,6 +6,9 @@ use crate::{
     PolicyDecision, PolicyError, PolicyRequest, Probability, ProbabilityAvailability, TrialRng,
 };
 
+#[cfg(feature = "serde")]
+use crate::contextual::LinUcbCheckpoint;
+
 /// Allocation mode for [`ContextualProfile`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ContextualMode {
@@ -33,6 +36,91 @@ pub struct ContextualTicket {
     features: Vec<f64>,
     representation_revision: u64,
     reason: DecisionReason,
+}
+
+#[cfg(feature = "serde")]
+#[derive(Clone, Copy)]
+pub(crate) struct ContextualTicketState<'a> {
+    pub(crate) ticket: &'a ContextualTicket,
+    pub(crate) action: &'a str,
+    pub(crate) reason: DecisionReason,
+    pub(crate) values: &'a [(Channel, BoundedReward)],
+    pub(crate) missing: &'a [Channel],
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ContextualProfileCheckpoint {
+    inner: LinUcbCheckpoint,
+    mode: ContextualModeCheckpoint,
+    representation_revision: u64,
+    dimensions: usize,
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ContextualModeCheckpoint {
+    Deterministic,
+    Softmax { temperature: u64 },
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ContextualTicketCheckpoint {
+    action: String,
+    features: Vec<u64>,
+    representation_revision: u64,
+    reason: DecisionReason,
+}
+
+#[cfg(feature = "serde")]
+impl From<&ContextualTicket> for ContextualTicketCheckpoint {
+    fn from(ticket: &ContextualTicket) -> Self {
+        Self {
+            action: ticket.action.clone(),
+            features: ticket
+                .features
+                .iter()
+                .map(|value| value.to_bits())
+                .collect(),
+            representation_revision: ticket.representation_revision,
+            reason: ticket.reason,
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl ContextualTicketCheckpoint {
+    pub(crate) fn into_ticket(self) -> Result<ContextualTicket, PolicyError> {
+        if self.action.is_empty() {
+            return Err(PolicyError::new(
+                "contextual checkpoint ticket action must be non-empty",
+            ));
+        }
+        let features: Vec<f64> = self.features.into_iter().map(f64::from_bits).collect();
+        if features.iter().any(|value| !value.is_finite()) {
+            return Err(PolicyError::new(
+                "contextual checkpoint ticket features must be finite",
+            ));
+        }
+        if !matches!(
+            self.reason,
+            DecisionReason::Deterministic | DecisionReason::CategoricalSample
+        ) {
+            return Err(PolicyError::new(
+                "contextual checkpoint ticket reason is invalid",
+            ));
+        }
+        Ok(ContextualTicket {
+            action: self.action,
+            features,
+            representation_revision: self.representation_revision,
+            reason: self.reason,
+        })
+    }
 }
 
 impl ContextualProfile {
@@ -67,6 +155,102 @@ impl ContextualProfile {
     #[must_use]
     pub fn inner(&self) -> &LinUcb {
         &self.inner
+    }
+
+    pub(crate) fn checkpoint_expectation(&self) -> FeedbackExpectation {
+        FeedbackExpectation::FinalValue {
+            channel: Channel::reward(),
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    pub(crate) fn checkpoint_state(&self) -> Result<ContextualProfileCheckpoint, PolicyError> {
+        let mode = match self.mode {
+            ContextualMode::Deterministic => ContextualModeCheckpoint::Deterministic,
+            ContextualMode::Softmax { temperature } => {
+                validate_temperature(temperature)?;
+                ContextualModeCheckpoint::Softmax {
+                    temperature: temperature.to_bits(),
+                }
+            }
+        };
+        Ok(ContextualProfileCheckpoint {
+            inner: self.inner.checkpoint_state()?,
+            mode,
+            representation_revision: self.representation_revision,
+            dimensions: self.dimensions,
+        })
+    }
+
+    #[cfg(feature = "serde")]
+    pub(crate) fn from_checkpoint_state(
+        state: ContextualProfileCheckpoint,
+    ) -> Result<Self, PolicyError> {
+        let inner = LinUcb::from_checkpoint_state(state.inner)?;
+        if state.dimensions != inner.checkpoint_dimension() {
+            return Err(PolicyError::new(
+                "contextual checkpoint dimension does not match LinUcb state",
+            ));
+        }
+        let mode = match state.mode {
+            ContextualModeCheckpoint::Deterministic => ContextualMode::Deterministic,
+            ContextualModeCheckpoint::Softmax { temperature } => {
+                let temperature = f64::from_bits(temperature);
+                validate_temperature(temperature)?;
+                ContextualMode::Softmax { temperature }
+            }
+        };
+        Ok(Self {
+            inner,
+            mode,
+            representation_revision: state.representation_revision,
+            dimensions: state.dimensions,
+        })
+    }
+
+    #[cfg(feature = "serde")]
+    pub(crate) fn validate_checkpoint_tickets(
+        &self,
+        tickets: &[ContextualTicketState<'_>],
+    ) -> Result<(), PolicyError> {
+        for state in tickets {
+            let ticket = state.ticket;
+            if ticket.action != state.action || ticket.reason != state.reason {
+                return Err(PolicyError::new(
+                    "contextual checkpoint ticket disagrees with its receipt",
+                ));
+            }
+            if ticket.representation_revision != self.representation_revision {
+                return Err(PolicyError::new(
+                    "contextual checkpoint ticket has a stale representation revision",
+                ));
+            }
+            if ticket.features.len() != self.dimensions
+                || ticket.features.iter().any(|value| !value.is_finite())
+            {
+                return Err(PolicyError::new(
+                    "contextual checkpoint ticket features do not match the representation",
+                ));
+            }
+            if !self.inner.contains_state_arm(&ticket.action) {
+                return Err(PolicyError::new(
+                    "contextual checkpoint ticket action is not retained by LinUcb",
+                ));
+            }
+            let expected_reason = match self.mode {
+                ContextualMode::Deterministic => DecisionReason::Deterministic,
+                ContextualMode::Softmax { .. } => DecisionReason::CategoricalSample,
+            };
+            if ticket.reason != expected_reason
+                || !state.values.is_empty()
+                || !state.missing.is_empty()
+            {
+                return Err(PolicyError::new(
+                    "contextual checkpoint open ticket violates its feedback contract",
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -118,9 +302,7 @@ impl InteractionPolicy for ContextualProfile {
                 reason,
             }),
             issue: probe,
-            expectation: FeedbackExpectation::FinalValue {
-                channel: Channel::reward(),
-            },
+            expectation: self.checkpoint_expectation(),
         })
     }
     fn commit_issue(&mut self, issue: LinUcb) {
@@ -178,5 +360,86 @@ fn validate_features(features: &[f64], dimensions: usize) -> Result<Vec<f64>, Po
         Ok(features.to_vec())
     } else {
         Err(PolicyError::new("context features must be finite"))
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod checkpoint_tests {
+    use super::*;
+
+    fn profile() -> ContextualProfile {
+        let mut profile = ContextualProfile::new(LinUcbConfig {
+            dim: 2,
+            ..LinUcbConfig::default()
+        });
+        let arms = vec!["a".to_owned()];
+        let _ = profile.inner.scores(&arms, &[0.0, 0.0]);
+        profile
+    }
+
+    fn ticket() -> ContextualTicket {
+        ContextualTicket {
+            action: "a".to_owned(),
+            features: vec![0.2, 0.8],
+            representation_revision: 0,
+            reason: DecisionReason::Deterministic,
+        }
+    }
+
+    #[test]
+    fn profile_checkpoint_rejects_mode_and_dimension_mismatches() {
+        let profile = profile();
+        let checkpoint = profile.checkpoint_state().unwrap();
+        assert!(ContextualProfile::from_checkpoint_state(checkpoint.clone()).is_ok());
+
+        let mut bad_dimension = checkpoint.clone();
+        bad_dimension.dimensions = 3;
+        assert!(ContextualProfile::from_checkpoint_state(bad_dimension).is_err());
+
+        let mut bad_mode = checkpoint;
+        bad_mode.mode = ContextualModeCheckpoint::Softmax {
+            temperature: f64::NAN.to_bits(),
+        };
+        assert!(ContextualProfile::from_checkpoint_state(bad_mode).is_err());
+    }
+
+    #[test]
+    fn ticket_validation_preserves_original_features_and_revision() {
+        let profile = profile();
+        let ticket = ticket();
+        let state = ContextualTicketState {
+            ticket: &ticket,
+            action: "a",
+            reason: DecisionReason::Deterministic,
+            values: &[],
+            missing: &[],
+        };
+        assert!(profile
+            .validate_checkpoint_tickets(std::slice::from_ref(&state))
+            .is_ok());
+
+        let stale = ContextualTicket {
+            representation_revision: 1,
+            ..ticket.clone()
+        };
+        let stale = ContextualTicketState {
+            ticket: &stale,
+            ..state
+        };
+        assert!(profile
+            .validate_checkpoint_tickets(std::slice::from_ref(&stale))
+            .is_err());
+
+        let wrong_features = ContextualTicket {
+            features: vec![0.2],
+            ..ticket.clone()
+        };
+        let wrong_features = ContextualTicketState {
+            ticket: &wrong_features,
+            ..state
+        };
+        assert!(profile
+            .validate_checkpoint_tickets(std::slice::from_ref(&wrong_features))
+            .is_err());
     }
 }

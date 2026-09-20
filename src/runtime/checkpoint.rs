@@ -10,13 +10,50 @@ use crate::profiles::quality::{
     CanonicalQualityFeedback, QualityProfileCheckpoint, QualityTicketCheckpoint,
 };
 #[cfg(feature = "stochastic")]
-use crate::profiles::scalar::{BernoulliThompsonCheckpoint, ScalarTicketCheckpoint};
+use crate::profiles::scalar::{
+    BernoulliThompsonCheckpoint, FractionalThompsonCheckpoint, ScalarTicketCheckpoint,
+};
 use crate::{
     Channel, DecisionId, EngineId, FeedbackExpectation, PolicyError, ProbabilityAvailability,
     QualityProfile,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::Ordering;
+
+macro_rules! learner_checkpoint_basics {
+    ($state:ty, $ticket_wire:ty, $capture:expr, $restore:expr, $encode:expr, $decode:expr, $expectation:expr) => {
+        type State = $state;
+        type TicketWire = $ticket_wire;
+        fn checkpoint_state(&self, build_key: &str) -> Result<Self::State, PolicyError> {
+            ($capture)(self, build_key)
+        }
+        fn from_checkpoint_state(state: Self::State, build_key: &str) -> Result<Self, PolicyError> {
+            ($restore)(state, build_key)
+        }
+        fn encode_ticket(ticket: &Self::Ticket) -> Self::TicketWire {
+            ($encode)(ticket)
+        }
+        fn decode_ticket(ticket: Self::TicketWire) -> Result<Self::Ticket, PolicyError> {
+            ($decode)(ticket)
+        }
+        fn checkpoint_expectation(&self) -> FeedbackExpectation {
+            ($expectation)(self)
+        }
+    };
+}
+
+#[path = "checkpoint/external.rs"]
+mod external;
+#[cfg(any(feature = "stochastic", feature = "boltzmann", feature = "contextual"))]
+#[path = "checkpoint/learners.rs"]
+mod learners;
+pub use external::*;
+#[cfg(feature = "boltzmann")]
+pub use learners::BoltzmannMuxerCheckpoint;
+#[cfg(feature = "contextual")]
+pub use learners::ContextualMuxerCheckpoint;
+#[cfg(feature = "stochastic")]
+pub use learners::{Exp3MuxerCheckpoint, FractionalMuxerCheckpoint};
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -153,7 +190,7 @@ trait CheckpointProfile: InteractionPolicy + Sized {
     fn encode_ticket(ticket: &Self::Ticket) -> Self::TicketWire;
     fn decode_ticket(ticket: Self::TicketWire) -> Result<Self::Ticket, PolicyError>;
     fn checkpoint_expectation(&self) -> FeedbackExpectation;
-    fn validate_receipt_semantics(receipt: &ReceiptCheckpoint) -> Result<(), PolicyError>;
+    fn validate_receipt_semantics(&self, receipt: &DecisionReceipt) -> Result<(), PolicyError>;
     fn validate_value_channel(&self, channel: &Channel, value: &Self::CanonicalFeedback) -> bool;
     fn validate_open_tickets(&self, tickets: &[OpenTicket<'_, Self>]) -> Result<(), PolicyError>;
 }
@@ -162,6 +199,8 @@ struct OpenTicket<'a, P: CheckpointProfile> {
     ticket: &'a P::Ticket,
     action: &'a str,
     reason: DecisionReason,
+    #[cfg(any(feature = "stochastic", feature = "boltzmann"))]
+    probability: ProbabilityAvailability,
     values: &'a [(Channel, P::CanonicalFeedback)],
     missing: &'a [Channel],
 }
@@ -174,24 +213,16 @@ type ProfileWire<P> = RuntimeCheckpoint<
 
 impl CheckpointProfile for QualityProfile {
     const LABEL: &'static str = "quality";
-    type State = QualityProfileCheckpoint;
-    type TicketWire = QualityTicketCheckpoint;
-    fn checkpoint_state(&self, build_key: &str) -> Result<Self::State, PolicyError> {
-        self.checkpoint_state(build_key)
-    }
-    fn from_checkpoint_state(state: Self::State, build_key: &str) -> Result<Self, PolicyError> {
-        Self::from_checkpoint_state(state, build_key)
-    }
-    fn encode_ticket(ticket: &Self::Ticket) -> Self::TicketWire {
-        QualityTicketCheckpoint::from(ticket)
-    }
-    fn decode_ticket(ticket: Self::TicketWire) -> Result<Self::Ticket, PolicyError> {
-        ticket.into_ticket()
-    }
-    fn checkpoint_expectation(&self) -> FeedbackExpectation {
-        self.checkpoint_expectation()
-    }
-    fn validate_receipt_semantics(receipt: &ReceiptCheckpoint) -> Result<(), PolicyError> {
+    learner_checkpoint_basics!(
+        QualityProfileCheckpoint,
+        QualityTicketCheckpoint,
+        QualityProfile::checkpoint_state,
+        QualityProfile::from_checkpoint_state,
+        QualityTicketCheckpoint::from,
+        QualityTicketCheckpoint::into_ticket,
+        QualityProfile::checkpoint_expectation
+    );
+    fn validate_receipt_semantics(&self, receipt: &DecisionReceipt) -> Result<(), PolicyError> {
         if receipt.selected.iter().any(|item| {
             !matches!(item.probability, ProbabilityAvailability::Unavailable)
                 || !matches!(
@@ -229,24 +260,16 @@ impl CheckpointProfile for QualityProfile {
 #[cfg(feature = "stochastic")]
 impl CheckpointProfile for crate::BernoulliThompson {
     const LABEL: &'static str = "bernoulli";
-    type State = BernoulliThompsonCheckpoint;
-    type TicketWire = ScalarTicketCheckpoint;
-    fn checkpoint_state(&self, build_key: &str) -> Result<Self::State, PolicyError> {
-        self.checkpoint_state(build_key)
-    }
-    fn from_checkpoint_state(state: Self::State, build_key: &str) -> Result<Self, PolicyError> {
-        Self::from_checkpoint_state(state, build_key)
-    }
-    fn encode_ticket(ticket: &Self::Ticket) -> Self::TicketWire {
-        ScalarTicketCheckpoint::from(ticket)
-    }
-    fn decode_ticket(ticket: Self::TicketWire) -> Result<Self::Ticket, PolicyError> {
-        ticket.into_ticket()
-    }
-    fn checkpoint_expectation(&self) -> FeedbackExpectation {
-        self.checkpoint_expectation()
-    }
-    fn validate_receipt_semantics(receipt: &ReceiptCheckpoint) -> Result<(), PolicyError> {
+    learner_checkpoint_basics!(
+        BernoulliThompsonCheckpoint,
+        ScalarTicketCheckpoint,
+        crate::BernoulliThompson::checkpoint_state,
+        crate::BernoulliThompson::from_checkpoint_state,
+        ScalarTicketCheckpoint::from,
+        ScalarTicketCheckpoint::into_ticket,
+        crate::BernoulliThompson::checkpoint_expectation
+    );
+    fn validate_receipt_semantics(&self, receipt: &DecisionReceipt) -> Result<(), PolicyError> {
         if receipt.batch
             || receipt.selected.iter().any(|item| {
                 !matches!(item.probability, ProbabilityAvailability::Unavailable)
@@ -424,13 +447,25 @@ fn restore_core<P: CheckpointProfile>(
     checkpoint: RuntimeCheckpoint<P::State, P::TicketWire, P::CanonicalFeedback>,
     build_key: &str,
 ) -> Result<Muxer<P>, PolicyError> {
+    restore_core_with(checkpoint, build_key, P::from_checkpoint_state)
+}
+
+fn restore_core_with<P, F>(
+    checkpoint: RuntimeCheckpoint<P::State, P::TicketWire, P::CanonicalFeedback>,
+    build_key: &str,
+    mut loader: F,
+) -> Result<Muxer<P>, PolicyError>
+where
+    P: CheckpointProfile,
+    F: FnMut(P::State, &str) -> Result<P, PolicyError>,
+{
     validate_header::<P>(&checkpoint)?;
-    let policy = P::from_checkpoint_state(checkpoint.policy, build_key)?;
+    let policy = loader(checkpoint.policy, build_key)?;
     let mut retired = BTreeMap::new();
     for (revision, state) in checkpoint.retired {
         if revision >= checkpoint.policy_revision
             || retired
-                .insert(revision, P::from_checkpoint_state(state, build_key)?)
+                .insert(revision, loader(state, build_key)?)
                 .is_some()
         {
             return Err(PolicyError::new(format!(
@@ -460,6 +495,7 @@ fn restore_core<P: CheckpointProfile>(
             checkpoint.policy_revision,
             receipt.policy_revision,
         )?;
+        profile.validate_receipt_semantics(&receipt)?;
         if receipt
             .selected
             .len()
@@ -534,6 +570,7 @@ fn restore_core<P: CheckpointProfile>(
             checkpoint.policy_revision,
             receipt.policy_revision,
         )?;
+        profile.validate_receipt_semantics(&receipt)?;
         if receipt
             .selected
             .len()
@@ -719,7 +756,6 @@ fn validate_receipt<P: CheckpointProfile>(
     {
         return Err(checkpoint_error::<P>("receipt selections are invalid"));
     }
-    P::validate_receipt_semantics(&saved)?;
     Ok(DecisionReceipt {
         id: saved.id,
         eligible: saved.eligible,
@@ -1027,6 +1063,8 @@ fn validate_open_ticket_groups_generic<P: CheckpointProfile>(
                         ticket,
                         action: record.receipt.selected[position].action.as_str(),
                         reason: record.receipt.selected[position].reason,
+                        #[cfg(any(feature = "stochastic", feature = "boltzmann"))]
+                        probability: record.receipt.selected[position].probability,
                         values: &item.events,
                         missing: &item.missing,
                     });
