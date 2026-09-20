@@ -6,8 +6,9 @@ use muxer::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use std::io::Read;
+
+mod support;
 
 const BUILD_KEY: &str = "bernoulli-muxer-checkpoint-v1";
 
@@ -121,30 +122,14 @@ fn continue_run(mut muxer: Muxer<BernoulliThompson>, ids: Handoff) -> Value {
     assert_eq!(muxer.retired_epoch_count(), 0);
     json!({"choices": choices, "checkpoint": muxer.bernoulli_checkpoint(BUILD_KEY).unwrap()})
 }
-fn child(name: &str, bytes: &[u8]) -> std::process::Output {
-    let mut child = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", name, "--ignored", "--nocapture"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child.stdin.take().unwrap().write_all(bytes).unwrap();
-    child.wait_with_output().unwrap()
-}
 
 #[test]
 fn serialized_bernoulli_checkpoint_matches_uninterrupted_continuation() {
     let (muxer, state) = handoff();
     let bytes = serde_json::to_vec(&state).unwrap();
     let expected = continue_run(muxer, state);
-    let output = child("bernoulli_checkpoint_child", &bytes);
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let output = support::run_checkpoint_child("bernoulli_checkpoint_child", &bytes);
+    support::assert_child_success(&output);
     let stdout = String::from_utf8(output.stdout).unwrap();
     let actual: Value = serde_json::from_str(
         stdout
@@ -171,12 +156,8 @@ fn bernoulli_checkpoint_child() {
 fn bernoulli_checkpoint_rejects_corruption_before_reservation() {
     let (_, state) = handoff();
     let bytes = serde_json::to_vec(&state).unwrap();
-    let output = child("bernoulli_corrupt_child", &bytes);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let output = support::run_checkpoint_child("bernoulli_corrupt_child", &bytes);
+    support::assert_child_success(&output);
 }
 #[test]
 #[ignore = "subprocess helper"]

@@ -138,16 +138,23 @@ pub use interaction::{
 };
 
 mod runtime;
-#[cfg(all(feature = "serde", feature = "stochastic"))]
-pub use runtime::BernoulliMuxerCheckpoint;
+#[cfg(all(feature = "serde", feature = "boltzmann"))]
+pub use runtime::BoltzmannMuxerCheckpoint;
+#[cfg(all(feature = "serde", feature = "contextual"))]
+pub use runtime::ContextualMuxerCheckpoint;
 #[cfg(feature = "serde")]
-pub use runtime::QualityMuxerCheckpoint;
+pub use runtime::{
+    AssessmentsMuxerCheckpoint, ExternalDistributionMuxerCheckpoint, ExternalScoresMuxerCheckpoint,
+    QualityMuxerCheckpoint,
+};
 pub use runtime::{
     BatchInteractionPolicy, BatchSelection, DecisionReceipt, EventOutcome, FeedbackEvent,
     InteractionPolicy, ItemStatus, Muxer, MuxerCheckpoint, PolicyBatchDecision, PolicyDecision,
     PolicyError, PolicyRequest, RuntimeConfig, RuntimeError, TerminalStatus, TrialRng,
     TrialRngState,
 };
+#[cfg(all(feature = "serde", feature = "stochastic"))]
+pub use runtime::{BernoulliMuxerCheckpoint, Exp3MuxerCheckpoint, FractionalMuxerCheckpoint};
 
 pub mod profiles;
 #[cfg(feature = "boltzmann")]
@@ -156,7 +163,7 @@ pub use profiles::BoltzmannProfile;
 pub use profiles::{BernoulliThompson, Exp3Profile, FractionalThompson};
 pub use profiles::{
     BoundedReward, ExternalAssessments, ExternalDistribution, ExternalScores, FiniteReward,
-    QualityFeedback, QualityProfile, QualityScore,
+    ModelReference, QualityFeedback, QualityProfile, QualityScore,
 };
 #[cfg(feature = "contextual")]
 pub use profiles::{ContextualMode, ContextualProfile};

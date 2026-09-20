@@ -75,7 +75,127 @@ pub struct Exp3IxState {
     pub probs: Vec<f64>,
 }
 
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Exp3IxCheckpoint {
+    pub(crate) horizon: usize,
+    pub(crate) confidence_delta: Option<u64>,
+    pub(crate) seed: u64,
+    pub(crate) decay: u64,
+    pub(crate) gamma: u64,
+    pub(crate) learning_rate: u64,
+    pub(crate) arms: Vec<String>,
+    pub(crate) uses: Vec<u64>,
+    pub(crate) cum_loss_hat: Vec<u64>,
+    pub(crate) probs: Vec<u64>,
+}
+
 impl Exp3Ix {
+    #[cfg(feature = "serde")]
+    pub(crate) fn checkpoint_state(&self) -> Result<Exp3IxCheckpoint, crate::PolicyError> {
+        let mut expected_rng = StdRng::seed_from_u64(self.cfg.seed);
+        let mut actual_rng = self.rng.clone();
+        // `StdRng` intentionally has no state-equality API. Compare a short
+        // deterministic stream from clones instead of advancing the live RNG.
+        let rng_matches_seed =
+            (0..4).all(|_| expected_rng.random::<u64>() == actual_rng.random::<u64>());
+        let probabilities_are_normalized =
+            self.probs.is_empty() || (self.probs.iter().sum::<f64>() - 1.0).abs() <= 1e-12;
+        if !rng_matches_seed
+            || self.arms.len() != self.uses.len()
+            || self.arms.len() != self.cum_loss_hat.len()
+            || self.arms.len() != self.probs.len()
+            || self.arms.iter().any(String::is_empty)
+            || self.cum_loss_hat.iter().any(|value| !value.is_finite())
+            || self
+                .probs
+                .iter()
+                .any(|value| !value.is_finite() || *value <= 0.0 || *value > 1.0)
+            || !probabilities_are_normalized
+            || self.cfg.horizon == 0
+            || self
+                .cfg
+                .confidence_delta
+                .is_some_and(|delta| !delta.is_finite() || !(0.0 < delta && delta < 1.0))
+            || !self.cfg.decay.is_finite()
+            || !(0.0 < self.cfg.decay && self.cfg.decay <= 1.0)
+            || !self.gamma.is_finite()
+            || self.gamma < 0.0
+            || !self.learning_rate.is_finite()
+            || self.learning_rate < 0.0
+        {
+            return Err(crate::PolicyError::new("EXP3 checkpoint state is invalid"));
+        }
+        Ok(Exp3IxCheckpoint {
+            horizon: self.cfg.horizon,
+            confidence_delta: self.cfg.confidence_delta.map(f64::to_bits),
+            seed: self.cfg.seed,
+            decay: self.cfg.decay.to_bits(),
+            gamma: self.gamma.to_bits(),
+            learning_rate: self.learning_rate.to_bits(),
+            arms: self.arms.clone(),
+            uses: self.uses.clone(),
+            cum_loss_hat: self
+                .cum_loss_hat
+                .iter()
+                .map(|value| value.to_bits())
+                .collect(),
+            probs: self.probs.iter().map(|value| value.to_bits()).collect(),
+        })
+    }
+    #[cfg(feature = "serde")]
+    pub(crate) fn from_checkpoint_state(
+        state: Exp3IxCheckpoint,
+    ) -> Result<Self, crate::PolicyError> {
+        let lengths = state.arms.len();
+        let config = Exp3IxConfig {
+            horizon: state.horizon,
+            confidence_delta: state.confidence_delta.map(f64::from_bits),
+            seed: state.seed,
+            decay: f64::from_bits(state.decay),
+        };
+        let losses: Vec<_> = state.cum_loss_hat.into_iter().map(f64::from_bits).collect();
+        let probs: Vec<_> = state.probs.into_iter().map(f64::from_bits).collect();
+        let probabilities_are_normalized =
+            probs.is_empty() || (probs.iter().sum::<f64>() - 1.0).abs() <= 1e-12;
+        if state.arms.iter().any(String::is_empty)
+            || state
+                .arms
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != lengths
+            || state.uses.len() != lengths
+            || losses.len() != lengths
+            || probs.len() != lengths
+            || losses.iter().any(|x| !x.is_finite() || *x < 0.0)
+            || probs
+                .iter()
+                .any(|x| !x.is_finite() || *x <= 0.0 || *x > 1.0)
+            || !probabilities_are_normalized
+            || config.horizon == 0
+            || config
+                .confidence_delta
+                .is_some_and(|delta| !delta.is_finite() || !(0.0 < delta && delta < 1.0))
+            || !config.decay.is_finite()
+            || !(0.0 < config.decay && config.decay <= 1.0)
+            || !f64::from_bits(state.gamma).is_finite()
+            || f64::from_bits(state.gamma) < 0.0
+            || !f64::from_bits(state.learning_rate).is_finite()
+            || f64::from_bits(state.learning_rate) < 0.0
+        {
+            return Err(crate::PolicyError::new("EXP3 checkpoint state is invalid"));
+        }
+        let mut out = Self::with_seed(config, state.seed);
+        out.arms = state.arms;
+        out.uses = state.uses;
+        out.cum_loss_hat = losses;
+        out.probs = probs;
+        out.gamma = f64::from_bits(state.gamma);
+        out.learning_rate = f64::from_bits(state.learning_rate);
+        Ok(out)
+    }
     /// Create a new EXP3-IX instance with deterministic defaults.
     pub fn new(cfg: Exp3IxConfig) -> Self {
         Self::with_seed(cfg, cfg.seed)
@@ -557,6 +677,34 @@ impl Default for Exp3Ix {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn checkpoint_round_trip_preserves_nondefault_decay_and_rejects_corruption() {
+        let arms = vec!["a".to_owned(), "b".to_owned()];
+        let mut policy = Exp3Ix::new(Exp3IxConfig {
+            decay: 0.7,
+            seed: 9,
+            ..Exp3IxConfig::default()
+        });
+        policy.probabilities(&arms);
+
+        let state = policy.checkpoint_state().unwrap();
+        let restored = Exp3Ix::from_checkpoint_state(state.clone()).unwrap();
+        assert_eq!(restored.cfg.decay.to_bits(), 0.7f64.to_bits());
+        assert_eq!(restored.snapshot().probs, policy.snapshot().probs);
+
+        let mut zero_probability = state.clone();
+        zero_probability.probs[0] = 0.0f64.to_bits();
+        assert!(Exp3Ix::from_checkpoint_state(zero_probability).is_err());
+
+        let mut negative_loss = state;
+        negative_loss.cum_loss_hat[0] = (-1.0f64).to_bits();
+        assert!(Exp3Ix::from_checkpoint_state(negative_loss).is_err());
+
+        rand::Rng::random::<u64>(&mut policy.rng);
+        assert!(policy.checkpoint_state().is_err());
+    }
     use proptest::prelude::*;
 
     #[test]

@@ -14,10 +14,17 @@ pub use events::{EventOutcome, FeedbackEvent};
 #[cfg(feature = "serde")]
 #[path = "runtime/checkpoint.rs"]
 mod checkpoint;
-#[cfg(all(feature = "serde", feature = "stochastic"))]
-pub use checkpoint::BernoulliMuxerCheckpoint;
+#[cfg(all(feature = "serde", feature = "boltzmann"))]
+pub use checkpoint::BoltzmannMuxerCheckpoint;
+#[cfg(all(feature = "serde", feature = "contextual"))]
+pub use checkpoint::ContextualMuxerCheckpoint;
 #[cfg(feature = "serde")]
-pub use checkpoint::QualityMuxerCheckpoint;
+pub use checkpoint::{
+    AssessmentsMuxerCheckpoint, ExternalDistributionMuxerCheckpoint, ExternalScoresMuxerCheckpoint,
+    QualityMuxerCheckpoint,
+};
+#[cfg(all(feature = "serde", feature = "stochastic"))]
+pub use checkpoint::{BernoulliMuxerCheckpoint, Exp3MuxerCheckpoint, FractionalMuxerCheckpoint};
 
 static NEXT_ENGINE: AtomicU64 = AtomicU64::new(1);
 
