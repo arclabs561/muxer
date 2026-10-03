@@ -96,8 +96,41 @@ and observation-ID-window cloning (1.6%). These are leaf shares, not inclusive
 cost attribution or proof that three changes would recover those percentages.
 They identify window preparation and summary work as a useful next investigation.
 
-Entry counts are bounded; arbitrary ticket/context bytes have not been measured.
-Serialized restart and its cost are outside this implementation.
+Entry counts are bounded, not arbitrary ticket/context bytes. Serialized
+restart is implemented; its latency has not been benchmarked.
+
+## Retained-ticket sizing and defaults
+
+`cargo run --release --all-features --example retained_ticket_sizing` measures
+requested heap allocation bytes through a process-local allocator counter.
+After warming all five actions, it retains real pending decisions and drops
+the returned public receipts before taking the end snapshot. Three repetitions
+on the same host/toolchain above produced identical live-byte deltas:
+
+| Pending decisions | Bernoulli | Contextual (8 features) | Quality (8 context values) |
+| --- | ---: | ---: | ---: |
+| 1 | 346 | 554 | 465 |
+| 100 | 71,752 | 81,464 | 83,652 |
+| 1,024 | 748,384 | 846,800 | 870,240 |
+
+The example separately reports transient allocation/deallocation traffic;
+those cumulative counts must not be called retained memory. These deltas are
+requested live bytes, not allocator-rounded bytes, resident memory, or the
+entire runtime. They exclude additional terminal records, submitted event
+payloads, retired policy epochs and application-owned models. Arbitrary action
+names, quality payloads, feature dimensions and batch sizes can raise costs.
+
+Keep the default pending capacity of 1,024: it permits up to 1,024 simultaneous
+decisions while the representative retained-ticket costs above remain below
+0.9 MB. This is a starting concurrency budget, not a prediction of application
+traffic. Set it from measured peak in-flight work and payload size. Terminal
+capacity 1,024 provides a similarly bounded recent deduplication window; event
+capacity 32 is per decision, and four retired epochs bound refresh overlap.
+These independent entry limits are not a combined byte budget. Applications
+must choose their own retry horizon, payload limits and model-memory budget.
+
+Reproduce with `cargo run --release --all-features --example retained_ticket_sizing`.
+No latency conclusions are drawn from these measurements.
 
 ## Local evidence handoff
 
