@@ -353,7 +353,6 @@ impl DecisionReceipt {
         &self.selected[0].action
     }
     /// Ordered selected actions.
-    #[must_use]
     pub fn selected(&self) -> impl ExactSizeIterator<Item = &str> {
         self.selected.iter().map(|item| item.action.as_str())
     }
