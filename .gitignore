@@ -9,3 +9,6 @@ Cargo.lock
 
 # Downloaded datasets and generated validation traces.
 /data/
+
+# Private source conversations are neither source control nor crate artifacts.
+/chatgpt-export-*

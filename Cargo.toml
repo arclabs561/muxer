@@ -5,6 +5,7 @@ edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
 publish = true
+exclude = ["/chatgpt-export-*"]
 description = "Multi-objective bandit routing with drift detection"
 repository = "https://github.com/arclabs561/muxer"
 keywords = ["bandit", "routing", "llm", "pareto", "multi-objective"]
