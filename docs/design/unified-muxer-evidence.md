@@ -17,18 +17,9 @@ maintenance cost, then performance. Research stops when each load-bearing
 protocol choice has either primary evidence or an explicit engineering decision
 with a falsification test. This is not a survey of every bandit algorithm.
 
-Intent source: ChatGPT conversation titled “Review muxer architecture,” selected
-branch ending with the plug-and-play discussion. Local raw source:
-`../../chatgpt-export-6aa661aa-updated.raw.json`; parsed source:
-`../../chatgpt-export-6aa661aa-updated.md`; capture manifest:
-`../../chatgpt-export-6aa661aa-updated.manifest.json`.
-Those are local capture artifacts, not required published documentation assets.
-Raw JSON retains alternate branches and tool activity; analysis uses the selected
-branch. First selected conversational role is user, last is assistant. The
-raw capture is 5,917,062 bytes and the parsed Markdown is 118,456 bytes. The
-manifest reports 353 nodes, 352 messages, 282 selected records and 70 alternate
-records. No recognized assets were listed; enumeration is not exhaustive.
-Export citations alone are not verification of their paper claims.
+Intent: review the muxer architecture and define a plug-and-play runtime
+contract. Private working notes informed the questions below; paper claims
+require verification against their primary sources.
 
 ## Local orientation and verified constraints
 
