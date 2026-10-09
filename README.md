@@ -69,7 +69,7 @@ use muxer::{Router, RouterConfig, Outcome};
 let arms = vec!["backend-a".to_string(), "backend-b".to_string()];
 let mut router = Router::new(arms, RouterConfig::default()).unwrap();
 
-loop {
+for _ in 0..10 {
     let d = router.select(1, 0);
     let arm = d.primary().unwrap().to_string();
 
@@ -82,6 +82,10 @@ When availability or capability varies by request, pass the allowed arms
 explicitly. Every Router selection stage stays inside this set:
 
 ```rust
+use muxer::{Router, RouterConfig};
+
+let arms = vec!["backend-a".to_string(), "backend-b".to_string()];
+let mut router = Router::new(arms, RouterConfig::default()).unwrap();
 let eligible = vec!["backend-b".to_string()];
 let d = router.select_from(&eligible, 1, 0).unwrap();
 assert_eq!(d.primary(), Some("backend-b"));
@@ -91,8 +95,10 @@ For overlapping calls whose labels arrive later, use caller-owned observation
 IDs so labels target the original outcome:
 
 ```rust
-use muxer::{ObservationId, Outcome};
+use muxer::{ObservationId, Outcome, Router, RouterConfig};
 
+let arms = vec!["backend-a".to_string(), "backend-b".to_string()];
+let mut router = Router::new(arms, RouterConfig::default()).unwrap();
 let id = ObservationId::new(1);
 assert!(router.observe_with_id(id, "backend-b", Outcome::success(5, 120)));
 assert!(router.set_quality_score_for_id(id, 0.9));
@@ -106,7 +112,11 @@ arrive later.
 For larger arm counts, pass `k > 1` to batch exploration:
 
 ```rust
+use muxer::{Router, RouterConfig};
+
+let arms: Vec<String> = (0..30).map(|i| format!("backend-{i}")).collect();
 let cfg = RouterConfig::default().with_coverage(0.02, 1);
+let mut router = Router::new(arms, cfg).unwrap();
 let d = router.select(3, 0); // K=30, k=3 -> coverage in ~10 rounds
 ```
 

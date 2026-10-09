@@ -80,6 +80,8 @@
 //! varies per request, the caller determines that set and passes it to
 //! [`Router::select_from`], which keeps every selection stage inside it.
 //!
+// The README quickstart uses `Muxer::bernoulli`, a default `stochastic` API.
+#![cfg_attr(feature = "stochastic", doc = include_str!("../README.md"))]
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
