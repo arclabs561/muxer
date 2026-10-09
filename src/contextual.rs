@@ -38,9 +38,11 @@ pub struct LinUcbConfig {
     /// - Smaller values forget older observations faster (useful for drift).
     ///
     /// Implementation detail: if \(d \in (0, 1)\), we apply
-    /// `A <- d*A + x*x^T` and `b <- d*b + r*x` each update.
-    /// Since we store \(A^{-1}\), we first scale `A^{-1} <- A^{-1} / d`
-    /// before applying the Sherman–Morrison rank-1 update.
+    /// `A <- d*(A - lambda*I) + lambda*I + x*x^T` and `b <- d*b + r*x` each update,
+    /// so observations are discounted but the ridge prior is not.
+    /// Since we store \(A^{-1}\), we scale `A^{-1} <- A^{-1} / d`, add back
+    /// `(1-d)*lambda*I` with one Sherman–Morrison step per coordinate, and then
+    /// apply the rank-1 update for `x`. Each decayed update costs O(dim^3).
     pub decay: f64,
 }
 
@@ -452,12 +454,19 @@ impl LinUcb {
             1.0
         };
         let decay = decay.clamp(1.0e-6, 1.0);
+        // Same fallback as `ArmState::new`, so the restored prior matches the initial one.
+        let lambda = if self.cfg.lambda.is_finite() && self.cfg.lambda > 0.0 {
+            self.cfg.lambda
+        } else {
+            1.0
+        };
 
         let Some(st) = self.state.get_mut(arm) else {
             return;
         };
 
-        // Optional decay (forgetting).
+        // Optional decay (forgetting). Only the data term decays; the ridge prior
+        // stays at lambda*I: A <- d*(A - lambda*I) + lambda*I = d*A + (1-d)*lambda*I.
         if decay < 1.0 {
             for v in &mut st.b {
                 *v *= decay;
@@ -465,6 +474,19 @@ impl LinUcb {
             // If A <- d*A, then A^{-1} <- A^{-1} / d.
             for v in &mut st.a_inv {
                 *v /= decay;
+            }
+            // Restore the decayed part of the prior, (1-d)*lambda*e_k e_k^T for
+            // each k, one Sherman–Morrison step per basis vector.
+            let c = (1.0 - decay) * lambda;
+            for k in 0..d {
+                let col: Vec<f64> = (0..d).map(|i| st.a_inv[i * d + k]).collect();
+                let denom = 1.0 + c * col[k];
+                for i in 0..d {
+                    for j in 0..d {
+                        // Multiply col[i] * col[j] first so the update is bitwise symmetric.
+                        st.a_inv[i * d + j] -= c * (col[i] * col[j]) / denom;
+                    }
+                }
             }
         }
 
@@ -936,6 +958,43 @@ mod tests {
         assert_eq!(
             decision.probs.unwrap(),
             BTreeMap::from([("a".to_string(), 1.0), ("b".to_string(), 0.0)])
+        );
+    }
+
+    #[test]
+    fn linucb_decay_forgets_data_but_keeps_ridge_prior() {
+        // With forgetting, A_t = lambda I + sum_s decay^(t-s) x_s x_s^T: decay
+        // discounts observations, never the ridge prior. Feeding only e_1 leaves
+        // the e_2 direction at A_22 = lambda, so its bonus stays alpha / sqrt(lambda),
+        // and A_11 approaches lambda + 1 / (1 - decay).
+        let arms = vec!["a".to_string()];
+        let lambda = 2.0;
+        let decay = 0.5;
+        let cfg = LinUcbConfig {
+            dim: 2,
+            lambda,
+            alpha: 1.0,
+            seed: 0,
+            decay,
+        };
+        let mut p = LinUcb::new(cfg);
+        p.ensure_arms(&arms);
+        for _ in 0..60 {
+            p.update_reward("a", &[1.0, 0.0], 1.0);
+        }
+
+        let unseen = p.scores(&arms, &[0.0, 1.0])["a"].2;
+        assert!(
+            (unseen - 1.0 / lambda.sqrt()).abs() < 1e-9,
+            "unseen-direction bonus {unseen} must stay at the prior 1/sqrt(lambda)"
+        );
+
+        let seen = p.scores(&arms, &[1.0, 0.0])["a"].2;
+        let a11 = lambda + 1.0 / (1.0 - decay);
+        assert!(
+            (seen - 1.0 / a11.sqrt()).abs() < 1e-9,
+            "seen-direction bonus {seen}, expected {}",
+            1.0 / a11.sqrt()
         );
     }
 
