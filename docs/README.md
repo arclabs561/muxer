@@ -4,7 +4,7 @@
 
 | Doc | Purpose |
 |-----|---------|
-| [QUICKSTART.md](QUICKSTART.md) | 5-minute CLI + library usage |
+| [QUICKSTART.md](QUICKSTART.md) | Library usage and runnable examples |
 | [UNIFIED_MUXER.md](UNIFIED_MUXER.md) | Shared lifecycle profiles and additive migration |
 | [UNIFIED_MUXER_PERFORMANCE.md](UNIFIED_MUXER_PERFORMANCE.md) | Measured lifecycle overhead and validation evidence |
 | [DOC_STATUS.md](DOC_STATUS.md) | What's ACTIVE vs NOTE vs STALE |

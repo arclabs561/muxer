@@ -1,4 +1,4 @@
-# muxer — 5-minute quickstart
+# muxer quickstart
 
 Route repeated calls between a small set of arms (backends, model versions, data sources)
 using sliding-window statistics, Pareto selection, and optional CUSUM monitoring.
@@ -27,7 +27,7 @@ Best arm now: "claude-sonnet"  (mode: Normal)
 With quality_weight=1.0: best arm is "gpt-4o"
 ```
 
-This demonstrates the 80% case: 3 arms, explore-first, finalized outcomes, and a
+This demonstrates 3 arms, explore-first selection, finalized outcomes, and a
 quality-versus-cost tradeoff resolved by scalarization.
 
 ## Two-minute version (Router API)
@@ -126,7 +126,7 @@ arm-b  calls=50  ok_rate=0.84  junk_rate=0.12  quality=0.65
 - **`missing field quality_score`** when constructing `Outcome`: add `quality_score: None`.
 - **`missing field mean_quality_score`** when constructing `Summary`: add `mean_quality_score: None`.
 - **Triage never fires**: use `.with_triage()` on `RouterConfig`; default has no CUSUM.
-- **All arms always explore first**: expected behavior — each arm is tried once before
+- **All arms always explore first**: expected behavior: each arm is tried once before
   exploitation. Use `select(3, seed)` to batch initial exploration over many arms.
 - **An unavailable arm was selected**: pass the authoritative request-local set to
   `select_from`; Router filters are empirical preferences, not readiness checks.
