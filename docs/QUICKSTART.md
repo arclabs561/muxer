@@ -116,16 +116,56 @@ arm-b  calls=50  ok_rate=0.84  junk_rate=0.12  quality=0.65
 |------|--------|
 | Tune window size for your throughput | `RouterConfig::default().window_cap(suggested_window_cap(calls_per_arm, change_rate))` |
 | Use quality gradient for selection | `MabConfig::default().with_quality_weight(0.5)` |
-| Detect regressions automatically | `.with_monitoring(400, 80).with_triage()` |
+| Detect regressions automatically | Calibrated triage threshold; see [Monitoring for regressions](#monitoring-for-regressions) |
 | Faster initial coverage (K > 10) | `router.select(3, seed)` (k=3 per round) |
 | Restrict one request to ready/capable arms | `router.select_from(&eligible, k, seed)?` |
 | CUSUM threshold-selection demo | `cargo run --example router_production --features stochastic` |
+
+## Monitoring for regressions
+
+The default triage threshold (`5.0`) is not calibrated: on an unchanged arm
+whose outcomes follow the configured null `p0`, it alarms in more than half of
+500-observation runs. Calibrate the threshold for your false-alarm budget and
+horizon before enabling triage:
+
+```rust
+use muxer::monitor::calibrate_cusum_threshold;
+use muxer::{RouterConfig, TriageSessionConfig};
+
+let mut triage = TriageSessionConfig::default();
+let alts: Vec<Vec<f64>> = triage.alts.iter().map(|alt| alt.to_vec()).collect();
+// At most 5% false alarms over 500 observations of an unchanged arm.
+let calibration = calibrate_cusum_threshold(
+    &triage.p0,
+    &alts,
+    0.05,
+    500,
+    2000,
+    triage.cusum_alpha,
+    triage.min_n,
+    7,
+    false,
+)
+.expect("calibration");
+triage.threshold = calibration.threshold;
+let config = RouterConfig::default()
+    .with_monitoring(400, 80)
+    .with_triage_cfg(triage);
+```
+
+`calibrate_cusum_threshold` requires the default `stochastic` feature. The
+budget is per arm: with several arms, the chance that any arm alarms is
+higher. Set `p0` to your arms' observed outcome mix first, because the
+threshold only holds for outcomes drawn from it. The test
+`quickstart_monitoring_does_not_false_alarm_on_stationary_arms` checks this
+configuration on fresh simulated runs.
 
 ## Common failures
 
 - **`missing field quality_score`** when constructing `Outcome`: add `quality_score: None`.
 - **`missing field mean_quality_score`** when constructing `Summary`: add `mean_quality_score: None`.
-- **Triage never fires**: use `.with_triage()` on `RouterConfig`; default has no CUSUM.
+- **Triage never fires**: enable triage on `RouterConfig` as in
+  [Monitoring for regressions](#monitoring-for-regressions); default has no CUSUM.
 - **All arms always explore first**: expected behavior: each arm is tried once before
   exploitation. Use `select(3, seed)` to batch initial exploration over many arms.
 - **An unavailable arm was selected**: pass the authoritative request-local set to

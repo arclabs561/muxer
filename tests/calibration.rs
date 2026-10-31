@@ -119,3 +119,78 @@ fn calibrate_from_scores_impossible_constraint_not_satisfied() {
     let cal = calibrate_threshold_from_max_scores(&mut scores, &grid, 0.001, 1.96, false);
     assert!(!cal.grid_satisfied);
 }
+
+// ---------------------------------------------------------------------------
+// docs/QUICKSTART.md monitoring configuration
+// ---------------------------------------------------------------------------
+
+/// The "Monitoring for regressions" block in `docs/QUICKSTART.md`. Keep the
+/// two in sync.
+#[cfg(feature = "stochastic")]
+fn quickstart_monitoring_config() -> muxer::RouterConfig {
+    use muxer::{RouterConfig, TriageSessionConfig};
+
+    let mut triage = TriageSessionConfig::default();
+    let alts: Vec<Vec<f64>> = triage.alts.iter().map(|alt| alt.to_vec()).collect();
+    // At most 5% false alarms over 500 observations of an unchanged arm.
+    let calibration = calibrate_cusum_threshold(
+        &triage.p0,
+        &alts,
+        0.05,
+        500,
+        2000,
+        triage.cusum_alpha,
+        triage.min_n,
+        7,
+        false,
+    )
+    .expect("calibration");
+    triage.threshold = calibration.threshold;
+    RouterConfig::default()
+        .with_monitoring(400, 80)
+        .with_triage_cfg(triage)
+}
+
+/// Stationary arms drawn from the configured null `p0` must rarely alarm.
+/// The default threshold alarms on most such runs within 500 observations.
+#[cfg(feature = "stochastic")]
+#[test]
+fn quickstart_monitoring_does_not_false_alarm_on_stationary_arms() {
+    use muxer::{Outcome, Router, TriageSessionConfig};
+
+    let config = quickstart_monitoring_config();
+    let p0 = TriageSessionConfig::default().p0;
+    let (trials, horizon) = (400, 500);
+    let mut state = 0x5EED_u64;
+    let mut alarmed = 0;
+    for _ in 0..trials {
+        let mut router = Router::new(vec!["a".to_owned()], config.clone()).unwrap();
+        for _ in 0..horizon {
+            // SplitMix64, independent of the calibration seed.
+            state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            let u = ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64;
+            let (ok, junk, hard_junk) = if u < p0[0] {
+                (true, false, false)
+            } else if u < p0[0] + p0[1] {
+                (true, true, false)
+            } else if u < p0[0] + p0[1] + p0[2] {
+                (true, true, true)
+            } else {
+                (false, false, false)
+            };
+            assert!(router.observe("a", Outcome::new(ok, junk, hard_junk, 1, 10)));
+        }
+        if router.mode().is_triage() {
+            alarmed += 1;
+        }
+    }
+    let rate = f64::from(alarmed) / f64::from(trials);
+    // alpha plus three binomial standard errors at n = 400.
+    assert!(
+        rate <= 0.05 + 3.0 * (0.05_f64 * 0.95 / 400.0).sqrt(),
+        "rate={rate}"
+    );
+}

@@ -43,6 +43,7 @@ pub struct ScalarTicket {
 pub struct ThompsonIssue {
     kernel: ThompsonSampling,
     rng: TrialRng,
+    action: String,
 }
 
 #[cfg(feature = "stochastic")]
@@ -50,6 +51,9 @@ pub struct ThompsonIssue {
 struct ThompsonProfileCore {
     inner: ThompsonSampling,
     rng: TrialRng,
+    /// Committed decisions per action. Explore-first counts these, not
+    /// feedback, so delayed feedback does not re-issue an in-flight action.
+    issued: std::collections::BTreeMap<String, u64>,
     #[cfg(all(feature = "serde", feature = "stochastic"))]
     legacy_seed: u64,
 }
@@ -67,6 +71,7 @@ impl ThompsonProfileCore {
         Self {
             inner: ThompsonSampling::new(config),
             rng: TrialRng::seeded(0),
+            issued: std::collections::BTreeMap::new(),
             #[cfg(all(feature = "serde", feature = "stochastic"))]
             legacy_seed: 0,
         }
@@ -76,6 +81,7 @@ impl ThompsonProfileCore {
         Self {
             inner: ThompsonSampling::with_seed(config, seed),
             rng: TrialRng::seeded(seed),
+            issued: std::collections::BTreeMap::new(),
             #[cfg(all(feature = "serde", feature = "stochastic"))]
             legacy_seed: seed,
         }
@@ -85,14 +91,17 @@ impl ThompsonProfileCore {
         let mut kernel = self.inner.clone();
         let mut stream = self.rng.clone();
         let decision = kernel
-            .decide_with_rng(eligible, &mut stream)
+            .decide_with_rng_explored(eligible, &mut stream, |action, stats| {
+                stats.uses > 0 || self.issued.get(action).is_some_and(|issued| *issued > 0)
+            })
             .ok_or_else(|| PolicyError::new("no eligible action"))?;
         Ok(ThompsonPreparedDecision {
-            selection: decision.chosen,
+            selection: decision.chosen.clone(),
             reason: reason_from_notes(&decision.notes),
             issue: ThompsonIssue {
                 kernel,
                 rng: stream,
+                action: decision.chosen,
             },
         })
     }
@@ -100,6 +109,8 @@ impl ThompsonProfileCore {
     fn commit(&mut self, issue: ThompsonIssue) {
         self.inner = issue.kernel;
         self.rng = issue.rng;
+        let issued = self.issued.entry(issue.action).or_default();
+        *issued = issued.saturating_add(1);
     }
 
     fn update(&self, ticket: &ScalarTicket, reward: f64) -> ThompsonSampling {
@@ -121,6 +132,11 @@ pub(crate) struct ThompsonProfileCheckpoint {
     posterior: Vec<ThompsonArmCheckpoint>,
     legacy_seed: u64,
     rng: crate::TrialRngState,
+    /// Committed decisions per action. Absent in checkpoints written before
+    /// issuance tracking; restore then defaults each action to its feedback
+    /// count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    issued: Option<Vec<(String, u64)>>,
 }
 
 #[cfg(all(feature = "serde", feature = "stochastic"))]
@@ -245,6 +261,7 @@ impl BernoulliThompson {
         checkpoint_thompson_profile(
             &self.core.inner,
             &self.core.rng,
+            &self.core.issued,
             self.core.legacy_seed,
             "bernoulli-thompson",
             "Bernoulli",
@@ -257,12 +274,13 @@ impl BernoulliThompson {
         state: BernoulliThompsonCheckpoint,
         build_key: &str,
     ) -> Result<Self, PolicyError> {
-        let (inner, rng, legacy_seed) =
+        let (inner, rng, issued, legacy_seed) =
             restore_thompson_profile(state, "bernoulli-thompson", "Bernoulli", build_key)?;
         Ok(Self {
             core: ThompsonProfileCore {
                 inner,
                 rng,
+                issued,
                 legacy_seed,
             },
         })
@@ -323,6 +341,7 @@ fn thompson_checkpoint_expectation() -> FeedbackExpectation {
 fn checkpoint_thompson_profile(
     inner: &ThompsonSampling,
     rng: &TrialRng,
+    issued: &std::collections::BTreeMap<String, u64>,
     legacy_seed: u64,
     kind: &str,
     label: &str,
@@ -367,6 +386,12 @@ fn checkpoint_thompson_profile(
         posterior,
         legacy_seed,
         rng: rng.state(),
+        issued: Some(
+            issued
+                .iter()
+                .map(|(action, count)| (action.clone(), *count))
+                .collect(),
+        ),
     })
 }
 
@@ -376,7 +401,15 @@ fn restore_thompson_profile(
     kind: &str,
     label: &str,
     build_key: &str,
-) -> Result<(ThompsonSampling, TrialRng, u64), PolicyError> {
+) -> Result<
+    (
+        ThompsonSampling,
+        TrialRng,
+        std::collections::BTreeMap<String, u64>,
+        u64,
+    ),
+    PolicyError,
+> {
     if state.schema != 1 {
         return Err(PolicyError::new(format!(
             "unsupported {label} checkpoint schema"
@@ -421,11 +454,28 @@ fn restore_thompson_profile(
             },
         );
     }
+    let issued = match state.issued {
+        Some(entries) => {
+            let mut issued = std::collections::BTreeMap::new();
+            for (action, count) in entries {
+                if !arms.contains_key(&action) || issued.insert(action, count).is_some() {
+                    return Err(PolicyError::new(format!(
+                        "{label} checkpoint repeats or invents an issued action"
+                    )));
+                }
+            }
+            issued
+        }
+        None => arms
+            .iter()
+            .map(|(action, stats)| (action.clone(), stats.uses))
+            .collect(),
+    };
     let rng = TrialRng::from_state(state.rng)?;
     let legacy_seed = state.legacy_seed;
     let mut inner = ThompsonSampling::with_seed(config, legacy_seed);
     inner.restore(crate::ThompsonState { arms });
-    Ok((inner, rng, legacy_seed))
+    Ok((inner, rng, issued, legacy_seed))
 }
 
 #[cfg(all(feature = "serde", feature = "stochastic"))]
@@ -560,6 +610,7 @@ impl FractionalThompson {
         checkpoint_thompson_profile(
             &self.core.inner,
             &self.core.rng,
+            &self.core.issued,
             self.core.legacy_seed,
             "fractional-thompson",
             "Fractional",
@@ -572,12 +623,13 @@ impl FractionalThompson {
         state: FractionalThompsonCheckpoint,
         build_key: &str,
     ) -> Result<Self, PolicyError> {
-        let (inner, rng, legacy_seed) =
+        let (inner, rng, issued, legacy_seed) =
             restore_thompson_profile(state, "fractional-thompson", "Fractional", build_key)?;
         Ok(Self {
             core: ThompsonProfileCore {
                 inner,
                 rng,
+                issued,
                 legacy_seed,
             },
         })
@@ -647,6 +699,17 @@ impl InteractionPolicy for FractionalThompson {
 pub struct Exp3Profile {
     inner: Exp3Ix,
     universe: Vec<String>,
+    /// Committed decisions per action. Explore-first counts these, not
+    /// feedback, so delayed feedback does not re-issue an in-flight action.
+    issued: std::collections::BTreeMap<String, u64>,
+}
+
+#[cfg(feature = "stochastic")]
+/// One-use prepared EXP3 issuance.
+#[derive(Debug)]
+pub struct Exp3Issue {
+    kernel: Exp3Ix,
+    action: String,
 }
 
 #[cfg(feature = "stochastic")]
@@ -665,6 +728,7 @@ impl Exp3Profile {
         Ok(Self {
             inner: Exp3Ix::new(config),
             universe,
+            issued: std::collections::BTreeMap::new(),
         })
     }
     /// Inspect the canonical universe used for all EXP3 loss coordinates.
@@ -685,7 +749,7 @@ impl InteractionPolicy for Exp3Profile {
     type Feedback = BoundedReward;
     type CanonicalFeedback = BoundedReward;
     type Ticket = Exp3Ticket;
-    type PreparedIssue = Exp3Ix;
+    type PreparedIssue = Exp3Issue;
     type PreparedUpdate = Exp3Ix;
 
     fn prepare_decision(
@@ -704,7 +768,14 @@ impl InteractionPolicy for Exp3Profile {
         }
         let mut next = self.inner.clone();
         let decision = next
-            .decide_deterministic_filtered(&self.universe, request.eligible(), rng.next_u64())
+            .decide_deterministic_filtered_explored(
+                &self.universe,
+                request.eligible(),
+                rng.next_u64(),
+                |action, uses| {
+                    uses > 0 || self.issued.get(action).is_some_and(|issued| *issued > 0)
+                },
+            )
             .ok_or_else(|| PolicyError::new("no eligible action"))?;
         let propensity = decision
             .probs
@@ -719,18 +790,23 @@ impl InteractionPolicy for Exp3Profile {
             selection: decision.chosen.clone(),
             probability: ProbabilityAvailability::Exact(probability),
             ticket: Some(Exp3Ticket {
-                action: decision.chosen,
+                action: decision.chosen.clone(),
                 propensity,
                 reason,
             }),
-            issue: next,
+            issue: Exp3Issue {
+                kernel: next,
+                action: decision.chosen,
+            },
             expectation: FeedbackExpectation::FinalValue {
                 channel: Channel::reward(),
             },
         })
     }
     fn commit_issue(&mut self, issue: Self::PreparedIssue) {
-        self.inner = issue;
+        self.inner = issue.kernel;
+        let issued = self.issued.entry(issue.action).or_default();
+        *issued = issued.saturating_add(1);
     }
     fn normalize(&self, feedback: BoundedReward) -> Result<BoundedReward, PolicyError> {
         Ok(feedback)

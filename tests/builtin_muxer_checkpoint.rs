@@ -181,6 +181,55 @@ mod stochastic_profiles {
         let handoff: Exp3Handoff = serde_json::from_slice(&encoded).unwrap();
         println!("EXP3_RESULT={}", continue_exp3(muxer, handoff));
     }
+    fn exp3_in_flight_checkpoint() -> Value {
+        let mut muxer = Muxer::new(arms(), exp3_policy()).unwrap();
+        assert_eq!(muxer.decide(&()).unwrap().action(), "a");
+        serde_json::to_value(muxer.exp3_checkpoint(KEY).unwrap()).unwrap()
+    }
+    #[test]
+    fn exp3_checkpoint_keeps_in_flight_issuance_for_explore_first() {
+        let wire = exp3_in_flight_checkpoint();
+        assert_eq!(wire["policy"]["issued"], serde_json::json!([["a", 1]]));
+        let input = serde_json::json!({"checkpoint": wire, "next": "b"});
+        let output = support::run_checkpoint_child(
+            "stochastic_profiles::exp3_issuance_child",
+            &serde_json::to_vec(&input).unwrap(),
+        );
+        support::assert_child_success(&output);
+    }
+    /// Checkpoints written before issuance tracking omit `issued`; restore
+    /// defaults it from feedback counts.
+    #[test]
+    fn exp3_checkpoint_without_issuance_loads_with_feedback_counts() {
+        let mut wire = exp3_in_flight_checkpoint();
+        wire["policy"].as_object_mut().unwrap().remove("issued");
+        let input = serde_json::json!({"checkpoint": wire, "next": "a"});
+        let output = support::run_checkpoint_child(
+            "stochastic_profiles::exp3_issuance_child",
+            &serde_json::to_vec(&input).unwrap(),
+        );
+        support::assert_child_success(&output);
+    }
+    #[test]
+    #[ignore = "subprocess helper"]
+    fn exp3_issuance_child() {
+        let mut encoded = Vec::new();
+        std::io::stdin().read_to_end(&mut encoded).unwrap();
+        let input: Value = serde_json::from_slice(&encoded).unwrap();
+        let mut invented = input["checkpoint"].clone();
+        invented["policy"]["issued"] = serde_json::json!([["z", 1]]);
+        let invented: Exp3MuxerCheckpoint = serde_json::from_value(invented).unwrap();
+        match Muxer::from_exp3_checkpoint(invented, KEY) {
+            Ok(_) => panic!("checkpoint with an unknown issued action restored"),
+            Err(err) => assert!(err
+                .to_string()
+                .contains("EXP3 checkpoint repeats or invents an issued action")),
+        }
+        let checkpoint: Exp3MuxerCheckpoint =
+            serde_json::from_value(input["checkpoint"].clone()).unwrap();
+        let mut muxer = Muxer::from_exp3_checkpoint(checkpoint, KEY).unwrap();
+        assert_eq!(muxer.decide(&()).unwrap().action(), input["next"]);
+    }
     #[test]
     fn exp3_checkpoint_rejects_ticket_propensity_mismatch_before_valid_restore() {
         let (_, handoff) = exp3_handoff();

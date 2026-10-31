@@ -121,6 +121,52 @@ fn finite_or_zero(value: f64) -> f64 {
     }
 }
 
+/// Whether selection needs an exploration bonus outside the objective weights.
+///
+/// The UCB bonus otherwise reaches the scalar score only through an
+/// [`Extract::OkRateUcb`] objective scaled by its weight. Without a positively
+/// weighted one (for example a cost-only preference), selection would never
+/// explore after the first pull of each arm.
+fn needs_weight_free_exploration(objectives: &[Objective]) -> bool {
+    !objectives.iter().any(|objective| {
+        objective.extract == Extract::OkRateUcb
+            && objective.value.is_none()
+            && finite_or_zero(objective.weight) > 0.0
+    })
+}
+
+/// Add each candidate's UCB bonus to its score and pick the best frontier arm
+/// with the same stable tie-break as [`select_candidate_assessments`].
+fn choose_with_weight_free_exploration(
+    candidates: &mut [CandidateDebug],
+    generic: &CandidateAssessmentSelection,
+) -> Option<String> {
+    for candidate in candidates.iter_mut() {
+        candidate.score = finite_or_zero(candidate.score + candidate.ucb);
+    }
+    generic
+        .candidates
+        .iter()
+        .filter(|row| generic.frontier.contains(&row.arm))
+        .map(|row| {
+            let ucb = candidates
+                .iter()
+                .find(|candidate| candidate.name == row.arm)
+                .map_or(0.0, |candidate| candidate.ucb);
+            (row.arm.as_str(), finite_or_zero(row.score + ucb))
+        })
+        .fold(None, |best: Option<(&str, f64)>, (arm, score)| match best {
+            Some((best_arm, best_score))
+                if !(score > best_score
+                    || ((score - best_score).abs() <= 1e-12 && arm < best_arm)) =>
+            {
+                Some((best_arm, best_score))
+            }
+            _ => Some((arm, score)),
+        })
+        .map(|(arm, _)| arm.to_owned())
+}
+
 fn finite_scalar_weight(weight: f64, mut values: impl Iterator<Item = f64>) -> f64 {
     let weight = finite_or_zero(weight);
     if values.any(|value| !(weight * value).is_finite()) {
@@ -1027,6 +1073,15 @@ pub fn default_objectives() -> Vec<Objective> {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MabConfig {
     /// UCB exploration coefficient.
+    ///
+    /// The bonus normally enters through an [`Extract::OkRateUcb`] objective,
+    /// scaled by its weight. When no such objective has a positive weight (for
+    /// example a cost-only preference), the bonus is added to each frontier
+    /// candidate's scalar score directly, so selection still explores. That
+    /// bonus is in scalar-score units, so scale this coefficient to the
+    /// weighted objective values it competes with. Keep an
+    /// `OkRateUcb` objective (weight 0 is enough) so under-sampled arms stay on
+    /// the Pareto frontier.
     pub exploration_c: f64,
     /// Objective dimensions for the Pareto frontier and scalarization.
     ///
@@ -1469,6 +1524,12 @@ fn explore_first_decision(
 /// let sel = select_mab(&arms, &summaries, MabConfig::default());
 /// assert_eq!(sel.chosen, "a");
 /// ```
+///
+/// # Panics
+///
+/// Panics once every arm has been explored if `cfg.objectives` is empty, an
+/// objective weight is negative, or an arm name is empty. Use
+/// [`try_select_mab`] to get an error instead.
 pub fn select_mab(
     arms_in_order: &[String],
     summaries: &BTreeMap<String, Summary>,
@@ -1477,12 +1538,54 @@ pub fn select_mab(
     select_mab_explain(arms_in_order, summaries, cfg).selection
 }
 
+/// Fallible [`select_mab`].
+///
+/// # Errors
+///
+/// Returns an error when `cfg.objectives` is empty or an objective weight is
+/// negative, whether or not selection is still exploring, and for any other
+/// input that [`select_mab`] would panic on, such as an empty arm name.
+pub fn try_select_mab(
+    arms_in_order: &[String],
+    summaries: &BTreeMap<String, Summary>,
+    cfg: MabConfig,
+) -> Result<Selection, logp::Error> {
+    if cfg.objectives.is_empty() {
+        return Err(logp::Error::Domain(
+            "select_mab: objectives must not be empty",
+        ));
+    }
+    if cfg
+        .objectives
+        .iter()
+        .any(|objective| objective.weight < 0.0)
+    {
+        return Err(logp::Error::Domain(
+            "select_mab: objective weights must be non-negative",
+        ));
+    }
+    try_select_mab_explain(arms_in_order, summaries, cfg).map(|decision| decision.selection)
+}
+
 /// Like `select_mab`, but also returns metadata about constraints and explore-first behavior.
+///
+/// # Panics
+///
+/// Panics under the same conditions as [`select_mab`].
 pub fn select_mab_explain(
     arms_in_order: &[String],
     summaries: &BTreeMap<String, Summary>,
     cfg: MabConfig,
 ) -> MabSelectionDecision {
+    try_select_mab_explain(arms_in_order, summaries, cfg)
+        .expect("quality summary adapter produces valid candidate assessments")
+}
+
+fn try_select_mab_explain(
+    arms_in_order: &[String],
+    summaries: &BTreeMap<String, Summary>,
+    cfg: MabConfig,
+) -> Result<MabSelectionDecision, logp::Error> {
     let (eligible_arms, constraints_fallback_used) =
         apply_base_constraints(arms_in_order, summaries, &cfg);
     let arms_in_order: &[String] = &eligible_arms;
@@ -1493,7 +1596,12 @@ pub fn select_mab_explain(
         .find(|a| summaries.get(*a).copied().unwrap_or_default().calls == 0)
         .cloned();
     if let Some(chosen) = explore_choice {
-        return explore_first_decision(chosen, eligible_arms, constraints_fallback_used, cfg);
+        return Ok(explore_first_decision(
+            chosen,
+            eligible_arms,
+            constraints_fallback_used,
+            cfg,
+        ));
     }
 
     let total_calls: f64 = arms_in_order
@@ -1571,11 +1679,13 @@ pub fn select_mab_explain(
             ),
         })
         .collect();
-    let generic = select_candidate_assessments(&assessments, &metric_objectives)
-        .expect("quality summary adapter produces valid candidate assessments");
-    let best_name = generic
-        .chosen
-        .unwrap_or_else(|| arms_in_order.first().cloned().unwrap_or_default());
+    let generic = select_candidate_assessments(&assessments, &metric_objectives)?;
+    let chosen = if needs_weight_free_exploration(&cfg.objectives) {
+        choose_with_weight_free_exploration(&mut candidates, &generic)
+    } else {
+        generic.chosen
+    };
+    let best_name = chosen.unwrap_or_else(|| arms_in_order.first().cloned().unwrap_or_default());
     let frontier_names = generic.frontier;
 
     let sel = Selection {
@@ -1584,7 +1694,7 @@ pub fn select_mab_explain(
         candidates,
         config: cfg,
     };
-    MabSelectionDecision {
+    Ok(MabSelectionDecision {
         selection: sel,
         eligible_arms,
         constraints_fallback_used,
@@ -1592,7 +1702,7 @@ pub fn select_mab_explain(
         drift_guard: None,
         catkl_guard: None,
         cusum_guard: None,
-    }
+    })
 }
 
 /// Monitored deterministic selection (baseline vs recent drift + uncertainty-aware rates).
@@ -2000,9 +2110,13 @@ pub(crate) fn select_mab_monitored_explain_with_summaries_and_scores(
     }
     let generic = select_candidate_assessments(&assessments, &metric_objectives)
         .expect("monitored adapter produces valid candidate assessments");
-    let best_name = generic
-        .chosen
-        .unwrap_or_else(|| eligible_after_cusum.first().cloned().unwrap_or_default());
+    let chosen = if needs_weight_free_exploration(&base.objectives) {
+        choose_with_weight_free_exploration(&mut candidates, &generic)
+    } else {
+        generic.chosen
+    };
+    let best_name =
+        chosen.unwrap_or_else(|| eligible_after_cusum.first().cloned().unwrap_or_default());
     let frontier_names = generic.frontier;
 
     let sel = Selection {
@@ -2693,5 +2807,65 @@ mod tests {
         // Sanity: chosen meets constraints.
         let s = m.get(&sel.chosen).copied().unwrap_or_default();
         assert!(s.junk_rate() <= 0.1);
+    }
+
+    #[test]
+    fn try_select_mab_rejects_unusable_objectives_instead_of_panicking() {
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let mut explored = BTreeMap::new();
+        explored.insert("a".to_string(), s(10, 9, 0, 0, 10, 100));
+        explored.insert("b".to_string(), s(10, 8, 0, 0, 1, 100));
+        let unexplored = BTreeMap::new();
+
+        for summaries in [&explored, &unexplored] {
+            let empty = MabConfig::default().with_objectives(Vec::new());
+            assert!(try_select_mab(&arms, summaries, empty).is_err());
+            let negative = MabConfig::default().with_cost_weight(-1.0);
+            assert!(try_select_mab(&arms, summaries, negative).is_err());
+        }
+
+        let empty_name = vec![String::new(), "b".to_string()];
+        let mut named = explored.clone();
+        named.insert(String::new(), s(10, 9, 0, 0, 10, 100));
+        assert!(try_select_mab(&empty_name, &named, MabConfig::default()).is_err());
+
+        let cfg = MabConfig::default().with_cost_weight(0.5);
+        let fallible = try_select_mab(&arms, &explored, cfg.clone()).unwrap();
+        assert_eq!(fallible.chosen, select_mab(&arms, &explored, cfg).chosen);
+    }
+
+    #[test]
+    fn cost_only_preference_still_explores_an_unlucky_cheap_arm() {
+        // `b` had one expensive first sample; `a` is reliably mid-priced.
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let mut m = BTreeMap::new();
+        m.insert("a".to_string(), s(100, 100, 0, 0, 200, 100));
+        m.insert("b".to_string(), s(1, 1, 0, 0, 3, 1));
+        let cfg = MabConfig::default().with_objectives(vec![
+            Objective::maximize(Extract::OkRateUcb, 0.0),
+            Objective::minimize(Extract::MeanCost, 1.0),
+        ]);
+        let sel = select_mab(&arms, &m, cfg);
+        assert_eq!(sel.chosen, "b");
+        let b = sel.candidates.iter().find(|c| c.name == "b").unwrap();
+        assert!((b.score - (-3.0 + b.ucb)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn positive_ok_rate_weight_keeps_ucb_inside_its_objective() {
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let mut m = BTreeMap::new();
+        m.insert("a".to_string(), s(100, 100, 0, 0, 200, 100));
+        m.insert("b".to_string(), s(1, 1, 0, 0, 3, 1));
+        let cfg = MabConfig::default().with_cost_weight(1.0);
+        let sel = select_mab(&arms, &m, cfg);
+        for c in &sel.candidates {
+            let sum: f64 = c
+                .objective_values
+                .iter()
+                .map(|o| o.scalar_contribution)
+                .sum();
+            assert!((c.score - sum).abs() < 1e-12);
+        }
     }
 }

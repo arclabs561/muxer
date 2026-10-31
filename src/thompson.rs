@@ -316,7 +316,15 @@ impl ThompsonSampling {
                 return Some(a);
             }
         }
+        Self::sample_posterior_max(cfg, stats, arms_in_order, rng)
+    }
 
+    fn sample_posterior_max<'a, R: Rng + ?Sized>(
+        cfg: &ThompsonConfig,
+        stats: &mut BTreeMap<String, BetaStats>,
+        arms_in_order: &'a [String],
+        rng: &mut R,
+    ) -> Option<&'a String> {
         let mut best: Option<&'a String> = None;
         let mut best_sample = f64::NEG_INFINITY;
         for a in arms_in_order {
@@ -332,17 +340,22 @@ impl ThompsonSampling {
         best
     }
 
-    /// Select using an explicitly supplied random stream.
+    /// Select using an explicitly supplied random stream, with the caller
+    /// deciding which arms count as explored.
     ///
     /// This is crate-visible for correlated profiles that must checkpoint their
     /// random continuation. Public [`Self::decide`] retains its historical
-    /// internal seeded stream.
-    pub(crate) fn decide_with_rng<R: Rng + ?Sized>(
+    /// internal seeded stream and treats an arm as explored once it has
+    /// feedback. Correlated profiles key explore-first on committed issuance,
+    /// so an arm with an in-flight decision is not chosen again before its
+    /// feedback.
+    pub(crate) fn decide_with_rng_explored<R: Rng + ?Sized>(
         &mut self,
         arms_in_order: &[String],
         rng: &mut R,
+        explored: impl Fn(&str, &BetaStats) -> bool,
     ) -> Option<Decision> {
-        Self::decide_from_parts(&self.cfg, &mut self.stats, arms_in_order, rng)
+        Self::decide_from_parts_explored(&self.cfg, &mut self.stats, arms_in_order, rng, explored)
     }
 
     fn decide_from_parts<R: Rng + ?Sized>(
@@ -351,12 +364,22 @@ impl ThompsonSampling {
         arms_in_order: &[String],
         rng: &mut R,
     ) -> Option<Decision> {
+        Self::decide_from_parts_explored(cfg, stats, arms_in_order, rng, |_, s| s.uses > 0)
+    }
+
+    fn decide_from_parts_explored<R: Rng + ?Sized>(
+        cfg: &ThompsonConfig,
+        stats: &mut BTreeMap<String, BetaStats>,
+        arms_in_order: &[String],
+        rng: &mut R,
+        explored: impl Fn(&str, &BetaStats) -> bool,
+    ) -> Option<Decision> {
         if arms_in_order.is_empty() {
             return None;
         }
         for a in arms_in_order {
             let s = *Self::get_or_create_stats_in(cfg, stats, a);
-            if s.uses == 0 {
+            if !explored(a, &s) {
                 return Some(Decision {
                     policy: DecisionPolicy::Thompson,
                     chosen: a.clone(),
@@ -365,7 +388,7 @@ impl ThompsonSampling {
                 });
             }
         }
-        let chosen = Self::select_with_rng(cfg, stats, arms_in_order, rng)?.clone();
+        let chosen = Self::sample_posterior_max(cfg, stats, arms_in_order, rng)?.clone();
         Some(Decision {
             policy: DecisionPolicy::Thompson,
             chosen,
@@ -545,7 +568,10 @@ mod tests {
         for _ in 0..20 {
             assert_eq!(
                 legacy.decide(&arms).unwrap().chosen,
-                injected.decide_with_rng(&arms, &mut rng).unwrap().chosen
+                injected
+                    .decide_with_rng_explored(&arms, &mut rng, |_, s| s.uses > 0)
+                    .unwrap()
+                    .chosen
             );
         }
     }

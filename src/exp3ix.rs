@@ -439,6 +439,26 @@ impl Exp3Ix {
         eligible_in_order: &[String],
         decision_seed: u64,
     ) -> Option<Decision> {
+        self.decide_deterministic_filtered_explored(
+            arms_in_order,
+            eligible_in_order,
+            decision_seed,
+            |_, uses| uses > 0,
+        )
+    }
+
+    /// Like [`Self::decide_deterministic_filtered`], with the caller deciding
+    /// which arms count as explored from the arm name and its feedback count.
+    ///
+    /// Correlated profiles key explore-first on committed issuance, so an arm
+    /// with an in-flight decision is not chosen again before its feedback.
+    pub(crate) fn decide_deterministic_filtered_explored(
+        &mut self,
+        arms_in_order: &[String],
+        eligible_in_order: &[String],
+        decision_seed: u64,
+        explored: impl Fn(&str, u64) -> bool,
+    ) -> Option<Decision> {
         self.ensure_arms(arms_in_order);
         if self.arms.is_empty() || eligible_in_order.is_empty() {
             return None;
@@ -455,7 +475,7 @@ impl Exp3Ix {
                 .position(|x| x == a)
                 .and_then(|i| self.uses.get(i).copied())
                 .unwrap_or(0);
-            if uses == 0 {
+            if !explored(a, uses) {
                 let actual_probs = eligible_in_order
                     .iter()
                     .map(|candidate| (candidate.clone(), if candidate == a { 1.0 } else { 0.0 }))
