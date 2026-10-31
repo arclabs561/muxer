@@ -327,6 +327,8 @@ impl TriageSession {
     ///
     /// - Updates the arm's CUSUM bank (may trigger an alarm).
     /// - Records the outcome in the coverage tracker under the bin derived from `context`.
+    ///   A total failure ([`OutcomeIdx::FAIL`]) counts as hard junk there, so cell
+    ///   ranking localizes failure regressions as well as junk regressions.
     ///
     /// Returns the CUSUM bank update for the arm (or `None` if the arm is unknown).
     pub fn observe(
@@ -345,7 +347,7 @@ impl TriageSession {
         }
 
         // Update cell tracker with outcome classification.
-        let hard_junk = outcome_idx == OutcomeIdx::HARD_JUNK;
+        let hard_junk = outcome_idx == OutcomeIdx::HARD_JUNK || outcome_idx == OutcomeIdx::FAIL;
         let soft_junk = outcome_idx == OutcomeIdx::SOFT_JUNK;
         self.tracker.record(arm, bin, hard_junk, soft_junk);
 
@@ -587,6 +589,35 @@ mod tests {
             picks[0].0.arm, "arm_b",
             "top cell should be the alarmed arm"
         );
+    }
+
+    /// A total-failure regression alarms through the fail-heavy alternative,
+    /// so cell ranking must also see the failures: the top investigation
+    /// cell is the context bin where they occur, whichever bin that is.
+    #[test]
+    fn top_alarmed_cell_follows_total_failures() {
+        let one_arm = vec!["a".to_string()];
+        for fail_ctx_first in [true, false] {
+            let (fail_ctx, clean_ctx) = if fail_ctx_first {
+                ([0.9, 0.9], [0.1, 0.1])
+            } else {
+                ([0.1, 0.1], [0.9, 0.9])
+            };
+            let cfg = TriageSessionConfig::default();
+            let mut session = TriageSession::new(&one_arm, cfg.clone()).unwrap();
+            for _ in 0..40 {
+                session.observe("a", OutcomeIdx::FAIL, &fail_ctx);
+                session.observe("a", OutcomeIdx::OK, &clean_ctx);
+            }
+            assert!(session.any_alarmed());
+            let bins = session.tracker().active_bins();
+            let top = session.top_alarmed_cells(&bins, 1);
+            assert_eq!(
+                top[0].0.context_bin,
+                crate::context_bin(&fail_ctx, cfg.bin_cfg),
+                "fail_ctx_first={fail_ctx_first}"
+            );
+        }
     }
 
     #[test]
