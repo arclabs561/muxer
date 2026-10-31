@@ -213,3 +213,55 @@ fn bernoulli_corrupt_child() {
     let state: Handoff = serde_json::from_slice(&bytes).unwrap();
     assert!(Muxer::from_bernoulli_checkpoint(state.checkpoint, BUILD_KEY).is_ok());
 }
+
+fn in_flight_checkpoint() -> Value {
+    let mut muxer = Muxer::new(actions(), policy(5)).unwrap();
+    let in_flight = muxer.decide(&()).unwrap();
+    assert_eq!(in_flight.action(), "a");
+    serde_json::to_value(muxer.bernoulli_checkpoint(BUILD_KEY).unwrap()).unwrap()
+}
+
+#[test]
+fn bernoulli_checkpoint_keeps_in_flight_issuance_for_explore_first() {
+    let wire = in_flight_checkpoint();
+    assert_eq!(wire["policy"]["issued"], json!([["a", 1]]));
+    let output = support::run_checkpoint_child(
+        "bernoulli_issuance_child",
+        &serde_json::to_vec(&json!({"checkpoint": wire, "next": "b"})).unwrap(),
+    );
+    support::assert_child_success(&output);
+}
+
+/// Checkpoints written before issuance tracking omit `issued`; restore
+/// defaults it from feedback counts, so the unanswered `a` counts as unexplored.
+#[test]
+fn bernoulli_checkpoint_without_issuance_loads_with_feedback_counts() {
+    let mut wire = in_flight_checkpoint();
+    wire["policy"].as_object_mut().unwrap().remove("issued");
+    let output = support::run_checkpoint_child(
+        "bernoulli_issuance_child",
+        &serde_json::to_vec(&json!({"checkpoint": wire, "next": "a"})).unwrap(),
+    );
+    support::assert_child_success(&output);
+}
+
+#[test]
+#[ignore = "subprocess helper"]
+fn bernoulli_issuance_child() {
+    let mut bytes = Vec::new();
+    std::io::stdin().read_to_end(&mut bytes).unwrap();
+    let input: Value = serde_json::from_slice(&bytes).unwrap();
+    let mut invented = input["checkpoint"].clone();
+    invented["policy"]["issued"] = json!([["z", 1]]);
+    let invented: BernoulliMuxerCheckpoint = serde_json::from_value(invented).unwrap();
+    match Muxer::from_bernoulli_checkpoint(invented, BUILD_KEY) {
+        Ok(_) => panic!("checkpoint with an unknown issued action restored"),
+        Err(err) => assert!(err
+            .to_string()
+            .contains("Bernoulli checkpoint repeats or invents an issued action")),
+    }
+    let checkpoint: BernoulliMuxerCheckpoint =
+        serde_json::from_value(input["checkpoint"].clone()).unwrap();
+    let mut muxer = Muxer::from_bernoulli_checkpoint(checkpoint, BUILD_KEY).unwrap();
+    assert_eq!(muxer.decide(&()).unwrap().action(), input["next"]);
+}

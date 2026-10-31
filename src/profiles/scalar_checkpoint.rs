@@ -12,6 +12,11 @@ pub(crate) struct Exp3ProfileCheckpoint {
     build_key: String,
     universe: Vec<String>,
     inner: crate::exp3ix::Exp3IxCheckpoint,
+    /// Committed decisions per action. Absent in checkpoints written before
+    /// issuance tracking; restore then defaults each action to its feedback
+    /// count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    issued: Option<Vec<(String, u64)>>,
 }
 
 #[cfg(all(feature = "serde", feature = "boltzmann"))]
@@ -131,6 +136,12 @@ impl Exp3Profile {
             build_key: build_key.into(),
             universe: self.universe.clone(),
             inner: inner.checkpoint_state()?,
+            issued: Some(
+                self.issued
+                    .iter()
+                    .map(|(action, count)| (action.clone(), *count))
+                    .collect(),
+            ),
         })
     }
     pub(crate) fn from_checkpoint_state(
@@ -152,9 +163,27 @@ impl Exp3Profile {
                 "EXP3 checkpoint universe disagrees with kernel",
             ));
         }
+        let issued = match state.issued {
+            Some(entries) => {
+                let mut issued = std::collections::BTreeMap::new();
+                for (action, count) in entries {
+                    if !state.universe.contains(&action) || issued.insert(action, count).is_some() {
+                        return Err(PolicyError::new(
+                            "EXP3 checkpoint repeats or invents an issued action",
+                        ));
+                    }
+                }
+                issued
+            }
+            None => {
+                let snapshot = inner.snapshot();
+                snapshot.arms.into_iter().zip(snapshot.uses).collect()
+            }
+        };
         Ok(Self {
             inner,
             universe: state.universe,
+            issued,
         })
     }
     pub(crate) fn checkpoint_expectation(&self) -> FeedbackExpectation {

@@ -264,3 +264,70 @@ fn boltzmann_profile_records_runtime_sampled_distribution() {
         Ok(EventDisposition::Accepted)
     );
 }
+
+/// Explore-first counts committed decisions, so in-flight decisions issued
+/// before any feedback cover every action instead of repeating the first one.
+#[cfg(feature = "stochastic")]
+#[test]
+fn thompson_profiles_explore_on_issuance_under_delayed_feedback() {
+    use muxer::{BernoulliThompson, FractionalThompson, ThompsonConfig};
+    let mut bernoulli = Muxer::new(
+        actions(),
+        BernoulliThompson::with_seed(ThompsonConfig::default(), 5),
+    )
+    .unwrap();
+    let mut fractional = Muxer::new(
+        actions(),
+        FractionalThompson::with_seed(ThompsonConfig::default(), 5),
+    )
+    .unwrap();
+    for (inflight, first_sampled) in [
+        (
+            (0..3)
+                .map(|_| bernoulli.decide(&()).unwrap())
+                .collect::<Vec<_>>(),
+            bernoulli.decide(&()).unwrap(),
+        ),
+        (
+            (0..3).map(|_| fractional.decide(&()).unwrap()).collect(),
+            fractional.decide(&()).unwrap(),
+        ),
+    ] {
+        let issued: Vec<&str> = inflight.iter().map(|d| d.action()).collect();
+        assert_eq!(issued, ["a", "b", "c"]);
+        assert!(inflight
+            .iter()
+            .all(|d| d.reason() == DecisionReason::ExploreFirst));
+        assert_eq!(first_sampled.reason(), DecisionReason::PosteriorSample);
+    }
+}
+
+/// EXP3 logs point-mass propensities only for the first issue of each action;
+/// later in-flight decisions are sampled with their true propensity, so equal
+/// rewards leave identical arms with nearly equal probabilities.
+#[cfg(feature = "stochastic")]
+#[test]
+fn exp3_profile_explores_on_issuance_under_delayed_feedback() {
+    use muxer::{Exp3IxConfig, Exp3Profile};
+    let mut muxer = Muxer::new(
+        actions(),
+        Exp3Profile::new(actions(), Exp3IxConfig::default()).unwrap(),
+    )
+    .unwrap();
+    let reward = BoundedReward::new(0.8).unwrap();
+    let inflight: Vec<_> = (0..200).map(|_| muxer.decide(&()).unwrap()).collect();
+    let point_mass = inflight
+        .iter()
+        .filter(|d| matches!(d.probability(), ProbabilityAvailability::Exact(p) if p.get() == 1.0))
+        .map(|d| d.action())
+        .collect::<Vec<_>>();
+    assert_eq!(point_mass, ["a", "b", "c"]);
+    for d in &inflight {
+        muxer.tell(d.id(), reward).unwrap();
+    }
+    let probs = muxer.policy().inner().snapshot().probs;
+    assert!(
+        (probs[0] - probs[1]).abs() < 0.05 && (probs[0] - probs[2]).abs() < 0.05,
+        "identical arms: probs={probs:?}"
+    );
+}
