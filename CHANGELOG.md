@@ -94,6 +94,10 @@
 
 ### Fixed
 
+- `triage_fraction` now bounds the share of picks sent to alarmed arms for
+  single picks too. The triage count was rounded up with a minimum of one, so
+  every k = 1 pick (all of `Muxer<QualityProfile>::decide`) went to the alarmed
+  arm; it is now rounded stochastically from the selection seed.
 - Router and window restoration now reject invalid capacities; runtime arm
   insertion rejects empty names.
 - Generic assessment rejects empty objective lists and negative scalarization

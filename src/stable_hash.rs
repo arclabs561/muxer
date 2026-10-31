@@ -29,7 +29,7 @@ pub fn stable_hash64_u64(seed: u64, x: u64) -> u64 {
 /// Deterministic u64-to-`[0,1)` mapping (53-bit mantissa precision).
 ///
 /// Useful for seeded sampling from probability distributions without persisting RNG state.
-#[cfg(feature = "stochastic")]
+/// Ungated: the router's triage rounding uses it in every build.
 #[must_use]
 pub(crate) fn u01_from_seed(seed: u64) -> f64 {
     let x = splitmix64(seed);
