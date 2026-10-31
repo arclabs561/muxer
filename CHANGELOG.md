@@ -124,6 +124,13 @@
 - The `boltzmann` feature now builds without also enabling `stochastic`.
 - The real-data evaluator now rejects incomplete or modified derived outputs
   with path-specific provenance errors before computing metrics.
+- `Router::new` and router restoration reject an empty `mab.base.objectives`
+  list or a negative objective weight. These configurations were accepted
+  and then panicked in `Router::select`.
+- `TriageSession` counts total failures (`OutcomeIdx::FAIL`) as hard junk in
+  its cell tracker, so `top_alarmed_cells` points at the context bin where a
+  failure regression occurs. Failures previously added no cell badness, and
+  the investigation cell was picked by tie-break.
 
 ## [0.5.3]
 

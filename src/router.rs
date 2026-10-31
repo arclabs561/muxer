@@ -204,6 +204,18 @@ impl RouterConfig {
                 "RouterConfig: triage_fraction must be finite and in [0, 1]",
             ));
         }
+        // Selection scalarizes with these weights and rejects an empty or
+        // negatively weighted objective list, so reject it here instead.
+        if self.mab.base.objectives.is_empty() {
+            return Err(logp::Error::Domain(
+                "RouterConfig: mab.base.objectives must not be empty",
+            ));
+        }
+        if self.mab.base.objectives.iter().any(|o| o.weight < 0.0) {
+            return Err(logp::Error::Domain(
+                "RouterConfig: mab.base.objectives weights must be non-negative",
+            ));
+        }
         if !self.enable_monitoring {
             return Ok(());
         }
@@ -1515,6 +1527,27 @@ mod tests {
     }
 
     // --- Basic invariants ---
+
+    /// Selection cannot scalarize an empty or negatively weighted objective
+    /// list, so `Router::new` must reject it instead of `select` panicking.
+    #[test]
+    fn router_new_rejects_negative_or_empty_objectives() {
+        let mut negative = RouterConfig::default();
+        negative.mab.base = negative.mab.base.with_cost_weight(-0.5);
+        assert!(Router::new(arms(2), negative).is_err());
+
+        let mut empty = RouterConfig::default();
+        empty.mab.base = empty.mab.base.with_objectives(Vec::new());
+        assert!(Router::new(arms(2), empty).is_err());
+
+        // Zero weights stay valid: they keep the Pareto axis.
+        let mut zero = RouterConfig::default();
+        zero.mab.base = zero.mab.base.with_cost_weight(0.0);
+        let mut r = Router::new(arms(2), zero).unwrap();
+        assert!(r.observe("arm0", clean()));
+        assert!(r.observe("arm1", clean()));
+        assert_eq!(r.select(1, 0).chosen.len(), 1);
+    }
 
     #[test]
     fn router_select_returns_member_of_arms() {
