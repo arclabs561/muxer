@@ -377,7 +377,12 @@ fn router_select_from_constrains_triage_picks_and_cells() {
         threshold: 2.0,
         ..TriageSessionConfig::default()
     };
-    let cfg = RouterConfig::default().with_triage_cfg(tcfg);
+    // A single pick triages with probability `triage_fraction`; 1.0 makes the
+    // triage path certain so this test exercises its eligibility constraint.
+    let cfg = RouterConfig {
+        triage_fraction: 1.0,
+        ..RouterConfig::default().with_triage_cfg(tcfg)
+    };
     let mut r = Router::new(vec!["excluded".to_string(), "eligible".to_string()], cfg).unwrap();
 
     for _ in 0..30 {

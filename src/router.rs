@@ -640,8 +640,16 @@ impl Router {
         let triage_k = if available_alarmed > 0 && remaining_k > 0 && self.cfg.triage_fraction > 0.0
         {
             let normal_reserve = usize::from(remaining_k > 1);
-            ((remaining_k as f64 * self.cfg.triage_fraction).ceil() as usize)
-                .max(1)
+            // Round the expected triage count stochastically from the seed, so the
+            // share of picks that go to alarmed arms matches `triage_fraction` in
+            // expectation even for single picks (k = 1); a ceiling sent every
+            // single pick to the alarmed arm.
+            let expected = remaining_k as f64 * self.cfg.triage_fraction;
+            let whole = expected.floor();
+            let extra = usize::from(
+                crate::stable_hash::u01_from_seed(seed ^ 0x5452_4641) < expected - whole,
+            );
+            (whole as usize + extra)
                 .min(available_alarmed)
                 .min(remaining_k - normal_reserve)
         } else {
