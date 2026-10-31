@@ -3,10 +3,6 @@
 status: implemented
 date: 2026-07-09
 grounded-in:
-- `.claude/reports/useful-2026-03-15.md`
-- `.claude/reports/enrich-2026-03-15.md`
-- `docs/design/bandit-theory-grounding.md`
-- `docs/design/post-round-3-roadmap.md`
 - Dudik, Langford, and Li (2011), arXiv:1103.4601
 - Swaminathan and Joachims (2015), arXiv:1502.02362
 - Wang, Agarwal, and Dudik (2017), arXiv:1612.01205

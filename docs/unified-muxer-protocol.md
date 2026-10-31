@@ -7,7 +7,7 @@ date: 2026-09-13
 governing-design: [architecture](unified-muxer-architecture.md)
 
 This document specifies the accepted runtime contract. Names below are
-interface notation; use the [migration guide](../UNIFIED_MUXER.md) and runnable
+interface notation; use the [migration guide](UNIFIED_MUXER.md) and runnable
 examples for exact Rust types. All profiles support a consuming in-memory
 checkpoint handoff. The optional serialized checkpoint is concrete to
 `QualityProfile`; it does not provide external-model loading or durable
@@ -250,7 +250,7 @@ channel sets are finite and validated at issuance.
 The built-in runtime promises bounded entry counts, not bounded bytes for
 arbitrary custom ticket types. Profiles document per-ticket storage; applications
 bound feature/payload sizes. Size and retention defaults are chosen from the
-roadmap benchmark, exposed through builders and visible in diagnostics.
+lifecycle benchmark, exposed through builders and visible in diagnostics.
 The core does not promise durable exactly-once delivery. Storage adapters own
 durable event deduplication and crash recovery.
 
@@ -288,7 +288,7 @@ to expire those decisions. This supports continuous replacement without
 training an old ticket against the new model. A compatible migration is a
 separate tested operation, never inferred from equal vector length.
 The first implementation may require drain-before-replace; it must report that
-restriction rather than claim seamless refresh until retained epochs exist.
+restriction rather than claim uninterrupted refresh until retained epochs exist.
 
 ## 6. Probabilities, batches and evaluation
 

@@ -15,17 +15,14 @@ and a small typed policy extension contract. Keep standalone statistical
 primitives usable. Unify the interaction lifecycle and its invariants; let
 algorithms retain the distinct state and evidence they require.
 
-The user authorized implementation of this researched recommendation on
-2026-09-13. This design records the accepted direction, not a claim that every
-gate has passed or a stable API promise.
+This design records the accepted direction (2026-09-13), not a claim that
+every gate has passed or a stable API promise.
 Read this document first, then the [protocol](unified-muxer-protocol.md),
-[delivery roadmap](unified-muxer-roadmap.md), and
-[source evidence](unified-muxer-evidence.md). The protocol specifies the
-otherwise ambiguous behavior behind the examples.
+which specifies the otherwise ambiguous behavior behind the examples.
 
 ## Problem and present architecture
 
-The user's requirements are cumulative: cohesive API, sound mathematical
+The requirements are cumulative: cohesive API, sound mathematical
 grounding, externally trained components, and an easy, enjoyable common case.
 The existing crate has useful parts of this system already:
 
@@ -42,14 +39,14 @@ Selection and feedback have different ownership today. `Router::select` is
 read-only; policies may advance random state. Router feedback identifies an
 observation, not an issued decision. Triage consumes initial observations but
 does not replay corrected labels. These are live contracts, not incidental
-details a rename can resolve. See the evidence map for source locations.
+details a rename can resolve.
 
 ## Options considered
 
 1. **Facade over everything indefinitely.** Smallest first patch, but leaves
    different correlation and feedback semantics behind a uniform spelling.
    Use only as a migration stage with a deletion gate.
-2. **Universal `Muxer<E, P, I, A, R>`.** Mirrors the conversation's conceptual
+2. **Universal `Muxer<E, P, I, A, R>`.** Mirrors a conceptual
    diagram, but requires every algorithm to expose estimator, preference,
    information and regime objects, even EXP3 or an externally supplied action
    distribution. Reject as the mandatory public contract.
@@ -61,8 +58,8 @@ details a rename can resolve. See the evidence map for source locations.
 ## User experience
 
 These illustrate the implemented API; complete executable consumers live in
-`examples/unified_*.rs`. See the [migration guide](../UNIFIED_MUXER.md) for
-delivered semantics and the [roadmap](unified-muxer-roadmap.md) for remaining gates.
+`examples/unified_*.rs`. See the [migration guide](UNIFIED_MUXER.md) for
+delivered semantics and remaining boundaries.
 
 ```rust,ignore
 let mut mux = Muxer::bernoulli(["small", "large"])?;
@@ -119,8 +116,7 @@ serializes runtime operations; adapters choose locks or message passing.
 Proposed modules are `interaction` (public records), `runtime` (lifecycle),
 and `profiles` (recipes). Existing policy and monitoring modules retain their
 names and algorithms. Start these as modules in this crate, not new crates.
-Leave `tower`, HTTP and storage in companions, consistent with
-[the Tower design](muxer-tower.md).
+Leave `tower`, HTTP and storage in companion crates.
 
 Use associated context, canonical feedback, ticket and prepared-effect types on
 the policy contract. A context can be `()`, a feature slice or caller-defined
@@ -188,7 +184,7 @@ forcing stateless callers to manufacture feedback.
 - Universal regret, false-alarm or safety guarantees for composed profiles:
   current empirical semantics remain explicit.
 - Immediate removal of public primitives or a wholesale rewrite: compatibility
-  wrappers retire only after the roadmap's migration gates.
+  wrappers retire only after explicit migration gates.
 
 ## Tradeoffs and reversal gates
 
@@ -201,8 +197,9 @@ Reject this abstraction if the first four executable consumers require
 policy-name switches in the runtime, fabricated evidence, or separate feedback
 lifecycles. Revise it if the simple example exceeds five interaction statements
 or needs explicit generic parameters. Measure overhead before choosing a
-default retention capacity; do not make an unmeasured latency promise.
+default retention capacity; do not make an unmeasured latency promise
+(see [performance](UNIFIED_MUXER_PERFORMANCE.md)).
 
-The roadmap resolves implementation in dependency order. API publication and
-legacy retirement remain explicit review gates; the proposed contracts are
-concrete enough to prototype without pretending those gates have passed.
+API publication and legacy retirement remain explicit review gates; the
+contracts are concrete enough to build on without pretending those gates have
+passed.

@@ -201,6 +201,5 @@ the target is uniform. IPS recovers the target's value while the naive logged
 reward mean reflects the logger's selection bias. This fixture is not a claim
 that real bandit logs contain unobserved outcomes.
 
-The [architecture](design/unified-muxer-architecture.md),
-[protocol](design/unified-muxer-protocol.md) and
-[roadmap](design/unified-muxer-roadmap.md) record the accepted design and gates.
+The [architecture](unified-muxer-architecture.md) and
+[protocol](unified-muxer-protocol.md) record the accepted design and contracts.
