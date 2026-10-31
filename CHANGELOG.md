@@ -4,6 +4,9 @@
 
 ### Added
 
+- `try_select_mab`, which returns an error for an empty objective list, a
+  negative objective weight, or an empty arm name. `select_mab` and
+  `select_mab_explain` now document these panics.
 - Optional serde `BernoulliMuxerCheckpoint` for complete same-build runtime
   restart, preserving posterior/configuration, both RNG continuation paths,
   pending feedback and retained policy epochs. Quality and Bernoulli share one
@@ -56,6 +59,15 @@
 
 ### Changed
 
+- When no `Extract::OkRateUcb` objective has a positive weight (for example a
+  cost-only preference), `select_mab` and monitored selection add the UCB
+  bonus to each frontier candidate's scalar score directly. The bonus was
+  previously scaled by the ok-rate weight, so such preferences never explored
+  and could lock in an arm after one unlucky sample. Selection with a
+  positive ok-rate weight is unchanged.
+- `docs/QUICKSTART.md` calibrates the triage threshold with
+  `calibrate_cusum_threshold` instead of recommending the default, which
+  false-alarms on most 500-observation runs of an unchanged arm.
 - Removing a triage arm discards that arm's coverage cells as documented,
   preserving other arms' history and preventing stale state after re-addition.
 - Unreleased Thompson profiles use their own transactionally committed trial
@@ -94,6 +106,11 @@
 
 ### Fixed
 
+- Bernoulli, fractional Thompson and EXP3 profiles key explore-first on
+  committed decisions instead of received feedback. Under delayed feedback,
+  in-flight decisions previously all went to the first action, and EXP3 gave
+  each one a point-mass propensity. Their checkpoints gain an optional
+  `issued` field; checkpoints without it restore with feedback counts.
 - `triage_fraction` now bounds the share of picks sent to alarmed arms for
   single picks too. The triage count was rounded up with a minimum of one, so
   every k = 1 pick (all of `Muxer<QualityProfile>::decide`) went to the alarmed

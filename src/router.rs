@@ -2133,4 +2133,35 @@ mod tests {
         let d2 = r.select(2, 99);
         assert_eq!(d1.chosen, d2.chosen, "same seed → same picks");
     }
+
+    /// A cost-only preference must keep exploring: one expensive first sample
+    /// on the cheapest arm must not lock it out.
+    #[test]
+    fn cost_only_router_tries_every_arm_again() {
+        let mut cfg = RouterConfig::default();
+        cfg.mab.base = cfg.mab.base.with_objectives(vec![
+            crate::Objective::maximize(crate::Extract::OkRateUcb, 0.0),
+            crate::Objective::minimize(crate::Extract::MeanCost, 1.0),
+        ]);
+        let names = arms(3);
+        let mut r = Router::new(names.clone(), cfg).unwrap();
+        let mut picks = BTreeMap::<String, u64>::new();
+        for round in 0..300_u64 {
+            let arm = r.select(1, round).primary().unwrap().to_owned();
+            let seen = picks.entry(arm.clone()).or_default();
+            // arm1 is cheapest after an unlucky first call.
+            let cost = match (arm.as_str(), *seen) {
+                ("arm0", _) => 2,
+                ("arm1", 0) => 3,
+                ("arm1", _) => 0,
+                _ => 2,
+            };
+            *seen += 1;
+            assert!(r.observe(&arm, Outcome::success(cost, 10)));
+        }
+        for arm in &names {
+            assert!(picks[arm] > 1, "{arm} picked once: {picks:?}");
+        }
+        assert!(picks["arm1"] > picks["arm0"], "{picks:?}");
+    }
 }
