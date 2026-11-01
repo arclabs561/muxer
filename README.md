@@ -7,7 +7,7 @@ Multi-objective bandit routing with drift detection.
 
 Select among K arms with a correlated decision/feedback runtime, caller-produced
 metrics, or the lower-level quality router with rolling windows and drift
-detection. The new `Muxer<P>` API is additive and currently unreleased.
+detection.
 
 See [examples/EXPERIMENTS.md](examples/EXPERIMENTS.md) for simulations and failure modes.
 
@@ -186,7 +186,7 @@ Start here:
 cargo run --example getting_started        # minimal 3-backend routing loop
 cargo run --release --example llm_gateway_harness  # model routing under drift
 cargo run --example router_quickstart      # eligibility, routing, and CUSUM triage
-cargo run --example router_production --features stochastic  # combined config demo
+cargo run --example router_production    # combined config demo
 cargo run --example off_policy_evaluation  # IPS over logged rewards and propensities
 cargo run --example feedback_regime_matrix # real data; preparation in examples/README.md
 ```
