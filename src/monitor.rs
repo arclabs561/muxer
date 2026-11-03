@@ -1294,7 +1294,8 @@ pub fn adjusted_rates(summary: Summary, cfg: UncertaintyConfig) -> AdjustedRates
 /// Simulate null max-scores for a CUSUM bank over `m` rounds.
 ///
 /// Feeds `n_trials` independent null sequences (each of length `m`) through a
-/// `CusumCatBank`, recording the maximum CUSUM score per trial.  The resulting
+/// `CusumCatBank`, recording the maximum CUSUM score per trial over the rounds
+/// where the bank can alarm (`n >= min_n`; `0.0` if `min_n > m`).  The resulting
 /// distribution can be fed directly to [`calibrate_threshold_from_max_scores`].
 ///
 /// # Arguments
@@ -1347,8 +1348,12 @@ pub fn simulate_cusum_null_max_scores(
             // Sample one outcome from p0.
             let u: f64 = rng.random();
             let idx = cdf.partition_point(|&c| c < u).min(p0.len() - 1);
-            bank.update(idx);
-            max_score = max_score.max(bank.score_max());
+            let update = bank.update(idx);
+            // The bank can alarm only once `n >= min_n`; earlier scores do not
+            // belong in the null distribution of the alarm statistic.
+            if update.n >= min_n {
+                max_score = max_score.max(update.score_max);
+            }
         }
         max_scores.push(max_score);
     }

@@ -204,11 +204,12 @@ impl BanditPolicy for BoltzmannPolicy {
             return None;
         }
         let inv_t = 1.0 / self.config.temperature;
-        // drawset::gumbel_max_sample takes &[f32]. Down-cast logits.
-        let logits: Vec<f32> = arms
-            .iter()
-            .map(|a| (self.mean_reward(a) * inv_t) as f32)
-            .collect();
+        // drawset::gumbel_max_sample takes &[f32]. Centre in f64 before the
+        // down-cast, as `probs` does: f32 cannot resolve small differences
+        // between large logits, so un-centred logits sample a different law.
+        let logits: Vec<f64> = arms.iter().map(|a| self.mean_reward(a) * inv_t).collect();
+        let max = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let logits: Vec<f32> = logits.iter().map(|&l| (l - max) as f32).collect();
         let idx = drawset::gumbel_max_sample(&logits);
         let chosen = arms[idx].clone();
         let probs = self.probs(arms);
