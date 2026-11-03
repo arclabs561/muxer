@@ -15,14 +15,14 @@ See [examples/EXPERIMENTS.md](examples/EXPERIMENTS.md) for simulations and failu
 
 ```toml
 [dependencies]
-muxer = "0.5.3"
+muxer = "0.6.0"
 ```
 
 Deterministic core only (no stochastic bandits):
 
 ```toml
 [dependencies]
-muxer = { version = "0.5", default-features = false }
+muxer = { version = "0.6", default-features = false }
 ```
 
 ### Feature flags
