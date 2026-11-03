@@ -911,6 +911,13 @@ impl InteractionPolicy for BoltzmannProfile {
     ) -> Result<Self::PreparedUpdate, PolicyError> {
         let mut next = self.inner.clone();
         next.update_reward(&ticket.action, feedback.get());
+        // The kernel keeps a running reward sum; reject feedback that would
+        // overflow it, since a non-finite mean makes every later decision fail.
+        if !next.mean_reward(&ticket.action).is_finite() {
+            return Err(PolicyError::new(
+                "Boltzmann reward would overflow the arm's running reward sum",
+            ));
+        }
         Ok(next)
     }
     fn apply(&mut self, update: Self::PreparedUpdate) {
