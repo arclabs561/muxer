@@ -349,10 +349,18 @@ fn quality_checkpoint_v1_fixture_restores_in_a_fresh_process() {
     // Generated with the pre-extraction implementation at commit 93395d5.
     // Keep these historical bytes fixed; regenerating with current code would
     // no longer check backward compatibility of the quality-v1 wire shape.
-    let output = support::run_checkpoint_child(
-        "quality_checkpoint_v1_fixture_child",
-        include_bytes!("fixtures/quality_checkpoint_v1.json"),
+    // Restore deliberately rejects a checkpoint from another crate version,
+    // so stamp the running version into the envelope; everything else is the
+    // stored bytes.
+    let fixture = include_str!("fixtures/quality_checkpoint_v1.json");
+    let stamped = fixture.replacen(
+        "\"crate_version\": \"0.5.3\"",
+        &format!("\"crate_version\": \"{}\"", env!("CARGO_PKG_VERSION")),
+        1,
     );
+    assert_ne!(stamped, fixture, "fixture crate_version field not found");
+    let output =
+        support::run_checkpoint_child("quality_checkpoint_v1_fixture_child", stamped.as_bytes());
     support::assert_child_success(&output);
 }
 
