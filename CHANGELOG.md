@@ -2,8 +2,8 @@
 
 ## [Unreleased]
 
-
 ## [0.6.1] - 2026-11-03
+
 ### Fixed
 
 - `BoltzmannPolicy::decide` now samples from the distribution it reports in
