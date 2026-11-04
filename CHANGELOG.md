@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-04
+
 ### Fixed
 
 - `BoltzmannPolicy::update_reward` skips a reward that would overflow the
