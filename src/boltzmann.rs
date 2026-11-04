@@ -175,6 +175,20 @@ impl BoltzmannPolicy {
         }
     }
 
+    /// The (clipped) reward `update_reward` would add for `arm`, or `None` if
+    /// it is non-finite or would overflow the arm's running sum.
+    pub(crate) fn accepted_reward(&self, arm: &str, reward: f64) -> Option<f64> {
+        if !reward.is_finite() {
+            return None;
+        }
+        let r = match self.config.reward_clip {
+            Some(clip) => reward.clamp(-clip, clip),
+            None => reward,
+        };
+        let sum = self.stats.get(arm).map_or(0.0, |s| s.0);
+        (sum + r).is_finite().then_some(r)
+    }
+
     /// Mean observed reward for `arm`, or `initial_reward` if no updates.
     pub fn mean_reward(&self, arm: &str) -> f64 {
         match self.stats.get(arm) {
@@ -222,12 +236,10 @@ impl BanditPolicy for BoltzmannPolicy {
     }
 
     fn update_reward(&mut self, arm: &str, reward: f64) {
-        if !reward.is_finite() {
+        // Skip a reward that is non-finite or would overflow the running sum:
+        // an infinite mean would break every later decision.
+        let Some(r) = self.accepted_reward(arm, reward) else {
             return;
-        }
-        let r = match self.config.reward_clip {
-            Some(clip) => reward.clamp(-clip, clip),
-            None => reward,
         };
         let entry = self.stats.entry(arm.to_string()).or_insert((0.0, 0));
         entry.0 += r;
@@ -243,6 +255,15 @@ mod tests {
     fn empty_arms_returns_none() {
         let mut p = BoltzmannPolicy::new(BoltzmannConfig::default());
         assert!(p.decide(&[]).is_none());
+    }
+
+    #[test]
+    fn reward_that_overflows_the_sum_is_ignored() {
+        let mut p = BoltzmannPolicy::new(BoltzmannConfig::default());
+        p.update_reward("a", f64::MAX);
+        p.update_reward("a", f64::MAX);
+        assert!(p.mean_reward("a").is_finite());
+        assert!(p.decide(&["a".to_string(), "b".to_string()]).is_some());
     }
 
     #[test]
