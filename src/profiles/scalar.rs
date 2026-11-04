@@ -695,6 +695,10 @@ impl InteractionPolicy for FractionalThompson {
 
 #[cfg(feature = "stochastic")]
 /// EXP3-IX with a fixed canonical arm universe and ticketed propensities.
+///
+/// Sampling draws from the runtime's random source, seeded by
+/// `RuntimeConfig::seed`; the `seed` field of the `Exp3IxConfig` passed to
+/// [`Exp3Profile::new`] is not used by this profile.
 #[derive(Debug, Clone)]
 pub struct Exp3Profile {
     inner: Exp3Ix,
@@ -909,15 +913,19 @@ impl InteractionPolicy for BoltzmannProfile {
         ticket: &Self::Ticket,
         feedback: &FiniteReward,
     ) -> Result<Self::PreparedUpdate, PolicyError> {
-        let mut next = self.inner.clone();
-        next.update_reward(&ticket.action, feedback.get());
-        // The kernel keeps a running reward sum; reject feedback that would
-        // overflow it, since a non-finite mean makes every later decision fail.
-        if !next.mean_reward(&ticket.action).is_finite() {
+        // The kernel keeps a running reward sum and silently skips feedback
+        // that would overflow it; the runtime reports that as an error instead.
+        if self
+            .inner
+            .accepted_reward(&ticket.action, feedback.get())
+            .is_none()
+        {
             return Err(PolicyError::new(
                 "Boltzmann reward would overflow the arm's running reward sum",
             ));
         }
+        let mut next = self.inner.clone();
+        next.update_reward(&ticket.action, feedback.get());
         Ok(next)
     }
     fn apply(&mut self, update: Self::PreparedUpdate) {

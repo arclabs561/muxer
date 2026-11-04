@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `BoltzmannPolicy::update_reward` skips a reward that would overflow the
+  arm's running sum, as it already skips non-finite rewards, so a direct
+  kernel user cannot reach a state where every decision fails.
+
+### Documentation
+
+- `ThompsonConfig::decay` states that decay applies to the updated arm only
+  (a per-arm clock), unlike discounted Thompson sampling.
+- `Exp3Profile` states that sampling uses `RuntimeConfig::seed` and ignores
+  `Exp3IxConfig::seed`.
+- `LinUcb` states how contexts of the wrong length are padded or truncated,
+  and points to `ContextualProfile` for a checked length.
+
 ## [0.6.1] - 2026-11-03
 
 ### Fixed
