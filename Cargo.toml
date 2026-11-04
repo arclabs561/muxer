@@ -66,3 +66,71 @@ required-features = ["stochastic"]
 [[example]]
 name = "unified_contextual"
 required-features = ["contextual"]
+
+[[example]]
+name = "bqcd_calibrated"
+required-features = ["stochastic"]
+
+[[example]]
+name = "bqcd_sampling"
+required-features = ["stochastic"]
+
+[[example]]
+name = "coverage_autotune"
+required-features = ["stochastic"]
+
+[[example]]
+name = "detector_calibration"
+required-features = ["stochastic"]
+
+[[example]]
+name = "detector_inertia"
+required-features = ["stochastic"]
+
+[[example]]
+name = "deterministic_router"
+required-features = ["stochastic"]
+
+[[example]]
+name = "end_to_end_router"
+required-features = ["stochastic"]
+
+[[example]]
+name = "exp3ix_router"
+required-features = ["stochastic"]
+
+[[example]]
+name = "free_lunch_investigation"
+required-features = ["stochastic"]
+
+[[example]]
+name = "monitored_router"
+required-features = ["stochastic"]
+
+[[example]]
+name = "router_production"
+required-features = ["stochastic"]
+
+[[example]]
+name = "significant_shift_sim"
+required-features = ["stochastic"]
+
+[[example]]
+name = "thompson_router"
+required-features = ["stochastic"]
+
+[[example]]
+name = "contextual_propensity_logging"
+required-features = ["contextual"]
+
+[[example]]
+name = "contextual_router"
+required-features = ["contextual"]
+
+[[example]]
+name = "unified_evaluation"
+required-features = ["contextual"]
+
+[[example]]
+name = "unified_refresh"
+required-features = ["contextual"]

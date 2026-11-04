@@ -5,6 +5,36 @@ Output excerpts below are real, captured from local runs. For derivations,
 failure-mode discussion, and longer experiment notes, see
 [`EXPERIMENTS.md`](EXPERIMENTS.md).
 
+The examples are demonstrations and small offline simulations, not benchmark
+evidence. Their numbers depend on seeds, synthetic worlds, and the caller
+policies written into each example.
+
+## Where to start
+
+| I want to... | Run |
+|---|---|
+| See the basic select, call, observe loop | `getting_started` |
+| See routing modes, eligibility, and triage | `router_quickstart` |
+| Route under a provider regression | `llm_gateway_harness` |
+| Check where latency guardrails apply | `guardrail_semantics` |
+| Score a logged policy offline with IPS | `off_policy_evaluation` |
+| Use context features with LinUCB | `contextual_router` (feature `contextual`) |
+| Drive the unified runtime with delayed feedback | `unified_bernoulli`, `unified_quality` |
+| Replay a real categorical dataset | `uci_mushroom_router` (needs a download) |
+
+```bash
+cargo run --example getting_started
+cargo run --example router_quickstart
+cargo run --release --example llm_gateway_harness
+cargo run --example guardrail_semantics
+cargo run --example off_policy_evaluation
+cargo run --example contextual_router --features contextual
+cargo run --example unified_bernoulli
+cargo run --example unified_quality
+```
+
+Every example is listed in [All examples](#all-examples) below.
+
 ## Start Here
 
 ### `feedback_regime_matrix`: how do four feedback regimes retain source semantics?
@@ -183,8 +213,9 @@ unzip -o /tmp/mushroom.zip -d /tmp/mushroom
 cargo run --example uci_mushroom_router -- /tmp/mushroom/agaricus-lepiota.data
 ```
 
-The example exits successfully with a clear message when no dataset path is
-provided, so the default build does not depend on a download.
+The example prints the fetch commands and exits 0 when no dataset path is
+provided or the file does not exist, so the default build does not depend on a
+download.
 
 ### `synthetic_drift_harness`: which backend changes after drift?
 
@@ -286,9 +317,86 @@ eps_focus(eps=0.020, cusum, cov(off)) |  0.040  0.315   2088.8/  8667      24.1/
 eps_focus(eps=0.020, cusum, cov(frac=0.020,floor=10)) |  0.025  0.385   2098.7/  8265      52.5/   176            0.148
 ```
 
-## More
+## All examples
 
-Other runnable harnesses cover PCAP triage, ad auctions, fraud scoring, search
-ranking, medical triage, Thompson sampling, EXP3-IX, monitored routing, sticky
-MAB behavior, and delayed junk labels. See `cargo run --example <name>` and
-[`EXPERIMENTS.md`](EXPERIMENTS.md) for the longer experiment set.
+Run any of these with `cargo run --example <name>`, adding `--features <f>`
+when the Feature column names one. `stochastic` is a default feature.
+
+### Basic routing and selection
+
+| Example | Feature | What it shows |
+|---|---|---|
+| `getting_started` | | Three backends through the `Router` explore, observe, and `quality_weight` loop |
+| `router_quickstart` | | Router modes: select/observe, request-local eligibility, CUSUM triage |
+| `router_production` | `stochastic` | Combined config: CUSUM threshold from simulated null scores, monitoring, triage, coverage, control arms |
+| `guardrail_semantics` | | Fallback versus filter-first latency guardrail pipelines |
+| `deterministic_router` | `stochastic` | `select_mab_explain` over sliding windows with junk-aware Pareto selection |
+| `mab_constraints_tuning` | | Constraints first, then cost/latency/junk trade-off weights, on three providers |
+| `sticky_mab_router` | | `StickyMab` minimum dwell and switch margin to reduce flapping |
+| `decision_unified` | | One `Decision` record shape from `select_mab_decide` and sticky application |
+| `end_to_end_router` | `stochastic` | Constrained MAB with stickiness and junk labels that arrive after the call |
+| `window_delayed_junk_label` | | Caller-owned `ObservationId`s so late junk labels land on the right outcome |
+| `pareto_bandit` | | `select_mab` next to an explicit `pare::ParetoFrontier` with crowding and hypervolume |
+| `thompson_router` | `stochastic` | Thompson sampling on scalar rewards converging to the better arm |
+| `exp3ix_router` | `stochastic` | EXP3-IX probabilities concentrating on the best arm |
+| `monitored_router` | `stochastic` | `select_mab_monitored_decide` reacting to drift in a fast arm |
+
+### Contextual and off-policy
+
+| Example | Feature | What it shows |
+|---|---|---|
+| `contextual_router` | `contextual` | LinUCB decisions and the learned split on high-difficulty contexts |
+| `contextual_propensity_logging` | `contextual` | Logging the chosen arm with its selection probability for later IPS |
+| `off_policy_evaluation` | | Naive mean versus IPS and self-normalized IPS on a logged sample |
+
+### Unified runtime
+
+| Example | Feature | What it shows |
+|---|---|---|
+| `unified_bernoulli` | `stochastic` | Complete boolean-reward decision loop |
+| `unified_quality` | | Quality routing with delayed scoring |
+| `unified_external` | | Externally produced score plugged into a feedbackless decision |
+| `unified_contextual` | `contextual` | LinUCB keeps decision-time features for delayed feedback |
+| `unified_evaluation` | `contextual` | Final runtime feedback projected into the scalar IPS helper |
+| `unified_refresh` | `contextual` | Replacing a frozen contextual model only after pending feedback resolves |
+| `retained_ticket_sizing` | | Allocator-requested bytes for retained open runtime tickets; adds scalar and contextual runs when those features are on |
+
+### Offline harnesses
+
+| Example | Feature | What it shows |
+|---|---|---|
+| `matrix_harness` | | Coverage across task x dataset x backend slices |
+| `synthetic_drift_harness` | | Backend picks before and after drift on hard slices |
+| `llm_gateway_harness` | | Model gateway traffic with a prompt-change regression |
+| `pcap_triage_harness` | | Packet-analysis backends with protocol-dependent eligibility |
+| `ad_auction_harness` | | Auction traffic cells with one model drifting after a privacy shift on EU mobile |
+| `fraud_scoring_harness` | | Risk scorers whose eligibility depends on feature availability |
+| `search_ranking_harness` | | Rankers whose eligibility varies by slice capabilities |
+| `medical_triage_harness` | | Triage models whose eligibility depends on data richness |
+
+### Drift and change detection
+
+| Example | Feature | What it shows |
+|---|---|---|
+| `significant_shift_sim` | `stochastic` | Restart on every CUSUM alarm versus a best-arm-aware gate |
+| `coverage_autotune` | `stochastic` | Target wall delay converted to a coverage floor |
+| `bqcd_sampling` | `stochastic` | Round-robin versus focused sampling with and without coverage |
+| `bqcd_calibrated` | `stochastic` | Multi-arm false-alarm calibration with unknown post-change distributions |
+| `detector_calibration` | `stochastic` | CatKL and CUSUM thresholds calibrated from null max scores per sampling interval |
+| `detector_inertia` | `stochastic` | Detection delay versus sampling interval and pre-change history length |
+| `free_lunch_investigation` | `stochastic` | Change-detection delay when the changed arm is starved versus covered |
+
+### Real-data replays (data-gated)
+
+These read files under the ignored `data/` tree or a path you pass. Without the
+data they print what to fetch and exit 0.
+
+| Example | Feature | What it shows |
+|---|---|---|
+| `feedback_regime_matrix` | | Four feedback regimes kept in their native schemas |
+| `validation_trace_matrix` | | UCI classification traces through the quality `Router` and the metric-vector selector |
+| `uci_mushroom_router` | | Three fixed classifiers routed on UCI Mushroom |
+
+`examples/common/` and `examples/bqcd_world/` are shared helper modules for the
+examples, not public API. See [`EXPERIMENTS.md`](EXPERIMENTS.md) for the longer
+experiment set.
