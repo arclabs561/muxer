@@ -120,6 +120,11 @@ fn clamp01(r: f64) -> f64 {
 /// Usage:
 /// - call `select_with_scores(arms, context)` to get a choice + debug scores
 /// - call `update_reward(chosen_arm, context, reward01)` after observing reward
+///
+/// Contexts are used as `dim`-length vectors: a shorter context is padded
+/// with zeros, a longer one is truncated, and non-finite entries count as 0.
+/// No error is reported for a wrong length. `ContextualProfile` checks the
+/// length and returns an error instead.
 #[derive(Debug, Clone)]
 pub struct LinUcb {
     cfg: LinUcbConfig,

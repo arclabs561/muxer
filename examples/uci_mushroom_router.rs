@@ -162,14 +162,29 @@ fn policy_costs(arm: &str) -> (u64, u64) {
     }
 }
 
+fn print_fetch_instructions() {
+    eprintln!("fetch UCI Mushroom and pass agaricus-lepiota.data:");
+    eprintln!(
+        "  curl -L https://archive.ics.uci.edu/static/public/73/mushroom.zip -o /tmp/mushroom.zip"
+    );
+    eprintln!("  unzip -o /tmp/mushroom.zip -d /tmp/mushroom");
+    eprintln!("  cargo run --example uci_mushroom_router -- /tmp/mushroom/agaricus-lepiota.data");
+}
+
 fn main() {
     let Some(path) = std::env::args().nth(1) else {
-        eprintln!("no dataset supplied; download UCI Mushroom and pass agaricus-lepiota.data");
+        eprintln!("skipping: no dataset supplied");
+        print_fetch_instructions();
         return;
     };
 
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("skipping: {path} not found");
+            print_fetch_instructions();
+            return;
+        }
         Err(error) => {
             eprintln!("failed to read {path}: {error}");
             std::process::exit(1);

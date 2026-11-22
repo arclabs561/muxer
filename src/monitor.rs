@@ -378,35 +378,15 @@ pub fn drift_simplex(
     match metric {
         DriftMetric::Rao => rao_distance_categorical(p, q, tol),
         DriftMetric::JensenShannon => logp::jensen_shannon_divergence(p, q, tol),
-        DriftMetric::Hellinger => hellinger_categorical(p, q, tol),
+        DriftMetric::Hellinger => logp::hellinger(p, q, tol),
     }
-}
-
-fn bhattacharyya_coefficient(p: &[f64], q: &[f64], tol: f64) -> Result<f64, logp::Error> {
-    if p.len() != q.len() {
-        return Err(logp::Error::LengthMismatch(p.len(), q.len()));
-    }
-    logp::validate_simplex(p, tol)?;
-    logp::validate_simplex(q, tol)?;
-
-    let mut bc = 0.0_f64;
-    for (&pi, &qi) in p.iter().zip(q.iter()) {
-        bc += (pi * qi).sqrt();
-    }
-
-    // Clamp to guard against tiny floating error (e.g. 1 + 1e-16).
-    Ok(bc.clamp(0.0, 1.0))
-}
-
-fn hellinger_categorical(p: &[f64], q: &[f64], tol: f64) -> Result<f64, logp::Error> {
-    // Standard Hellinger distance: H(p,q) ∈ [0,1].
-    let bc = bhattacharyya_coefficient(p, q, tol)?;
-    Ok((1.0 - bc).max(0.0).sqrt())
 }
 
 fn rao_distance_categorical(p: &[f64], q: &[f64], tol: f64) -> Result<f64, logp::Error> {
     // Fisher–Rao distance on the categorical simplex: d(p,q) = 2 arccos( Σ_i √(p_i q_i) ) ∈ [0,π].
-    let bc = bhattacharyya_coefficient(p, q, tol)?;
+    // Clamp because the summed coefficient can land a rounding step above 1,
+    // where `acos` returns NaN.
+    let bc = logp::bhattacharyya_coeff(p, q, tol)?.clamp(0.0, 1.0);
     Ok(2.0 * bc.acos())
 }
 
@@ -930,7 +910,7 @@ pub fn drift_between_windows(
     let score = match cfg.metric {
         DriftMetric::Rao => rao_distance_categorical(&p, &q, cfg.tol).ok()?,
         DriftMetric::JensenShannon => logp::jensen_shannon_divergence(&p, &q, cfg.tol).ok()?,
-        DriftMetric::Hellinger => hellinger_categorical(&p, &q, cfg.tol).ok()?,
+        DriftMetric::Hellinger => logp::hellinger(&p, &q, cfg.tol).ok()?,
     };
 
     Some(DriftDecision {
@@ -1294,7 +1274,8 @@ pub fn adjusted_rates(summary: Summary, cfg: UncertaintyConfig) -> AdjustedRates
 /// Simulate null max-scores for a CUSUM bank over `m` rounds.
 ///
 /// Feeds `n_trials` independent null sequences (each of length `m`) through a
-/// `CusumCatBank`, recording the maximum CUSUM score per trial.  The resulting
+/// `CusumCatBank`, recording the maximum CUSUM score per trial over the rounds
+/// where the bank can alarm (`n >= min_n`; `0.0` if `min_n > m`).  The resulting
 /// distribution can be fed directly to [`calibrate_threshold_from_max_scores`].
 ///
 /// # Arguments
@@ -1347,8 +1328,12 @@ pub fn simulate_cusum_null_max_scores(
             // Sample one outcome from p0.
             let u: f64 = rng.random();
             let idx = cdf.partition_point(|&c| c < u).min(p0.len() - 1);
-            bank.update(idx);
-            max_score = max_score.max(bank.score_max());
+            let update = bank.update(idx);
+            // The bank can alarm only once `n >= min_n`; earlier scores do not
+            // belong in the null distribution of the alarm statistic.
+            if update.n >= min_n {
+                max_score = max_score.max(update.score_max);
+            }
         }
         max_scores.push(max_score);
     }
@@ -1484,6 +1469,59 @@ mod tests {
             }
             v
         })
+    }
+
+    // The coefficient muxer computed before delegating Hellinger and the Rao
+    // coefficient to logp, kept as the reference for the differential tests.
+    fn old_bhattacharyya(p: &[f64], q: &[f64]) -> f64 {
+        p.iter()
+            .zip(q)
+            .map(|(&pi, &qi)| (pi * qi).sqrt())
+            .sum::<f64>()
+            .clamp(0.0, 1.0)
+    }
+
+    proptest! {
+        #[test]
+        fn hellinger_and_rao_match_the_previous_formulas(
+            (p, q) in (1usize..20).prop_flat_map(|n| (simplex_vec(n), simplex_vec(n)))
+        ) {
+            let bc = old_bhattacharyya(&p, &q);
+            let old_hellinger = (1.0 - bc).max(0.0).sqrt();
+            let old_rao = 2.0 * bc.acos();
+            let hellinger = drift_simplex(&p, &q, DriftMetric::Hellinger, 1e-9).unwrap();
+            let rao = drift_simplex(&p, &q, DriftMetric::Rao, 1e-9).unwrap();
+            // `1 - BC` loses about half the digits when p is close to q, so the
+            // old Hellinger is only good to about 1e-8 there.
+            prop_assert!((hellinger - old_hellinger).abs() <= 1e-7, "{hellinger} vs {old_hellinger}");
+            prop_assert!((rao - old_rao).abs() <= 1e-7, "{rao} vs {old_rao}");
+        }
+    }
+
+    #[test]
+    fn identical_distributions_have_zero_hellinger_and_finite_rao() {
+        // For this distribution the summed coefficient of p with itself rounds
+        // to 1.0000000000000002, where an unclamped `acos` returns NaN.
+        let p = [
+            0.010397885443187215,
+            0.3022611833901705,
+            0.022568907883676773,
+            0.2780781927108418,
+            0.1451126177032422,
+            0.2415812128688816,
+        ];
+        assert_eq!(
+            drift_simplex(&p, &p, DriftMetric::Hellinger, 1e-9).unwrap(),
+            0.0
+        );
+        let rao = drift_simplex(&p, &p, DriftMetric::Rao, 1e-9).unwrap();
+        assert!(rao.is_finite() && rao.abs() < 1e-6, "rao={rao}");
+    }
+
+    #[test]
+    fn mismatched_lengths_are_still_a_length_error() {
+        let err = drift_simplex(&[0.5, 0.5], &[1.0], DriftMetric::Hellinger, 1e-9).unwrap_err();
+        assert!(matches!(err, logp::Error::LengthMismatch(2, 1)), "{err:?}");
     }
 
     #[test]

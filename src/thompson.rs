@@ -28,6 +28,11 @@ pub struct ThompsonConfig {
     ///
     /// - `1.0` means no decay (no forgetting).
     /// - Smaller values forget older observations faster (useful for non-stationarity).
+    ///
+    /// Decay is applied to the arm being updated only, so the clock is per
+    /// arm: an arm that is not selected keeps its posterior unchanged. This is
+    /// not discounted Thompson sampling (Raj and Kalyani 2017), which
+    /// discounts every arm each round.
     pub decay: f64,
     /// Optional per-arm priors (alpha, beta). If present, overrides (alpha0, beta0).
     pub priors: BTreeMap<String, (f64, f64)>,

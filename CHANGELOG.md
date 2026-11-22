@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-04
+
+### Fixed
+
+- `BoltzmannPolicy::update_reward` skips a reward that would overflow the
+  arm's running sum, as it already skips non-finite rewards, so a direct
+  kernel user cannot reach a state where every decision fails.
+
+### Documentation
+
+- `ThompsonConfig::decay` states that decay applies to the updated arm only
+  (a per-arm clock), unlike discounted Thompson sampling.
+- `Exp3Profile` states that sampling uses `RuntimeConfig::seed` and ignores
+  `Exp3IxConfig::seed`.
+- `LinUcb` states how contexts of the wrong length are padded or truncated,
+  and points to `ContextualProfile` for a checked length.
+
+## [0.6.1] - 2026-11-03
+
+### Fixed
+
+- `BoltzmannPolicy::decide` now samples from the distribution it reports in
+  `Decision::probs`. Logits were cast to `f32` before centring, so arms whose
+  mean rewards differed by less than the `f32` spacing at their magnitude were
+  sampled uniformly (means 2e7 and 2e7 + 1: reported P = 0.731, sampled 0.5).
+- `BoltzmannProfile` rejects reward feedback that would overflow an arm's
+  running reward sum, returning an error from `tell` instead of storing a
+  non-finite mean that made every later `decide` fail.
+- `simulate_cusum_null_max_scores`, and therefore `calibrate_cusum_threshold`,
+  now take each trial's maximum only over rounds where the bank can alarm
+  (`n >= min_n`). Scores from earlier rounds made `min_n` have no effect and
+  the calibrated threshold conservative.
+
+## [0.6.0] - 2026-11-02
+
 ### Added
 
 - `try_select_mab`, which returns an error for an empty objective list, a
